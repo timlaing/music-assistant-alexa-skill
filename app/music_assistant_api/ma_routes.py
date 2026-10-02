@@ -1,57 +1,54 @@
-"""Route definitions for music_assistant_api (ma_routes)."""
+"""Music Assistant stream push and snapshot endpoints."""
 
-from flask import jsonify, request
 import os
-import time
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlsplit
+
 import shared_store
-
-
-def _rewrite_url(url: str) -> str:
-    """Rewrite internal Music Assistant URLs to public hostname."""
-    if not url:
-        return url
-    ma_hostname = os.environ.get('MA_HOSTNAME', '').strip()
-    if not ma_hostname:
-        return url
-    try:
-        parsed = urlparse(url)
-        if not parsed.hostname:
-            return url
-        rewritten = urlunparse((
-            'https', ma_hostname, parsed.path,
-            parsed.params, parsed.query, parsed.fragment
-        ))
-        return rewritten
-    except Exception:
-        return url
+from flask import jsonify, request
+from public_urls import rewrite_url
 
 
 def register_routes(bp):
-    @bp.route('/push-url', methods=['POST'])
+    @bp.route("/push-url", methods=["POST"])
     def push_url():
-        data = request.get_json(silent=True) or {}
-        stream_url = data.get('streamUrl')
-        if not stream_url:
-            return jsonify({'error': 'Missing required fields'}), 400
+        payload = request.get_json(silent=True)
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("streamUrl"), str)
+            or not payload["streamUrl"]
+        ):
+            return jsonify({"error": "Missing required fields"}), 400
+        raw_url = payload["streamUrl"]
+        base = os.environ.get("MA_HOSTNAME", "").strip()
+        try:
+            stream_url = rewrite_url(raw_url, base)
+            image_url = payload.get("imageUrl")
+            if image_url:
+                if not isinstance(image_url, str):
+                    raise ValueError("imageUrl must be a string")
+                # Provider artwork already hosted elsewhere must retain its own host.
+                image_base = (
+                    base
+                    if urlsplit(image_url).hostname == urlsplit(raw_url).hostname
+                    else ""
+                )
+                image_url = rewrite_url(image_url, image_base)
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        version = shared_store.set_ma(
+            {
+                "streamUrl": stream_url,
+                "title": payload.get("title"),
+                "artist": payload.get("artist"),
+                "album": payload.get("album"),
+                "imageUrl": image_url,
+            }
+        )
+        return jsonify({"status": "ok", "version": version})
 
-        stream_url = _rewrite_url(stream_url)
-        image_url = _rewrite_url(data.get('imageUrl'))
-
-        shared_store._version += 1
-        shared_store._store = {
-            'streamUrl': stream_url,
-            'title': data.get('title'),
-            'artist': data.get('artist'),
-            'album': data.get('album'),
-            'imageUrl': image_url,
-            'version': shared_store._version,
-            'timestamp': time.time()
-        }
-        return jsonify({'status': 'ok', 'version': shared_store._version})
-
-    @bp.route('/latest-url', methods=['GET'])
+    @bp.route("/latest-url", methods=["GET"])
     def latest_url():
-        if not shared_store._store:
-            return jsonify({'error': 'No URL available'}), 404
-        return jsonify(shared_store._store)
+        payload = shared_store.get_ma()
+        if not payload:
+            return jsonify({"error": "No URL available"}), 404
+        return jsonify(payload)

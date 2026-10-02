@@ -124,3 +124,12 @@ See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
 See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclosures.
 
+
+## Maintained add-on branch
+
+`addon-stability-1.2.0` is based on upstream `8c1650577b2ebd81a34da58e180506643decc9e2`.
+It fixes threaded request isolation, shared-store integrity, proxy URL rewriting,
+flow/announcement completion and Gunicorn signal ownership. The Home Assistant
+wrapper is maintained separately at https://github.com/timlaing/music-assistant-alexa-api.
+Device mapping uses actual MA player IDs; Pause/Stop/Resume also sync to mapped
+players, with one-shot echo suppression. Basic playback needs no MA API token.

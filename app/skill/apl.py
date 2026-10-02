@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import sys
+
 from ask_sdk_model.interfaces.alexa.presentation.apl import RenderDocumentDirective
-from ask_sdk_core.response_helper import ResponseFactory
+
 from . import data
 
 # Ensure /app/src is on the Python path so shared_store can be imported
@@ -25,27 +26,14 @@ def _load_apl_template():
 def add_apl(response_builder, start_paused=False):
     # type: (ResponseFactory, bool) -> None
     """Add the RenderDocumentDirective to the response with APL document."""
-    # Import here to avoid circular imports
-    from .util import get_ma_hostname, replace_ip_in_url
-
-    # Get metadata from shared_store (most reliable) or data.info as fallback
     metadata = _get_metadata()
     if not metadata:
         logging.warning("No metadata available for APL rendering")
         return
 
-    # Replace MA-hosted image sources if MA_HOSTNAME is set
-    try:
-        hostname = get_ma_hostname(raise_on_http_scheme=False)
-    except ValueError:
-        hostname = ''
-
+    # The MA API already normalizes local artwork and preserves provider hosts.
     cover_image = metadata.get("coverImageSource", "")
     background_image = metadata.get("backgroundImageSource", "")
-
-    if hostname:
-        cover_image = replace_ip_in_url(cover_image, hostname)
-        background_image = replace_ip_in_url(background_image, hostname)
 
     # Load the APL document template
     apl_document = _load_apl_template()
@@ -92,47 +80,5 @@ def add_apl(response_builder, start_paused=False):
 
 
 def _get_metadata():
-    """Get metadata from shared_store or data.info.
-
-    shared_store is the primary source (set by MA push-url).
-    data.info is the fallback (set by data.get_latest()).
-    """
-    # Priority 1: shared_store (most reliable, set by MA)
-    try:
-        import shared_store
-        if shared_store._store:
-            store = shared_store._store
-            return {
-                "audioSources": store.get("streamUrl", ""),
-                "backgroundImageSource": store.get("imageUrl", ""),
-                "coverImageSource": store.get("imageUrl", ""),
-                "headerAttributionImage": "",
-                "headerTitle": "",
-                "headerSubtitle": "",
-                "primaryText": store.get("title", ""),
-                "secondaryText": _build_secondary_text(store)
-            }
-    except Exception as e:
-        logging.debug("shared_store read failed in APL: %s", e)
-
-    # Priority 2: data.info (fallback)
-    try:
-        if data.info and data.info.get("audioSources"):
-            return data.info
-    except Exception:
-        pass
-
-    return None
-
-
-def _build_secondary_text(store):
-    """Build secondary text from artist and album."""
-    artist = store.get("artist", "")
-    album = store.get("album", "")
-    if artist and album:
-        return f"{artist} - {album}"
-    elif artist:
-        return artist
-    elif album:
-        return album
-    return ""
+    """Use the same request snapshot as AudioPlayer playback."""
+    return data.get_info()
