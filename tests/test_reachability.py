@@ -133,3 +133,42 @@ def test_status_html_preserves_markup_and_escapes_values():
     assert '<div class="muted">' in rendered
     assert "&lt;script&gt;" in rendered and "&lt;img" in rendered
     assert "&lt;div" not in rendered
+
+
+@pytest.mark.parametrize(
+    "stream,url",
+    [
+        ("http://streams.example.com", "http://ma.local/track"),
+        ("https://streams.example.com", "file:///private/track"),
+        ("https://streams.example.com", {"invalid": "type"}),
+    ],
+)
+def test_invalid_rewrite_still_reports_failed_audio_check(
+    client, monkeypatch, stream, url
+):
+    import reachability
+    from app import app
+    from test_skill_deployment import AUTH
+
+    class FakeSession(Session):
+        def __init__(self):
+            super().__init__(Response())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setenv("MA_HOSTNAME", stream)
+    set_ma({"url": url})
+    monkeypatch.setattr(reachability.requests, "Session", FakeSession)
+    app.extensions["reachability"] = Reachability()
+    assert client.get("/status/urls", headers=AUTH).status_code == 200
+    app.extensions["reachability"].thread.join(2)
+    response = client.get("/status/urls", headers=AUTH)
+    assert response.status_code == 200
+    audio = response.json["checks"][-1]
+    assert audio["label"] == "Current audio"
+    assert audio["status"] == "failed"
+    assert "Invalid HTTPS URL" in audio["message"]

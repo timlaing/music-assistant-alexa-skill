@@ -152,7 +152,9 @@ class Amazon:
 def deployment(monkeypatch, tmp_path):
     monkeypatch.setenv("LWA_CLIENT_ID", "client")
     monkeypatch.setenv("LWA_CLIENT_SECRET", "private-client-secret")
-    monkeypatch.setenv("LWA_REDIRECT_URI", BASE_URL + "/ma-alexa-skill/setup/oauth/callback")
+    monkeypatch.setenv(
+        "LWA_REDIRECT_URI", BASE_URL + "/ma-alexa-skill/setup/oauth/callback"
+    )
     monkeypatch.setenv("SKILL_HOSTNAME", BASE_URL + "/ma-alexa-skill/")
     monkeypatch.setenv("LOCALE", "en-GB")
     monkeypatch.setenv("SKILL_CERTIFICATE_TYPE", "Trusted")
@@ -253,9 +255,11 @@ def test_restart_can_resume_accepted_import(deployment):
     review = manager.state["review"]
     manager.update(
         phase="running",
+        vendor_id="vendor",
         skill_id=SKILL,
         deployed_settings=review["settings"],
         import_path="/v1/skills/imports/import-1",
+        import_unknown=True,
     )
     amazon.files, _, _ = configure_package(
         amazon.files, "skill-package/skill.json", settings(), True
@@ -266,6 +270,7 @@ def test_restart_can_resume_accepted_import(deployment):
     recovered.update(expected_package=package_fingerprint(amazon.files))
     recovered.finish()
     assert recovered.state["phase"] == "complete"
+    assert not recovered.state["import_unknown"]
     assert amazon.created == 0
 
 
@@ -404,8 +409,15 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
         base_url=BASE_URL,
     )
     assert response.status_code == 200
-    assert client.get('/setup/status', headers=AUTH, base_url=BASE_URL).json['oauth_ready']
-    assert client.post('/setup/oauth/finish', headers=headers, json={}, base_url=BASE_URL).status_code == 200
+    assert client.get("/setup/status", headers=AUTH, base_url=BASE_URL).json[
+        "oauth_ready"
+    ]
+    assert (
+        client.post(
+            "/setup/oauth/finish", headers=headers, json={}, base_url=BASE_URL
+        ).status_code
+        == 200
+    )
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert (
         client.get(
@@ -575,3 +587,155 @@ def test_shutdown_interrupts_api_calls_and_persists(deployment):
         manager.accounts()
     recovered = DeploymentManager(manager.path)
     assert recovered.state["phase"] == "interrupted"
+
+
+@pytest.mark.parametrize("field,value", [("LOCALE", "invalid"), ("SKILL_HOSTNAME", "")])
+def test_status_preserves_connected_deployment_with_invalid_current_settings(
+    deployment, client, monkeypatch, field, value
+):
+    from app import app
+
+    manager, _ = deployment
+    manager.update(
+        phase="complete",
+        deployed_settings=settings(),
+        message="Previously verified deployment",
+    )
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setenv(field, value)
+    response = client.get("/status/ask", headers=AUTH)
+    assert response.status_code == 200
+    html = response.json["skill_ask_html"]
+    assert "Previously verified deployment" in html
+    assert "led yellow" in html
+    assert "ASK check error" not in html
+
+
+@pytest.mark.parametrize(
+    "changes,invalidated",
+    [
+        ({"locale": "en-US"}, False),
+        ({"ma_hostname": "https://other-streams.example.com"}, False),
+        ({"skill_hostname": BASE_URL + "/different-prefix/"}, False),
+        ({"lwa_client_id": "different-client"}, True),
+        ({"lwa_client_secret": "different-secret"}, True),
+        ({"skill_hostname": "https://different.example.com/ma-alexa-skill/"}, True),
+    ],
+)
+def test_settings_save_only_invalidates_sign_in_when_oauth_config_changes(
+    deployment, client, monkeypatch, changes, invalidated
+):
+    from app import app
+    from test_ingress import gateway
+
+    manager, _ = deployment
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    csrf = gateway(client, "/setup/status").json["csrf"]
+    response = gateway(
+        client, "/setup/oauth/start", "post", headers={"X-CSRF-Token": csrf}, json={}
+    )
+    state = parse_qs(urlparse(response.json["url"]).query)["state"][0]
+    manager.update(review={"id": "old-review"})
+    current = gateway(client, "/setup/settings").json
+    saved = gateway(
+        client,
+        "/setup/settings",
+        "post",
+        headers={"X-CSRF-Token": csrf},
+        json={"revision": current["revision"], "values": changes},
+    )
+    assert saved.status_code == 200
+    assert manager.state["review"] is None
+    if invalidated:
+        with pytest.raises(DeploymentError, match="expired"):
+            manager.accept_callback(state, "code")
+    else:
+        manager.accept_callback(state, "code")
+        assert gateway(client, "/setup/status").json["oauth_ready"]
+        assert (
+            gateway(
+                client,
+                "/setup/oauth/finish",
+                "post",
+                headers={"X-CSRF-Token": csrf},
+                json={},
+            ).status_code
+            == 200
+        )
+
+
+@pytest.mark.parametrize("failure", ["timeout", "invalid-id", "interruption"])
+def test_ambiguous_import_is_durable_and_blocks_another_deployment(deployment, failure):
+    manager, amazon = deployment
+    manager.prepare("vendor", SKILL, False)
+    review_id = manager.state["review"]["id"]
+    original = amazon.request
+
+    def lost_result(method, url, **kwargs):
+        if method == "POST" and url.endswith("/imports"):
+            # Durable uncertainty must precede the remote acceptance window.
+            assert json.loads(manager.path.read_text())["import_unknown"] is True
+            response = original(method, url, **kwargs)
+            if failure == "timeout":
+                raise requests.Timeout()
+            if failure == "interruption":
+                raise SystemExit()
+            response.headers["Location"] = "https://unexpected.example.com/import"
+            return response
+        return original(method, url, **kwargs)
+
+    amazon.request = lost_result
+    with pytest.raises(SystemExit if failure == "interruption" else DeploymentError):
+        manager.deploy(review_id)
+    assert amazon.imported
+    restored = DeploymentManager(manager.path, amazon)
+    assert restored.state["import_unknown"]
+    assert not restored.public_status()["can_resume"]
+    assert "reconcile" in restored.public_status()["message"]
+    before = len(amazon.calls)
+    with pytest.raises(DeploymentError, match="Reconcile"):
+        restored.prepare("vendor", SKILL, False)
+    with pytest.raises(DeploymentError, match="Reconcile"):
+        restored.deploy(review_id)
+    assert len(amazon.calls) == before
+
+
+def test_definitively_rejected_import_allows_new_review(deployment):
+    manager, amazon = deployment
+    original = amazon.request
+
+    def rejected(method, url, **kwargs):
+        if method == "POST" and url.endswith("/imports"):
+            return Response(status=400)
+        return original(method, url, **kwargs)
+
+    amazon.request = rejected
+    with pytest.raises(DeploymentError):
+        deploy(manager)
+    assert manager.state["import_unknown"] is False
+    manager.prepare("vendor", SKILL, False)
+    assert manager.state["phase"] == "ready"
+
+
+@pytest.mark.parametrize("other_account", [True, False])
+def test_resume_checks_original_vendor_and_skill_ownership(deployment, other_account):
+    manager, amazon = deployment
+    deploy(manager)
+    manager.update(import_path="/v1/skills/imports/import-1", phase="interrupted")
+    original = amazon.request
+
+    def changed_connection(method, url, **kwargs):
+        if url == API + "/v1/vendors" and other_account:
+            return Response({"vendors": [{"id": "different-vendor", "name": "Other"}]})
+        if url == API + "/v1/skills" and method == "GET" and not other_account:
+            return Response({"skills": []})
+        return original(method, url, **kwargs)
+
+    amazon.request = changed_connection
+    amazon.calls.clear()
+    with pytest.raises(DeploymentError):
+        manager.finish()
+    assert manager.state["phase"] != "complete"
+    assert not any(method == "PUT" for method, _, _ in amazon.calls)
+    assert not any("/imports/" in url for _, url, _ in amazon.calls)

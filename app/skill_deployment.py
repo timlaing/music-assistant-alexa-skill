@@ -266,7 +266,7 @@ class DeploymentManager:
             except (DeploymentError, ValueError):
                 ready, error = (
                     False,
-                    "Configure Login with Amazon in the add-on options before connecting.",
+                    "Configure Login with Amazon in Setup before connecting.",
                 )
             result = {
                 key: copy.deepcopy(self.state.get(key))
@@ -280,7 +280,12 @@ class DeploymentManager:
                     "verified_at",
                 )
             }
+            if self.state.get("import_unknown"):
+                result["message"] = (
+                    "Amazon may have accepted an import without returning its recovery ID. Further deployments are blocked; reconcile the operation with Amazon before retrying."
+                )
             result.update(
+                import_unknown=bool(self.state.get("import_unknown")),
                 connected=ready,
                 configuration_error=error,
                 can_resume=bool(self.state.get("import_path"))
@@ -601,7 +606,14 @@ class DeploymentManager:
                 chunks.append(chunk)
             return unpack_package(b"".join(chunks))
 
+    def require_known_import(self):
+        if self.state.get("import_unknown"):
+            raise DeploymentError(
+                "An import may still be running in Amazon without a saved recovery ID. Reconcile it with Amazon before another deployment."
+            )
+
     def prepare(self, vendor, skill, create):
+        self.require_known_import()
         config = settings()
         if self.state.get("import_path"):
             status = self.api("GET", self.state["import_path"]).json().get("status")
@@ -656,6 +668,7 @@ class DeploymentManager:
 
     def deploy(self, review_id):
         with self.lock:
+            self.require_known_import()
             review = copy.deepcopy(self.state.get("review", {}))
             if (
                 review.get("id") != review_id
@@ -713,13 +726,22 @@ class DeploymentManager:
             data=self.package_path.read_bytes(),
             headers={"Content-Type": "application/zip"},
         )
-        response = self.api(
-            "POST",
-            f"/v1/skills/{quote(skill, safe='')}/imports",
-            json={"location": uploaded},
-        )
+        # Persist the uncertain transition BEFORE Amazon can accept the mutation.
+        # A lost response, invalid operation URL or shutdown must block another import.
+        self.update(import_unknown=True)
+        try:
+            response = self.api(
+                "POST",
+                f"/v1/skills/{quote(skill, safe='')}/imports",
+                json={"location": uploaded},
+            )
+        except AmazonError as exc:
+            if 400 <= exc.status < 500:
+                self.update(import_unknown=False)
+            raise
         self.update(
             import_path=self.job_path(response, "imports"),
+            import_unknown=False,
             message="Amazon is importing and building the skill…",
         )
         self.finish()
@@ -748,6 +770,11 @@ class DeploymentManager:
         if not self.state.get("import_path"):
             raise DeploymentError(
                 "There is no accepted import to resume. Review the saved skill again."
+            )
+        vendor, skill = self.state.get("vendor_id"), self.state.get("skill_id")
+        if not vendor or not any(item["id"] == skill for item in self.skills(vendor)):
+            raise DeploymentError(
+                "The saved import must belong to a development custom skill in its original developer account. Reconnect that account before resuming."
             )
         self.poll(self.state["import_path"], "package import")
         skill, config = self.state["skill_id"], self.state["deployed_settings"]
@@ -808,6 +835,7 @@ class DeploymentManager:
             message="Amazon confirmed the endpoint, voice-model build and development enablement. Test playback on your Echo.",
             verified_at=time.time(),
             import_path=None,
+            import_unknown=False,
         )
 
 
@@ -899,9 +927,20 @@ def register_setup(app):
                 raise SettingsError(
                     "Wait for the current deployment operation before saving settings."
                 )
+            try:
+                previous_key = config_key()
+            except (DeploymentError, ValueError):
+                previous_key = None
             result = store().save(request.get_json(silent=True))
-            # Editing settings never deploys; an existing review must be prepared again.
-            instance.update(review=None, oauth={})
+            try:
+                current_key = config_key()
+            except (DeploymentError, ValueError):
+                current_key = None
+            # Keep pending sign-in for unrelated edits; OAuth binds to its own config.
+            changes = {"review": None}
+            if previous_key != current_key:
+                changes["oauth"] = {}
+            instance.update(**changes)
         return jsonify(**result)
 
     @blueprint.route("/setup/settings/api-password", methods=["POST"])

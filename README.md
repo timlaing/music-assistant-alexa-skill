@@ -20,8 +20,8 @@ For a standalone host, run the project with Docker Compose. This will build and 
 #### Steps:
 
 1. Ensure `docker-compose.yml` is present and edit environment variables as needed (e.g., `SKILL_HOSTNAME`, `MA_HOSTNAME`, `PORT`). See the [Environment Variables](#environment-variables) section below for details on each variable.
-2. Create `./secrets/app_username.txt` and `./secrets/app_password.txt` to provide `APP_USERNAME` and `APP_PASSWORD` for basic authentication of the web UI and API.
-3. Persist `./deployment_data:/data` for private deployment credentials/progress. Register Login with Amazon and configure the client ID, secret and explicit callback as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+2. Create `./secrets/app_username.txt` and `./secrets/app_password.txt` to provide `APP_USERNAME` and `APP_PASSWORD` for basic authentication of the web UI and API. Also create `./secrets/lwa_client_secret.txt`: put your Login with Amazon client secret in it, or create an empty file if you will enter the secret later through Setup. Compose requires all three declared secret files to exist, even when you do not use the deployment wizard.
+3. Persist `./deployment_data:/data` for private deployment credentials/progress. Register Login with Amazon and configure the client ID and secret, then register the generated callback as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 4. Start the service:
 
     ```sh

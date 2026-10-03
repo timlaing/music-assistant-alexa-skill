@@ -9,7 +9,7 @@ from app_settings import get_setting
 from flask import Blueprint, Response, current_app, jsonify, request
 from markupsafe import escape
 from setup_helpers import has_functional_cli_config
-from skill_deployment import manager, settings
+from skill_deployment import DeploymentError, manager, settings
 
 status_bp = Blueprint('status_bp', __name__)
 
@@ -24,7 +24,10 @@ def _build_status_json():
         if deployment.get('connected'):
             instance = manager()
             current = instance.state.get('deployed_settings')
-            matches = current == settings() if current else False
+            try:
+                matches = current == settings() if current else False
+            except DeploymentError:
+                matches = False
             ready = deployment.get('phase') == 'complete' and matches
             color = 'green' if ready else 'yellow'
             note = 'Amazon verified deployment' if ready else (deployment.get('message') or 'Select your personal skill')

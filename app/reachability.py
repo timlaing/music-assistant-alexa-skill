@@ -19,7 +19,11 @@ def targets():
     result = [("Skill endpoint", skill, "skill"), ("Stream host", stream, "host")]
     latest = get_ma() or {}
     if latest.get("url"):
-        result.append(("Current audio", rewrite_url(latest["url"], stream), "audio"))
+        try:
+            audio = rewrite_url(latest["url"], stream)
+        except (ValueError, TypeError):
+            audio = "invalid:"
+        result.append(("Current audio", audio, "audio"))
     return result
 
 

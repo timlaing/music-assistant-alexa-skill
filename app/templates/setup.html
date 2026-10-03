@@ -76,7 +76,8 @@ async function refresh() {
  el('message').textContent=status.configuration_error||status.message||'Connect Amazon to get started.';
  el('connected').textContent=status.connected?'Connected':'';
  el('selection').hidden=!status.connected;el('connect').disabled=busy||Boolean(status.configuration_error);
- ['review','deploy','vendors','skills','reload','saveSettings'].forEach(id=>el(id).disabled=busy);
+ ['vendors','skills','reload','saveSettings'].forEach(id=>el(id).disabled=busy);
+ ['review','deploy'].forEach(id=>el(id).disabled=busy||Boolean(status.import_unknown));
  el('resume').hidden=!status.can_resume;el('resume').disabled=busy;
  showReview(status.review);
  if(status.connected&&!accountsLoaded) {const body=await api('/setup/accounts');body.vendors.forEach(v=>option(el('vendors'),v.id,v.name+' — '+v.id));accountsLoaded=true;if(status.vendor_id){el('vendors').value=status.vendor_id;await loadSkills();}}
