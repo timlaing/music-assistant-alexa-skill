@@ -1,24 +1,19 @@
-from flask import Blueprint, request, jsonify, Response, current_app
-from markupsafe import escape
 import json
 import os
 import re
 import shutil
 import subprocess
 import urllib.parse
-
-import requests
-from requests.exceptions import RequestException
-from env_secrets import get_env_secret
 from pathlib import Path
+
+from flask import Blueprint, Response, current_app, jsonify, request
+from markupsafe import escape
 from setup_helpers import has_functional_cli_config
 
 status_bp = Blueprint('status_bp', __name__)
 
 
 def _build_status_json():
-    api_user = get_env_secret('APP_USERNAME')
-    api_pass = get_env_secret('APP_PASSWORD')
     skill_html = '<span class="led green"></span> Skill running'
 
     skill_ask_html = '<span class="muted">ASK CLI check unavailable</span>'
@@ -120,70 +115,13 @@ def _build_status_json():
     except Exception as e:
         skill_ask_html = f'<span class="muted">ASK check error: {escape(str(e))}</span>'
 
-    # MA API check
-    endpoint_url = request.host_url.rstrip('/') + '/ma/latest-url'
-    try:
-        auth = (api_user, api_pass) if api_user and api_pass else None
-        resp = requests.get(endpoint_url, timeout=2, auth=auth)
-        try:
-            content_text = resp.content.decode('utf-8', errors='replace')
-        except Exception:
-            content_text = str(resp.content)
-        try:
-            parsed = json.loads(content_text)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-            content_preview = escape(pretty)
-        except Exception:
-            content_preview = escape(content_text)
-        if resp.ok:
-            ma_api_html = (
-                f'<span class="led green"></span> Music Assistant API reachable ({resp.status_code}) — /ma/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-        else:
-            ma_api_html = (
-                f'<span class="led red"></span> Music Assistant API responded {resp.status_code} for /ma/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#fdf2f2;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-    except RequestException as e:
-        ma_api_html = f'<span class="led red"></span> Error: {str(e)}'
-
-    # Alexa API check
-    alexa_endpoint = request.host_url.rstrip('/') + '/alexa/latest-url'
-    try:
-        auth = (api_user, api_pass) if api_user and api_pass else None
-        resp = requests.get(alexa_endpoint, timeout=2, auth=auth)
-        try:
-            content_text = resp.content.decode('utf-8', errors='replace')
-        except Exception:
-            content_text = str(resp.content)
-        try:
-            parsed = json.loads(content_text)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-            content_preview = escape(pretty)
-        except Exception:
-            content_preview = escape(content_text)
-        if resp.ok:
-            alexa_api_html = (
-                f'<span class="led green"></span> Alexa API reachable ({resp.status_code}) — /alexa/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-        else:
-            alexa_api_html = (
-                f'<span class="led red"></span> Alexa API responded {resp.status_code} for /alexa/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#fdf2f2;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-    except RequestException as e:
-        alexa_api_html = f'<span class="led red"></span> Error: {str(e)}'
+    ma_api_html = _compute_ma_api_html()
+    alexa_api_html = _compute_alexa_api_html()
 
     # Metadata Refresh display (APL updates)
     try:
         from skill import data as skill_data
-        metadata_info = dict(skill_data.info)  # Create a copy
+        metadata_info = dict(skill_data.get_info())  # Create a copy
         pretty_metadata = json.dumps(metadata_info, indent=2, ensure_ascii=False)
         content_preview = escape(pretty_metadata)
         
@@ -213,70 +151,21 @@ def _build_status_json():
     return {'skill_html': skill_html, 'skill_ask_html': skill_ask_html, 'ma_api_html': ma_api_html, 'alexa_api_html': alexa_api_html, 'metadata_html': metadata_html, 'invocations_html': invocations_html, 'created': False}
 
 
+def _store_html(payload, label):
+    if not payload:
+        return f'<span class="led yellow"></span> {label} idle — no stream pushed yet'
+    preview = escape(json.dumps(payload, indent=2, ensure_ascii=False))
+    return f'<span class="led green"></span> {label} ready<pre>{preview}</pre>'
+
+
 def _compute_ma_api_html(api_user=None, api_pass=None):
-    api_user = api_user or get_env_secret('APP_USERNAME')
-    api_pass = api_pass or get_env_secret('APP_PASSWORD')
-    endpoint_url = (request.host_url.rstrip('/') if request else '') + '/ma/latest-url'
-    try:
-        auth = (api_user, api_pass) if api_user and api_pass else None
-        resp = requests.get(endpoint_url, timeout=2, auth=auth)
-        try:
-            content_text = resp.content.decode('utf-8', errors='replace')
-        except Exception:
-            content_text = str(resp.content)
-        try:
-            parsed = json.loads(content_text)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-            content_preview = escape(pretty)
-        except Exception:
-            content_preview = escape(content_text)
-        if resp.ok:
-            return (
-                f'<span class="led green"></span> Music Assistant API reachable ({resp.status_code}) — /ma/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-        else:
-            return (
-                f'<span class="led red"></span> Music Assistant API responded {resp.status_code} for /ma/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#fdf2f2;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-    except RequestException as e:
-        return f'<span class="led red"></span> Error: {str(e)}'
+    import shared_store
+    return _store_html(shared_store.get_ma(), 'Music Assistant API')
 
 
 def _compute_alexa_api_html(api_user=None, api_pass=None):
-    api_user = api_user or get_env_secret('APP_USERNAME')
-    api_pass = api_pass or get_env_secret('APP_PASSWORD')
-    alexa_endpoint = (request.host_url.rstrip('/') if request else '') + '/alexa/latest-url'
-    try:
-        auth = (api_user, api_pass) if api_user and api_pass else None
-        resp = requests.get(alexa_endpoint, timeout=2, auth=auth)
-        try:
-            content_text = resp.content.decode('utf-8', errors='replace')
-        except Exception:
-            content_text = str(resp.content)
-        try:
-            parsed = json.loads(content_text)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-            content_preview = escape(pretty)
-        except Exception:
-            content_preview = escape(content_text)
-        if resp.ok:
-            return (
-                f'<span class="led green"></span> Alexa API reachable ({resp.status_code}) — /alexa/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-        else:
-            return (
-                f'<span class="led red"></span> Alexa API responded {resp.status_code} for /alexa/latest-url'
-                f"<pre class='status-box' tabindex='0' style='white-space:pre-wrap;background:#fdf2f2;padding:8px;border-radius:4px;max-height:200px;overflow:auto;user-select:text'>"
-                f"{content_preview}</pre>"
-            )
-    except RequestException as e:
-        return f'<span class="led red"></span> Error: {str(e)}'
+    import shared_store
+    return _store_html(shared_store.get_alexa(), 'Alexa API')
 
 
 @status_bp.route('/status/ma', methods=['GET'])
@@ -295,7 +184,7 @@ def _compute_metadata_html():
         from skill import data as skill_data
         from skill.util import get_ma_hostname, replace_ip_in_url
         
-        metadata_info = dict(skill_data.info)  # Create a copy
+        metadata_info = dict(skill_data.get_info())  # Create a copy
         
         # Apply MA_HOSTNAME replacement to image URLs for display
         try:

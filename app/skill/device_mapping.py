@@ -16,7 +16,7 @@ import threading
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PATH = "/app/instance_data/device_players.json"
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 def _path():
@@ -60,9 +60,10 @@ def get_player_for_device(device_id):
 
 
 def set_player_for_device(device_id, player_id):
-    mapping = load_mapping()
-    if player_id:
-        mapping[device_id] = player_id
-    else:
-        mapping.pop(device_id, None)
-    return save_mapping(mapping)
+    with _lock:
+        mapping = load_mapping()
+        if player_id:
+            mapping[device_id] = player_id
+        else:
+            mapping.pop(device_id, None)
+        return save_mapping(mapping)

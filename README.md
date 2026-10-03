@@ -132,7 +132,7 @@ Returns a simple status page showing the local API health and an ASK CLI driven 
 
 Alexa's Custom Skill API only exposes an opaque, per-skill device id in each request — there is no way to resolve it to a friendly device name or to a Music Assistant player. This page lets you pair each Echo's device id with the corresponding MA `player_id` so voice controls can be routed to the right player. To pair a new device: trigger any voice command from it (e.g. "next"), reload this page (it lists every device id seen in the current session), then enter the matching MA player_id.
 
-Next, previous and start-over route to MA. Pause, stop and resume also synchronize mapped players when MA control credentials are configured, while retaining Alexa AudioPlayer handling and one-shot suppression of commands echoed back by MA. Basic playback does not require MA control credentials. Persist `DEVICE_MAPPING_PATH` for standalone deployments; the maintained add-on uses `/data/device_players.json`.
+Next, Previous and StartOver route to the mapped MA player. Pause, Stop and Resume retain Alexa-side playback control and also synchronize the mapped MA player when MA control credentials are configured. One-shot echo suppression prevents commands spoken back by the MA `alexa` player provider through `alexapy` from being sent to MA again. Basic playback does not require MA control credentials. Persist `DEVICE_MAPPING_PATH` for standalone deployments; the maintained add-on uses `/data/device_players.json`.
 
 ### TLS and proxy checks
 

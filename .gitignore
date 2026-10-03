@@ -87,3 +87,5 @@ addons/music-assistant-skill/scripts
 
 # ASK CLI data
 ask_data/
+.pytest_cache/
+.ruff_cache/

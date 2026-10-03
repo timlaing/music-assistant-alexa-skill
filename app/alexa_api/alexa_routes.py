@@ -1,33 +1,37 @@
 """Route definitions for alexa_api (alexa_routes)."""
 
-import os
 import json
+import os
 from pathlib import Path
-from flask import jsonify, request
+
 import shared_store
+from flask import jsonify, request
 
 
 def register_routes(bp):
     @bp.route('/push-url', methods=['POST'])
     def push_url():
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'error': 'Expected a JSON object'}), 400
         stream_url = data.get('streamUrl')
-        if not stream_url:
+        if not isinstance(stream_url, str) or not stream_url:
             return jsonify({'error': 'Missing required fields'}), 400
 
-        shared_store._store = {
+        shared_store.set_alexa({
             'streamUrl': stream_url,
             'title': data.get('title'),
             'secondary': data.get('secondary'),
             'imageUrl': data.get('imageUrl'),
-        }
+        })
         return jsonify({'status': 'ok'})
 
     @bp.route('/latest-url', methods=['GET'])
     def latest_url():
-        if not shared_store._store:
+        payload = shared_store.get_alexa()
+        if not payload:
             return jsonify({'error': 'Check skill invocations and skill logs.  If there are no invocations, you have made a configuration error'}), 404
-        return jsonify(shared_store._store)
+        return jsonify(payload)
     
     @bp.route('/intents', methods=['GET'])
     def intents():
