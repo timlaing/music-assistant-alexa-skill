@@ -28,6 +28,9 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_APL", "false")
     monkeypatch.delenv("MA_API_URL", raising=False)
     monkeypatch.delenv("MA_API_TOKEN", raising=False)
+    monkeypatch.setenv("SKILL_DEPLOYMENT_PATH", str(tmp_path / "skill-deployment.json"))
+    from app import app
+    app.extensions.pop("skill_deployment", None)
     data._request_info.set(None)
     yield
     data._request_info.set(None)

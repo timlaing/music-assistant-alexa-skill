@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import Blueprint, Response, current_app, jsonify, request
 from markupsafe import escape
 from setup_helpers import has_functional_cli_config
+from skill_deployment import manager, settings
 
 status_bp = Blueprint('status_bp', __name__)
 
@@ -19,7 +20,18 @@ def _build_status_json():
     skill_ask_html = '<span class="muted">ASK CLI check unavailable</span>'
     try:
         skill_host = os.environ.get('SKILL_HOSTNAME', '').strip()
-        if shutil.which('ask') and skill_host:
+        deployment = manager().public_status()
+        if deployment.get('connected'):
+            instance = manager()
+            current = instance.state.get('deployed_settings')
+            matches = current == settings() if current else False
+            ready = deployment.get('phase') == 'complete' and matches
+            color = 'green' if ready else 'yellow'
+            note = 'Amazon verified deployment' if ready else (deployment.get('message') or 'Select your personal skill')
+            skill_ask_html = f'<span class="led {color}"></span> {escape(note)} <a href="/setup">Open Setup</a>'
+            if ready:
+                skill_ask_html += f' (verified at {escape(str(deployment.get("verified_at")))}, saved ID: {escape(deployment.get("skill_id"))})'
+        elif shutil.which('ask') and skill_host:
             if not has_functional_cli_config(profile='default'):
                 skill_ask_html = '<span class="led yellow"></span> ASK CLI credentials are not configured for profile default'
                 try:

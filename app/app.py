@@ -2,33 +2,21 @@ import base64
 import json
 import logging
 import os
-import pty
 import re
-import subprocess
-import threading
 import time
-from collections import deque
-from pathlib import Path
 
 import alexa_api as alexa_api
 import music_assistant_api as ma_api
 import swagger_ui as maa_swagger
+from endpoints import devices_bp, invocations_bp, simulator_bp, status_bp
 from env_secrets import get_env_secret
 from flask import Flask, Response, g, jsonify, request
 from flask_ask_sdk.skill_adapter import SkillAdapter
-from setup_helpers import (
-    ask_home_from_credentials_dir,
-    enqueue_setup_log,
-    has_functional_cli_config,
-    prepare_cli_config_for_configure,
-    sanitize_log,
-)
-from setup_helpers import read_master_loop as _helpers_read_master_loop
-from setup_helpers import setup_reader_thread as _helpers_setup_reader_thread
-from signal_helpers import register_signal_handlers
+from setup_helpers import ask_home_from_credentials_dir
 from skill.lambda_function import (
     sb,  # sb is the SkillBuilder from skill/lambda_function.py
 )
+from skill_deployment import register_setup
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -67,6 +55,17 @@ _loaded_addon_options = _load_addon_options_into_env()
 # NoRegionError during imports that create AWS clients at module import time.
 os.environ.setdefault('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 os.environ.setdefault('AWS_DEFAULT_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+
+class _CallbackLogFilter(logging.Filter):
+    """Keep OAuth query strings out of Werkzeug logs even with QUIET_HTTP=0."""
+    def filter(self, record):
+        if isinstance(record.args, tuple):
+            record.args = tuple(re.sub(r'(/setup/oauth/callback)\?[^\s]*', r'\1', item)
+                                if isinstance(item, str) else item for item in record.args)
+        return True
+
+
+logging.getLogger('werkzeug').addFilter(_CallbackLogFilter())
 
 app = Flask(__name__)
 if _loaded_addon_options:
@@ -251,56 +250,20 @@ def _record_incoming_intent(response):
             pass
     return response
 
-# Setup process state (separate from status page)
-_setup_proc = None
-_setup_logs = deque(maxlen=500)
-_setup_lock = threading.Lock()
-
-# Centralized intent logs (all incoming intents)
+# Deployment jobs share this single-worker application with playback requests.
+register_setup(app)
 app.config['INTENT_LOGS'] = []
 app.config['INTENT_LOGS_MAXLEN'] = 500
 
-
-# Register endpoint blueprints moved out of app.py (status, invocations, simulator)
-try:
-    from endpoints import devices_bp, invocations_bp, simulator_bp, status_bp
-    app.register_blueprint(status_bp)
-    app.register_blueprint(invocations_bp)
-    app.register_blueprint(simulator_bp)
-    app.register_blueprint(devices_bp)
-except Exception:
-    app.logger.exception('Could not register endpoints blueprints (may be running in partial state)')
-
-# Auth (ask configure --no-browser) process state
-_setup_auth_proc = None
-_setup_auth_lock = threading.Lock()
-_pending_endpoint = None
-_setup_auth_master_fd = None
-_PENDING_FILE = Path(os.environ.get('TMPDIR', '/tmp')) / 'ask_pending_endpoint.txt'
-
-
-def _enqueue_setup_log(line: str):
-    # Thin wrapper to keep module-level _setup_logs while delegating logic
-    enqueue_setup_log(_setup_logs, line)
+for blueprint in (status_bp, invocations_bp, simulator_bp, devices_bp):
+    app.register_blueprint(blueprint)
 
 
 def shutdown_setup_children(signum):
-    """Called by the server's worker-exit hook to reap isolated ASK processes."""
-    from signal_helpers import _shutdown_children
-    _shutdown_children(lambda: {'_setup_auth_proc': _setup_auth_proc,
-        '_setup_proc': _setup_proc, 'master_fd': _setup_auth_master_fd}, signum, None)
-
-
-# Gunicorn owns worker signals. Register standalone handlers only in __main__.
-
-def _setup_reader_thread(proc, prefix=None):
-    # Delegate implementation to helpers while binding enqueue function
-    return _helpers_setup_reader_thread(proc, _enqueue_setup_log, prefix=prefix)
-
-
-def _read_master_loop(master_fd, prefix=None):
-    # Delegate implementation to helpers while binding enqueue function
-    return _helpers_read_master_loop(master_fd, _enqueue_setup_log, prefix=prefix)
+    """Called by Gunicorn before the worker exits."""
+    manager = app.extensions.get('skill_deployment')
+    if manager:
+        manager.stop()
 
 
 @app.route("/", methods=["POST"])
@@ -348,402 +311,6 @@ def docs():
     return maa_swagger.render()
 
 
-@app.route('/setup', methods=['GET'])
-def setup_ui():
-    # Embed current logs and detected auth URL so the page shows state immediately
-    initial_logs = list(_setup_logs)
-    auth_url = None
-    try:
-        for ln in initial_logs:
-            try:
-                m = re.search(r"(https?://[^\s'\"]+)", ln)
-                if m:
-                    auth_url = m.group(1)
-                    break
-            except Exception:
-                try:
-                    if isinstance(ln, str) and ln.strip().startswith('['):
-                        arr = json.loads(ln)
-                        if isinstance(arr, list):
-                            for item in arr:
-                                mm = re.search(r"(https?://[^\s'\"]+)", str(item))
-                                if mm:
-                                    auth_url = mm.group(1)
-                                    break
-                            if auth_url:
-                                break
-                except Exception:
-                    pass
-                continue
-    except Exception:
-        auth_url = None
-
-    # Suppress auth URL when functional credentials already exist.
-    try:
-        if has_functional_cli_config(profile='default'):
-            app.logger.info('Functional ASK credentials found; suppressing auth UI')
-            auth_url = None
-    except Exception:
-        pass
-
-    # If the client requested JSON (polling), return logs + auth_url + active flag
-    want_json = request.args.get('format') == 'json' or 'application/json' in (request.headers.get('Accept') or '')
-    if want_json:
-        active = False
-        try:
-            active = (_setup_proc and _setup_proc.poll() is None) or (_setup_auth_proc and _setup_auth_proc.poll() is None)
-        except Exception:
-            active = False
-        # Return sanitized logs for the UI polling loop
-        try:
-            safe_logs = [sanitize_log(ln) for ln in list(_setup_logs)]
-        except Exception:
-            safe_logs = list(_setup_logs)
-        # Detect whether the setup process has completed creation (Done. Skill ID)
-        created = False
-        try:
-            for ln in safe_logs:
-                if re.search(r'Done\.\s*Skill ID', str(ln), re.IGNORECASE):
-                    created = True
-                    break
-        except Exception:
-            created = False
-        return jsonify({'logs': safe_logs, 'auth_url': auth_url, 'active': bool(active), 'created': bool(created)})
-
-    # Load setup HTML template from disk to keep this file readable
-    try:
-        tpl_path = Path(__file__).parent / 'templates' / 'setup.html'
-        page = tpl_path.read_text()
-    except Exception:
-        page = None
-
-    # If valid ASK CLI credentials are present, show a notice on the setup page.
-    try:
-        creds_html = ''
-        if has_functional_cli_config(profile='default'):
-            creds_html = '<div style="margin-top:8px;color:green;font-weight:600">Persistent ASK credentials detected — setup will use existing credentials.</div>'
-    except Exception:
-        creds_html = ''
-
-    # Compute initial created flag for first render (Done. Skill ID)
-    try:
-        initial_created = False
-        for ln in initial_logs:
-            try:
-                if re.search(r'Done\.\s*Skill ID', str(ln), re.IGNORECASE):
-                    initial_created = True
-                    break
-            except Exception:
-                continue
-    except Exception:
-        initial_created = False
-
-    if page:
-        page = page.replace('__INITIAL_LOGS__', json.dumps(initial_logs))
-        page = page.replace('__INITIAL_AUTH__', json.dumps(auth_url))
-        page = page.replace('__INITIAL_CREATED__', json.dumps(bool(initial_created)))
-        page = page.replace('__CREDENTIALS_HTML__', creds_html)
-        return Response(page, mimetype='text/html')
-
-    # Fallback: simple inline page if template is missing
-    page = """<!doctype html><html><head><meta charset='utf-8'><title>Skill Setup</title></head><body><h1>Skill Setup</h1><pre>%s</pre></body></html>""" % json.dumps(initial_logs)
-    return Response(page, mimetype='text/html')
-
-
-@app.route('/setup/logs/download', methods=['GET'])
-def setup_logs_download():
-    try:
-        content = '\n'.join(sanitize_log(line) for line in list(_setup_logs))
-    except Exception:
-        content = '\n'.join(str(line) for line in list(_setup_logs))
-    resp = Response(content, mimetype='text/plain')
-    resp.headers['Content-Disposition'] = 'attachment; filename="setup_logs.txt"'
-    return resp
-
-
-@app.route('/setup/start', methods=['POST'])
-def setup_start():
-    global _setup_proc
-    # Endpoint is provided via environment (SKILL_HOSTNAME) in container deployments
-    data = request.get_json(silent=True) or {}
-    endpoint = os.environ.get('SKILL_HOSTNAME', '').strip()
-    # Allow override for local testing if provided in request body (kept for compatibility)
-    if not endpoint:
-        endpoint = data.get('endpoint')
-    # Fixed options (user-not-editable). `LOCALE` may be set in the environment.
-    profile = 'default'
-    locale = os.environ.get('LOCALE', 'en-US')
-    stage = 'development'
-    upload_models = True
-
-    # Immediate trace so UI shows activity when button is clicked
-    try:
-        _enqueue_setup_log(f"Received /setup/start request; resolved endpoint={endpoint!r}")
-    except Exception:
-        _setup_logs.append('Received /setup/start request')
-
-    app.logger.info('setup_start called; resolved endpoint=%s', endpoint)
-
-    if not endpoint:
-        _setup_logs.append('Error: SKILL_HOSTNAME environment variable is not set and no endpoint provided')
-        return jsonify({'error':'SKILL_HOSTNAME not set; set SKILL_HOSTNAME in container environment'}), 400
-
-    # Normalize endpoint: allow ARN, full URLs, or hostnames (prefix https://)
-    def _normalize(ep: str):
-        ep = ep.strip()
-        if ep.startswith('arn:'):
-            return ep
-        if ep.startswith('http://') or ep.startswith('https://'):
-            return ep
-        return 'https://' + ep
-
-    endpoint = _normalize(endpoint)
-
-    with _setup_lock:
-        # If a setup script is already running, report it
-        if _setup_proc and _setup_proc.poll() is None:
-            return jsonify({'status':'running'})
-
-        # Ensure ask CLI exists
-        try:
-            which = subprocess.run(['which','ask'], capture_output=True, text=True)
-            if which.returncode != 0:
-                _setup_logs.append('Error: ask CLI not installed')
-                app.logger.error('ask CLI not installed')
-                return jsonify({'error':'ask CLI not installed'}), 500
-        except Exception as e:
-            _setup_logs.append(f'Error checking ask CLI: {e}')
-            app.logger.exception('check failed')
-            return jsonify({'error':'check failed'}), 500
-
-        # If ASK CLI is not configured with functional credentials, remove any
-        # non-functional cli_config and start the no-browser auth flow.
-        if not has_functional_cli_config(profile=profile):
-            ok, prep_msg = prepare_cli_config_for_configure(profile=profile)
-            if prep_msg:
-                _enqueue_setup_log(prep_msg)
-            if not ok:
-                app.logger.error('Unable to prepare ASK cli_config for auth: %s', prep_msg)
-                return jsonify({'error': 'failed preparing ASK cli_config for auth'}), 500
-            with _setup_auth_lock:
-                global _setup_auth_proc
-                if _setup_auth_proc and _setup_auth_proc.poll() is None:
-                    return jsonify({'status':'auth_started'})
-                try:
-                    app.logger.info('Starting ASK CLI no-browser configure')
-                    _setup_logs.append('Starting ASK CLI no-browser configure. Follow the auth URL printed in logs.')
-                    # Spawn ask configure inside a pseudo-tty so it prints the auth URL.
-                    master_fd, slave_fd = pty.openpty()
-                    auth_cmd = ['ask','configure','--no-browser']
-                    _setup_auth_proc = subprocess.Popen(auth_cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True, start_new_session=True)
-                    os.close(slave_fd)
-                    # remember the endpoint requested so we can start creation after auth
-                    global _pending_endpoint, _setup_auth_master_fd
-                    _pending_endpoint = endpoint
-                    try:
-                        _PENDING_FILE.write_text(endpoint)
-                    except Exception:
-                        pass
-                    _setup_auth_master_fd = master_fd
-                    t = threading.Thread(target=_read_master_loop, args=(master_fd,'ASK'), daemon=True)
-                    t.start()
-                    # Try to capture any immediate output that may have been written
-                    try:
-                        time.sleep(0.1)
-                        try:
-                            initial = os.read(master_fd, 4096)
-                        except OSError:
-                            initial = b''
-                        if initial:
-                            try:
-                                s = initial.decode('utf-8', errors='replace')
-                            except Exception:
-                                s = str(initial)
-                            for ln in s.splitlines():
-                                _enqueue_setup_log(f'[ASK] {ln}')
-                    except Exception:
-                        pass
-                    app.logger.info('ask configure started, pid=%s master_fd=%s', getattr(_setup_auth_proc, 'pid', None), master_fd)
-                    return jsonify({'status':'auth_started'})
-                except Exception as e:
-                    _setup_logs.append(f'Failed to start auth: {e}')
-                    app.logger.exception('failed starting ask configure')
-                    return jsonify({'error':'failed starting auth'}), 500
-
-        # ASK already configured: start the create script directly
-        try:
-            # script is installed into the container at /app/scripts by the Dockerfile
-            # but when running locally the repository path should be used.
-            candidate = '/app/scripts/ask_create_skill.sh'
-            if os.path.exists(candidate):
-                script_path = candidate
-            else:
-                # repo-relative path
-                script_path = str(Path(__file__).parent.parent / 'scripts' / 'ask_create_skill.sh')
-            app.logger.info('Launching setup script: %s', script_path)
-            _setup_logs.append(f'Starting setup: endpoint={endpoint} profile={profile} locale={locale} stage={stage}')
-            # run the top-level shell script via bash so it behaves like the original shell invocation
-            cmd = ['/bin/bash', script_path, '--endpoint', endpoint, '--profile', profile, '--locale', locale, '--stage', stage]
-            if not upload_models:
-                cmd.append('--no-upload-models')
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
-            _setup_proc = proc
-            t = threading.Thread(target=_setup_reader_thread, args=(proc, 'CREATE'), daemon=True)
-            t.start()
-            app.logger.info('setup script started, pid=%s', getattr(proc, 'pid', None))
-            return jsonify({'status': 'started'})
-        except Exception as e:
-            _setup_logs.append(f'Failed to start setup script: {e}')
-            app.logger.exception('failed starting setup script')
-            return jsonify({'error': 'failed starting setup script'}), 500
-
-
-
-
-
-@app.route('/setup/code', methods=['POST'])
-def setup_code():
-    """Accept the auth code from the user and forward it to the running `ask configure --no-browser` process.
-    After auth completes successfully, start the create-skill script.
-    """
-    global _setup_auth_proc, _setup_proc
-    data = request.get_json(silent=True) or {}
-    code = data.get('code')
-    if not code:
-        return jsonify({'error':'missing code'}), 400
-
-    with _setup_auth_lock:
-        if not _setup_auth_proc or _setup_auth_proc.poll() is not None:
-            return jsonify({'error':'auth not running'}), 400
-        try:
-            # Write the code into the pty master so the ask process receives it
-            global _setup_auth_master_fd
-            if _setup_auth_master_fd is None:
-                raise RuntimeError('auth master fd not available')
-            os.write(_setup_auth_master_fd, (code + '\n').encode('utf-8'))
-            # Attempt to auto-respond 'Y' to the AWS linking prompt that follows
-            # the authorization code exchange. Send a short delay then write 'Y\n'
-            # if the auth process is still running and the master fd is available.
-            try:
-                time.sleep(0.2)
-                if _setup_auth_master_fd is not None and _setup_auth_proc and _setup_auth_proc.poll() is None:
-                    try:
-                        os.write(_setup_auth_master_fd, b'n\n')
-                        _enqueue_setup_log('[ASK] Auto-responded N to AWS linking prompt')
-                    except Exception as _e:
-                        _enqueue_setup_log(f'[ASK] Auto-respond N failed: {_e}')
-            except Exception:
-                pass
-        except Exception as e:
-            _setup_logs.append(f'Failed to submit code: {e}')
-            return jsonify({'error': str(e)}), 500
-
-    # Wait for auth process to exit (short timeout)
-    timeout = 120
-    waited = 0
-    while waited < timeout:
-        if _setup_auth_proc.poll() is not None:
-            break
-        time.sleep(1)
-        waited += 1
-
-    rc = _setup_auth_proc.poll()
-    if rc is None:
-        _setup_logs.append('Auth process did not complete within timeout')
-        return jsonify({'error':'auth timeout'}), 500
-    if rc != 0:
-        _setup_logs.append(f'Auth process exited with code {rc}')
-        return jsonify({'error':f'auth failed (rc {rc})'}), 500
-
-    if not has_functional_cli_config(profile='default'):
-        _setup_logs.append('Auth completed but cli_config is still non-functional; run setup again and verify ASK login')
-        return jsonify({'error': 'auth completed but cli_config is non-functional'}), 500
-
-    _setup_logs.append('Auth completed successfully; starting skill creation')
-
-    # Now start the create-skill script (use fixed options)
-    # Use the pending endpoint saved when auth was started
-    global _pending_endpoint
-    endpoint_val = _pending_endpoint
-    if not endpoint_val:
-        # try to recover from tmp file in case the app restarted or state was lost
-        try:
-            if _PENDING_FILE.exists():
-                endpoint_val = _PENDING_FILE.read_text().strip()
-                if endpoint_val:
-                    _enqueue_setup_log(f'Recovered endpoint from {_PENDING_FILE}')
-        except Exception:
-            pass
-    if not endpoint_val:
-        _setup_logs.append('Error: missing endpoint context; call /setup/start first')
-        return jsonify({'error':'missing endpoint context; call /setup/start first'}), 400
-
-    # Start the create script now
-    try:
-        profile = 'default'
-        locale = os.environ.get('LOCALE', 'en-US')
-        stage = 'development'
-        # prefer container-installed path when present, otherwise use repo-relative scripts/
-        candidate = '/app/scripts/ask_create_skill.sh'
-        if os.path.exists(candidate):
-            script_path = candidate
-        else:
-            script_path = str(Path(__file__).parent.parent / 'scripts' / 'ask_create_skill.sh')
-        # run the shell script via bash (matching the shell behaviour)
-        cmd = ['/bin/bash', script_path, '--endpoint', endpoint_val, '--profile', profile, '--locale', locale, '--stage', stage]
-        _enqueue_setup_log(f'Starting create script: {cmd}')
-        try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
-        except Exception as e:
-            _enqueue_setup_log(f'Failed to spawn create script: {e}')
-            raise
-        _setup_proc = proc
-        _enqueue_setup_log(f'Create script pid={getattr(proc, "pid", None)}')
-        t = threading.Thread(target=_setup_reader_thread, args=(proc,'CREATE'), daemon=True)
-        t.start()
-        # Quick check: if the process exits immediately, capture and log its output and rc
-        time.sleep(0.25)
-        try:
-            rc = proc.poll()
-            if rc is not None:
-                _enqueue_setup_log(f'Create script exited immediately with rc={rc}')
-                try:
-                    if proc.stdout:
-                        out = proc.stdout.read()
-                        if out:
-                            for ln in out.splitlines():
-                                _enqueue_setup_log(f'[CREATE-OUT] {ln}')
-                except Exception:
-                    pass
-        except Exception as e:
-            _enqueue_setup_log(f'Error while checking create script immediate status: {e}')
-        # clear pending endpoint after starting
-        _pending_endpoint = None
-        try:
-            if _PENDING_FILE.exists():
-                _PENDING_FILE.unlink()
-        except Exception:
-            pass
-        return jsonify({'status':'started'})
-    except Exception as e:
-        _setup_logs.append(f'Failed to start setup script after auth: {e}')
-        return jsonify({'error':'failed to start setup script after auth'}), 500
-
-
-@app.route('/setup/stop', methods=['POST'])
-def setup_stop():
-    global _setup_proc
-    with _setup_lock:
-        if not _setup_proc:
-            return jsonify({'status':'no-process'})
-        try:
-            _setup_proc.terminate()
-        except Exception:
-            pass
-        _setup_proc = None
-    return jsonify({'status':'stopped'})
-
-
 @app.before_request
 def _request_playback_snapshot():
     from skill import data
@@ -756,7 +323,6 @@ def health():
 
 
 if __name__ == "__main__":
-    register_signal_handlers(lambda: {'_setup_auth_proc': _setup_auth_proc, '_setup_proc': _setup_proc, 'master_fd': _setup_auth_master_fd})
     port = int(os.environ.get('PORT', '5000'))
     # Respect FLASK_DEBUG (1 enables debug mode) and FLASK_RELOADER (1 enables reloader)
     flask_debug = os.environ.get('FLASK_DEBUG', '0') == '1'

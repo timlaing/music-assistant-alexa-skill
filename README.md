@@ -1,5 +1,5 @@
 # Music Assistant Alexa Skill Prototype
-This project provides the Alexa skill service for Music Assistant, with a Flask API and guided ASK CLI setup.
+This project provides the Alexa skill service for Music Assistant, with a Flask API and a personal-skill deployment wizard.
 
 For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api). This skill repository contains the application; the companion repository packages and configures it for Home Assistant.
 
@@ -15,13 +15,13 @@ For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add
 
 ### 1. Using Docker Compose (standalone)
 
-For a standalone host, run the project with Docker Compose. This will build and start the Alexa skill container with required environment variables, secrets, and an optional persistent ASK credential volume.
+For a standalone host, run the project with Docker Compose. This will build and start the Alexa skill container with required environment variables, secrets, and a persistent private deployment volume.
 
 #### Steps:
 
 1. Ensure `docker-compose.yml` is present and edit environment variables as needed (e.g., `SKILL_HOSTNAME`, `MA_HOSTNAME`, `PORT`). See the [Environment Variables](#environment-variables) section below for details on each variable.
-2. (Optional) Create `./secrets/app_username.txt` and `./secrets/app_password.txt` to provide `APP_USERNAME` and `APP_PASSWORD` for basic authentication of the web UI and API.
-3. (Optional) To persist ASK CLI credentials across container restarts, mount a volume to `./<host directory>:/root/.ask`, `./ask_data` is used by default.
+2. Create `./secrets/app_username.txt` and `./secrets/app_password.txt` to provide `APP_USERNAME` and `APP_PASSWORD` for basic authentication of the web UI and API.
+3. Persist `./deployment_data:/data` for private deployment credentials/progress. Register Login with Amazon and configure the client ID, secret and explicit callback as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 4. Start the service:
 
     ```sh
@@ -29,12 +29,9 @@ For a standalone host, run the project with Docker Compose. This will build and 
     ```
 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured).
-6. In your browser, open the setup UI at `http://localhost:5000/setup`. The setup page will:
-   - detect existing persistent ASK credentials (if present) and skip the browser-based auth flow
-   - guide you through the ASK CLI authorization flow if credentials are not present
-   - run the automated skill creation/update, interaction model upload, model build polling, and testing enablement.
+6. Open `/setup` on the public HTTPS callback hostname, authenticate, connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. The browser returns automatically from Amazon. See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
-Note: manual creation of the skill in the Alexa Developer Console is no longer required — the `/setup` flow automates creation and enablement when possible.
+The new wizard is a **1.3.0-beta.1 candidate**, with live Amazon/Echo acceptance pending. Stable **1.2.0** does not contain it. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this candidate rather than an upstream image.
 
 ### 2. Home Assistant add-on
 
@@ -73,7 +70,7 @@ Stable **1.2.0** includes merged [add-on PR #28](https://github.com/timlaing/mus
 
 - Optional `ma_api_url` (normally `http://<MA-LAN-IP>:8095`) and `ma_api_token` for mapped voice controls. These control API credentials are separate from the public stream URL and are unnecessary for basic playback.
 - `/devices` maps each opaque Alexa device ID to the actual MA `player_id`, rather than its display name. Next, previous and start-over route to MA; pause, stop and resume also synchronize mapped players, with one-shot suppression of commands echoed back by MA.
-- Device mappings persist at `/data/device_players.json`, and ASK credentials at `/data/.ask`.
+- Device mappings persist at `/data/device_players.json`, deployment credentials/progress at `/data/skill-deployment.json`, and legacy ASK credentials at `/data/.ask`.
 - `enable_apl` defaults to `false`; enable it for Echo Show artwork and controls. `skip_url_validation` defaults to `false`; skipping the local check does not remove Alexa's need for a reachable HTTPS stream.
 - Internal service port **5000** remains fixed when changing the host port mapping. `/health` provides unauthenticated process liveness; status pages and APIs use the configured credentials.
 
@@ -81,35 +78,44 @@ Version 1.2.0 passed 46 combined application/add-on tests and HTTP, concurrency 
 
 ### 3. Using `docker run`
 
-The following example runs the **upstream standalone image**. It does not install the maintained Home Assistant add-on or guarantee inclusion of this fork's stability fixes. Replace the image tag with the release or digest you intend to run.
+Build this checkout to include the candidate wizard. This standalone Dockerfile has not been validated by the maintained add-on container checks. Set the Login with Amazon options and persist `/data` as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
 ```sh
+docker build -t music-assistant-skill:local .
 docker run --rm \
     -p 5000:5000 \
-    -e SKILL_HOSTNAME=alexa.example.com \
+    -e SKILL_HOSTNAME=https://alexa.example.com/ \
     -e MA_HOSTNAME=ma.example.com \
+    -e APP_USERNAME=/run/secrets/APP_USERNAME \
+    -e APP_PASSWORD=/run/secrets/APP_PASSWORD \
+    -e LWA_CLIENT_ID=YOUR_CLIENT_ID \
+    -e LWA_CLIENT_SECRET=/run/secrets/LWA_CLIENT_SECRET \
+    -e LWA_REDIRECT_URI=https://alexa.example.com/setup/oauth/callback \
+    -e SKILL_DEPLOYMENT_PATH=/data/skill-deployment.json \
     -e PORT=5000 \
     -e LOCALE=en-US \
     -e AWS_DEFAULT_REGION=us-east-1 \
     -v "$(pwd)/ask_data:/root/.ask" \
+    -v "$(pwd)/deployment_data:/data" \
+    -v "$(pwd)/secrets/lwa_client_secret.txt:/run/secrets/LWA_CLIENT_SECRET:ro" \
     -v "$(pwd)/secrets/app_username.txt:/run/secrets/APP_USERNAME:ro" \
     -v "$(pwd)/secrets/app_password.txt:/run/secrets/APP_PASSWORD:ro" \
-    ghcr.io/alams154/music-assistant-alexa-skill-prototype:latest
+    music-assistant-skill:local
 ```
 
 Notes:
 - Adjust `SKILL_HOSTNAME` to the public HTTPS host you'll use in the skill manifest.
-- The `ask_data` volume persists ASK CLI credentials so the setup flow can reuse them.
+- The `ask_data` volume preserves legacy CLI credentials. The new wizard uses its own OAuth client and requires a persistent `/data` volume.
 - Mounting files into `/run/secrets` is a simple way to provide secrets for local testing; for production use Docker secrets or your platform's secret manager.
 
 ### Environment Variables
 
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
-| `SKILL_HOSTNAME` | Yes | — | Must be a publicly reachable HTTPS host (example: `alexa.example.com`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
+| `SKILL_HOSTNAME` | Yes | — | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
 | `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its separate `ma_hostname` option. |
-| `APP_USERNAME` | No | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
-| `APP_PASSWORD` | No | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
+| `APP_USERNAME` | Yes for setup | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
+| `APP_PASSWORD` | Yes for setup | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
 | `PORT` | No | `5000` | Port the app lives at. Ensure the `ports` mapping in [docker-compose.yml](docker-compose.yml) matches this value. |
 | `DEBUG_PORT` | No | `5678` | Remote debug port (if you enable remote debugging). |
 | `LOCALE` | *No | `en-US` | ***REQUIRED** if your device is not configured for en-US. Skill locale used by the setup and interaction model operations (examples: `en-US`, `en-GB`, `de-DE`). |
@@ -123,7 +129,7 @@ Notes:
 **Secrets and persistence**
 
 - The example [docker-compose.yml](docker-compose.yml) demonstrates using Docker secrets for `APP_USERNAME` and `APP_PASSWORD` (files in `./secrets`). When using Docker secrets, the container environment will contain the path to the secret file (for example `/run/secrets/APP_PASSWORD`) and the service reads the file content.
-- To persist ASK CLI credentials between container runs, mount a host directory as `/root/.ask` (the example uses `./ask_data:/root/.ask`). This allows the setup flow to reuse existing ASK credentials and skip the browser auth flow when present.
+- Persist `/data` for the new setup wizard. Legacy ASK credentials in `/root/.ask` belong to another OAuth client and do not skip the new browser connection.
 
 **Notes on values**
 
@@ -134,7 +140,7 @@ Notes:
 ### Status Page
 `/status`
 
-Returns a simple status page showing the local API health and an ASK CLI driven check for whether the Music Assistant skill exists, whether its endpoint matches `SKILL_HOSTNAME`, and whether testing is enabled. When the check is not green, the status page provides a quick link to `/setup`.
+Returns local API health and the saved personal-skill deployment result, including verification time and selected ID. With no direct API connection, a legacy ASK CLI check is still available. The saved result is not a live Amazon status check. Open `/setup` to review and deploy again.
 
 ### Device Mapping
 `/devices`
@@ -154,3 +160,5 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for known supported devices, languages,
 See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
 See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclosures.
+
+For `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, `LWA_REDIRECT_URI`, `SKILL_CERTIFICATE_TYPE` and `SKILL_DEPLOYMENT_PATH`, see the [personal skill deployment options and guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
