@@ -56,7 +56,7 @@ The maintained add-on is a separate implementation from the development wrapper 
 
 Expose NPM's HTTPS port **443** to the internet; keep add-on **5000** and Music Assistant stream **8097** internal. Alexa needs public HTTPS access to both the skill and the audio, including on APL devices. Direct internet forwarding of the application ports is unnecessary. Use publicly trusted TLS certificates, and allow signed Alexa POST requests through the public skill proxy without an additional NPM login or access list.
 
-Separate proxy hosts simplify configuration. A skill location such as `/ma-alexa-skill/` must strip that prefix when proxying to the add-on root. Stream locations preserve their paths. The 1.2.0 candidate supports a public stream URL path prefix without duplicating it during URL rewriting.
+Separate proxy hosts simplify configuration. A skill location such as `/ma-alexa-skill/` must strip that prefix when proxying to the add-on root. Stream locations preserve their paths. Version 1.2.0 supports a public stream URL path prefix without duplicating it during URL rewriting.
 
 If Music Assistant connects directly to the add-on LAN API URL above, no NPM locations are needed for `/alexa/` or `/ma/`. If it connects through a shared public hostname instead, set its Alexa provider **API URL** to that hostname's base URL (for example, `https://music.example.com`, without `/ma` or `/ma-alexa-skill`) and add these NPM custom locations:
 
@@ -67,9 +67,9 @@ If Music Assistant connects directly to the add-on LAN API URL above, no NPM loc
 
 Use the add-on's API username and password in Music Assistant's Basic Auth fields; avoid an additional NPM authentication layer on these API locations. These locations reach the add-on API, not the MA stream server on 8097 or the optional control API on 8095. A dedicated proxy host forwarding all paths to the add-on on 5000 already covers them and needs no custom API locations.
 
-#### 1.2.0 candidate features and validation
+#### 1.2.0 features and validation
 
-The experimental **1.2.0-beta.1** update is tracked in [add-on PR #28](https://github.com/timlaing/music-assistant-alexa-api/pull/28), with application fixes in [skill PR #1](https://github.com/timlaing/music-assistant-alexa-skill/pull/1). These features require that candidate; they are not a claim that it has already been released:
+Stable **1.2.0** includes merged [add-on PR #28](https://github.com/timlaing/music-assistant-alexa-api/pull/28), application fixes in [skill PR #1](https://github.com/timlaing/music-assistant-alexa-skill/pull/1) and the [publication repair](https://github.com/timlaing/music-assistant-alexa-api/pull/29):
 
 - Optional `ma_api_url` (normally `http://<MA-LAN-IP>:8095`) and `ma_api_token` for mapped voice controls. These control API credentials are separate from the public stream URL and are unnecessary for basic playback.
 - `/devices` maps each opaque Alexa device ID to the actual MA `player_id`, rather than its display name. Next, previous and start-over route to MA; pause, stop and resume also synchronize mapped players, with one-shot suppression of commands echoed back by MA.
@@ -77,7 +77,7 @@ The experimental **1.2.0-beta.1** update is tracked in [add-on PR #28](https://g
 - `enable_apl` defaults to `false`; enable it for Echo Show artwork and controls. `skip_url_validation` defaults to `false`; skipping the local check does not remove Alexa's need for a reachable HTTPS stream.
 - Internal service port **5000** remains fixed when changing the host port mapping. `/health` provides unauthenticated process liveness; status pages and APIs use the configured credentials.
 
-The candidate passed 46 combined application/add-on tests and HTTP, concurrency and shutdown checks in ARM64 and AMD64 add-on containers, plus CI lint, CodeQL and image builds. Live Home Assistant/Echo/NPM acceptance is still required before stable release; the standalone Docker image and bundled development wrapper were not validated by those checks.
+Version 1.2.0 passed 46 combined application/add-on tests and HTTP, concurrency and shutdown checks in ARM64 and AMD64 add-on containers, plus CI lint, CodeQL and image builds. On 3 October 2026 the maintainer confirmed playback on a real Alexa device with NPM. This covers the tested installation, not every device or optional feature; the standalone Docker image and bundled development wrapper were not validated by those checks.
 
 ### 3. Using `docker run`
 
@@ -107,7 +107,7 @@ Notes:
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
 | `SKILL_HOSTNAME` | Yes | — | Must be a publicly reachable HTTPS host (example: `alexa.example.com`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
-| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on candidate also accepts a full HTTPS base URL in its separate `ma_hostname` option. |
+| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its separate `ma_hostname` option. |
 | `APP_USERNAME` | No | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
 | `APP_PASSWORD` | No | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
 | `PORT` | No | `5000` | Port the app lives at. Ensure the `ports` mapping in [docker-compose.yml](docker-compose.yml) matches this value. |

@@ -68,7 +68,7 @@ The easiest way to run the project is with Docker Compose. This will build and s
 ### Status Page
 `/status`
 
-Returns the skill setup and API status. In the maintained candidate, an idle state before the first stream push is normal. Status pages require the configured API credentials; `/health` is an unauthenticated process-liveness endpoint.
+Returns the skill setup and API status. In maintained add-on 1.2.0, an idle state before the first stream push is normal. Status pages require the configured API credentials; `/health` is an unauthenticated process-liveness endpoint.
 
 
 ---
