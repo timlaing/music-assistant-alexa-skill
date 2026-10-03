@@ -1,9 +1,11 @@
 # Music Assistant Alexa Skill Prototype
 This project is an Alexa skill prototype for controlling the Music Assistant server. It provides a Flask-based web service, Alexa skill handler, and API, with support for Docker deployment.
 
+For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api) and the [README deployment guide](README.md#2-home-assistant-add-on). The steps below describe standalone Docker deployment and manual Alexa Console setup. The maintained add-on also provides guided setup through `/setup`. Screenshots illustrate the older Console flow; follow the current interaction-model import and interface instructions below.
+
 ## How to Run
 
-### 1. Using Docker (Recommended)
+### 1. Using Docker (standalone)
 
 The easiest way to run the project is with Docker Compose. This will build and start the Alexa skill container with all required environment variables and secrets.
 
@@ -49,7 +51,7 @@ The easiest way to run the project is with Docker Compose. This will build and s
 
         ![Step 7.6 - Add PlayAudio Intent](assets/screenshots/step7-6.png)
 
-    -   On the left side go to Interfaces and enable the interfaces for "Audio Player" and "Alexa Presentation Language" (additionally: Select the devices that you use). Then hit save.
+    -   On the left side go to Interfaces and enable "Audio Player". Enable "Alexa Presentation Language" if you intend to opt into APL rendering (`ENABLE_APL=true`, or `enable_apl: true` in the maintained add-on). Then hit save.
 
         ![Step 7.7 - Add Interfaces](assets/screenshots/step7-7.png)
 
@@ -66,7 +68,7 @@ The easiest way to run the project is with Docker Compose. This will build and s
 ### Status Page
 `/status`
 
-Returns a simple status page API return code and checked endpoint
+Returns the skill setup and API status. In the maintained candidate, an idle state before the first stream push is normal. Status pages require the configured API credentials; `/health` is an unauthenticated process-liveness endpoint.
 
 
 ---
@@ -75,5 +77,5 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for known supported devices, languages,
 
 See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
-See [TODO.md](TODO.md) for future improvements
+See the [maintained add-on update](https://github.com/timlaing/music-assistant-alexa-api/pull/28) for current validation and release gates.
 
