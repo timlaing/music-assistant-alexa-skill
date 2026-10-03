@@ -787,11 +787,34 @@ class DeploymentManager:
                     "Provide Amazon's confirmation reference or an explanation without secrets."
                 )
             vendor, skill = self.state.get("vendor_id"), self.state.get("skill_id")
-            if not vendor or not any(
-                item["id"] == skill for item in self.skills(vendor)
+            attempt_id = self.state.get("import_attempt_id")
+            client_key = self.state.get("client_key")
+            refresh_token = (self.state.get("tokens") or {}).get("refresh_token")
+
+        # Ownership listing can involve multiple slow API pages. Keep status and
+        # local settings responsive while it runs; validate the snapshot again below.
+        if not vendor or not any(item["id"] == skill for item in self.skills(vendor)):
+            raise DeploymentError(
+                "Reconnect the original developer account and verify ownership of the saved skill."
+            )
+
+        with self.lock:
+            if (
+                self.state.get("phase") in BUSY
+                or (self.thread and self.thread.is_alive())
+                or self.cancel.is_set()
+                or not self.state.get("import_unknown")
+                or self.state.get("import_path")
+                or self.state.get("import_attempt_id") != attempt_id
+                or self.state.get("skill_id") != skill
+                or self.state.get("vendor_id") != vendor
+                or self.state.get("client_key") != client_key
+                or self.state.get("client_key") != config_key()
+                or (self.state.get("tokens") or {}).get("refresh_token")
+                != refresh_token
             ):
                 raise DeploymentError(
-                    "Reconnect the original developer account and verify ownership of the saved skill."
+                    "The pending import or Amazon connection changed. Reload and verify the displayed skill."
                 )
             state = copy.deepcopy(self.state)
             state.setdefault("import_reconciliations", []).append(

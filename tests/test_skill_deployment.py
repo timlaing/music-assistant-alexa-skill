@@ -878,3 +878,102 @@ def test_restart_gives_legacy_uncertain_import_a_stable_attempt_id(deployment):
         DeploymentManager(manager.path, amazon).public_status()["import_attempt_id"]
         == attempt
     )
+
+
+def test_slow_reconciliation_leaves_status_and_settings_responsive(
+    deployment, client, monkeypatch
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app import app
+    from test_ingress import gateway
+
+    manager, _ = deployment
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    payload = uncertain_import(manager)
+    entered, release = threading.Event(), threading.Event()
+    original = manager.skills
+
+    def slow_listing(vendor):
+        entered.set()
+        assert release.wait(5)
+        return original(vendor)
+
+    monkeypatch.setattr(manager, "skills", slow_listing)
+
+    def local_requests():
+        csrf = gateway(client, "/setup/status").json["csrf"]
+        current = gateway(client, "/setup/settings").json
+        response = gateway(
+            client,
+            "/setup/settings",
+            "post",
+            headers={"X-CSRF-Token": csrf},
+            json={"revision": current["revision"], "values": {"locale": "en-US"}},
+        )
+        assert response.status_code == 200
+        manager.public_status()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker = pool.submit(manager.reconcile_import, payload)
+        try:
+            assert entered.wait(2)
+            # This must finish BEFORE releasing the simulated slow network call.
+            pool.submit(local_requests).result(timeout=2)
+        finally:
+            release.set()
+        worker.result(timeout=5)
+    assert manager.state["import_unknown"] is False
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"import_attempt_id": "different"},
+        {"skill_id": OTHER},
+        {"vendor_id": "other"},
+        {"import_unknown": False},
+        {"import_path": "/v1/skills/imports/import-2"},
+        {"phase": "running"},
+        {"client_key": "different"},
+        {"tokens": {"refresh_token": "different"}},
+    ],
+)
+def test_reconciliation_rechecks_snapshot_after_unlocked_ownership(
+    deployment, monkeypatch, change
+):
+    manager, _ = deployment
+    payload = uncertain_import(manager)
+    original = manager.skills
+
+    def changed_listing(vendor):
+        result = original(vendor)
+        manager.update(**change)
+        return result
+
+    monkeypatch.setattr(manager, "skills", changed_listing)
+    with pytest.raises(DeploymentError, match="changed"):
+        manager.reconcile_import(payload)
+    assert "import_reconciliations" not in manager.state
+    assert "import_reconciliations" not in json.loads(manager.path.read_text())
+
+
+def test_reconciliation_rejects_changed_oauth_configuration_during_listing(
+    deployment, monkeypatch
+):
+    manager, _ = deployment
+    payload = uncertain_import(manager)
+    original = manager.skills
+
+    def changed_listing(vendor):
+        result = original(vendor)
+        monkeypatch.setenv("LWA_CLIENT_SECRET", "different-client-secret")
+        return result
+
+    monkeypatch.setattr(manager, "skills", changed_listing)
+    with pytest.raises(DeploymentError, match="connection changed"):
+        manager.reconcile_import(payload)
+    assert manager.state["import_unknown"] is True
+    assert "import_reconciliations" not in manager.state
