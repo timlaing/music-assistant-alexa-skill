@@ -58,6 +58,15 @@ Expose NPM's HTTPS port **443** to the internet; keep add-on **5000** and Music 
 
 Separate proxy hosts simplify configuration. A skill location such as `/ma-alexa-skill/` must strip that prefix when proxying to the add-on root. Stream locations preserve their paths. The 1.2.0 candidate supports a public stream URL path prefix without duplicating it during URL rewriting.
 
+If Music Assistant connects directly to the add-on LAN API URL above, no NPM locations are needed for `/alexa/` or `/ma/`. If it connects through a shared public hostname instead, set its Alexa provider **API URL** to that hostname's base URL (for example, `https://music.example.com`, without `/ma` or `/ma-alexa-skill`) and add these NPM custom locations:
+
+| Location | Forward to | Path handling |
+| --- | --- | --- |
+| `/alexa/` | `http://<HA-LAN-IP>:5000` | Preserve `/alexa/`, including `/alexa/intents`. |
+| `/ma/` | `http://<HA-LAN-IP>:5000` | Preserve `/ma/`, including `/ma/push-url`. |
+
+Use the add-on's API username and password in Music Assistant's Basic Auth fields; avoid an additional NPM authentication layer on these API locations. These locations reach the add-on API, not the MA stream server on 8097 or the optional control API on 8095. A dedicated proxy host forwarding all paths to the add-on on 5000 already covers them and needs no custom API locations.
+
 #### 1.2.0 candidate features and validation
 
 The experimental **1.2.0-beta.1** update is tracked in [add-on PR #28](https://github.com/timlaing/music-assistant-alexa-api/pull/28), with application fixes in [skill PR #1](https://github.com/timlaing/music-assistant-alexa-skill/pull/1). These features require that candidate; they are not a claim that it has already been released:
