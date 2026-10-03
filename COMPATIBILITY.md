@@ -1,3 +1,7 @@
+# Compatibility
+
+The device and region list below records historical upstream testing. It does not establish live-device acceptance for the maintained Home Assistant add-on's 1.2.0-beta.1 candidate. That candidate has automated ARM64/AMD64 container validation; its live HA/Echo/NPM checks remain outstanding. APL is optional and disabled by default. See the [deployment guide](README.md#2-home-assistant-add-on).
+
 ## Supported Languages & Regions (tested)
 
 - en-US, US
