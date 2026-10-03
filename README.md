@@ -98,7 +98,7 @@ Notes:
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
 | `SKILL_HOSTNAME` | Yes | — | Must be a publicly reachable HTTPS host (example: `alexa.example.com`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
-| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS base URL for streams (example: `https://streams.example.com`), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. |
+| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on candidate also accepts a full HTTPS base URL in its separate `ma_hostname` option. |
 | `APP_USERNAME` | No | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
 | `APP_PASSWORD` | No | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
 | `PORT` | No | `5000` | Port the app lives at. Ensure the `ports` mapping in [docker-compose.yml](docker-compose.yml) matches this value. |
@@ -145,4 +145,3 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for known supported devices, languages,
 See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
 See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclosures.
-
