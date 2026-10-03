@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode, urlparse
 
 import requests
+from app_settings import SettingsError, callback_url, get_setting, store
 from env_secrets import get_env_secret
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 
@@ -68,14 +69,14 @@ def https_url(value, label):
 
 
 def settings():
-    endpoint = https_url(os.environ.get("SKILL_HOSTNAME", "").strip(), "Skill endpoint")
-    locale = os.environ.get("LOCALE", "en-US")
+    endpoint = https_url(get_setting("SKILL_HOSTNAME", "").strip(), "Skill endpoint")
+    locale = get_setting("LOCALE", "en-US")
     if (
         not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", locale)
         or not (APP_DIR / "models" / f"{locale}.json").is_file()
     ):
         raise DeploymentError("The configured locale has no bundled interaction model.")
-    certificate = os.environ.get("SKILL_CERTIFICATE_TYPE", "Trusted")
+    certificate = get_setting("SKILL_CERTIFICATE_TYPE", "Trusted")
     if certificate not in ("Trusted", "Wildcard"):
         raise DeploymentError(
             "Choose Trusted or Wildcard for the public HTTPS certificate."
@@ -84,8 +85,7 @@ def settings():
         "endpoint": endpoint,
         "locale": locale,
         "certificate": certificate,
-        "apl": os.environ.get("ENABLE_APL", "false").lower()
-        in ("true", "1", "yes", "on"),
+        "apl": get_setting("ENABLE_APL", "false").lower() in ("true", "1", "yes", "on"),
     }
 
 
@@ -93,7 +93,9 @@ def oauth_config():
     client = get_env_secret("LWA_CLIENT_ID")
     secret = get_env_secret("LWA_CLIENT_SECRET")
     callback = https_url(
-        os.environ.get("LWA_REDIRECT_URI", "").strip(), "Amazon callback"
+        callback_url(get_setting("SKILL_HOSTNAME"))
+        or os.environ.get("LWA_REDIRECT_URI", "").strip(),
+        "Amazon callback",
     )
     if urlparse(callback).path != "/ma-alexa-skill/setup/oauth/callback":
         raise DeploymentError(
@@ -882,6 +884,29 @@ def register_setup(app):
             path=request.script_root + "/setup",
         )
         return response
+
+    @blueprint.errorhandler(SettingsError)
+    def settings_error(exc):
+        return jsonify(error=str(exc)), 400
+
+    @blueprint.route("/setup/settings", methods=["GET", "POST"])
+    def application_settings():
+        if request.method == "GET":
+            return jsonify(**store().public())
+        instance = manager()
+        with instance.lock:
+            if instance.thread and instance.thread.is_alive():
+                raise SettingsError(
+                    "Wait for the current deployment operation before saving settings."
+                )
+            result = store().save(request.get_json(silent=True))
+            # Editing settings never deploys; an existing review must be prepared again.
+            instance.update(review=None, oauth={})
+        return jsonify(**result)
+
+    @blueprint.route("/setup/settings/api-password", methods=["POST"])
+    def reveal_api_password():
+        return jsonify(password=get_env_secret("APP_PASSWORD"))
 
     @blueprint.route("/setup/oauth/start", methods=["POST"])
     def connect():

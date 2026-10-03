@@ -1,9 +1,9 @@
 """Music Assistant stream push and snapshot endpoints."""
 
-import os
 from urllib.parse import urlsplit
 
 import shared_store
+from app_settings import get_setting
 from flask import jsonify, request
 from public_urls import rewrite_url
 
@@ -19,7 +19,7 @@ def register_routes(bp):
         ):
             return jsonify({"error": "Missing required fields"}), 400
         raw_url = payload["streamUrl"]
-        base = os.environ.get("MA_HOSTNAME", "").strip()
+        base = get_setting("MA_HOSTNAME", "").strip()
         try:
             stream_url = rewrite_url(raw_url, base)
             image_url = payload.get("imageUrl")

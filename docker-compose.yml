@@ -10,11 +10,10 @@ services:
       - DEBUG_PORT=0 # enable only for local debugging
       - LWA_CLIENT_ID= # one-time security profile registration
       - LWA_CLIENT_SECRET=/run/secrets/LWA_CLIENT_SECRET
-      - LWA_REDIRECT_URI=https://alexa.example.com/ma-alexa-skill/setup/oauth/callback
       - SKILL_CERTIFICATE_TYPE=Trusted
+      - APP_SETTINGS_PATH=/data/app-settings.json
       - SKILL_DEPLOYMENT_PATH=/data/skill-deployment.json
       - LOCALE=en-US # optional: skill locale (e.g. en-US, en-GB, de-DE)
-      - AWS_DEFAULT_REGION=us-east-1 #optional
       - TZ=America/Chicago # set container timezone (override as needed)
     secrets:
       - APP_USERNAME

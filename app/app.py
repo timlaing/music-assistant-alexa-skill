@@ -1,5 +1,4 @@
 import base64
-import json
 import logging
 import os
 import re
@@ -8,9 +7,13 @@ import time
 import alexa_api as alexa_api
 import music_assistant_api as ma_api
 import swagger_ui as maa_swagger
+from app_settings import initialize
 from endpoints import devices_bp, invocations_bp, simulator_bp, status_bp
 from env_secrets import get_env_secret
 from flask import Flask, Response, g, jsonify, redirect, request
+# The SDK imports an unused DynamoDB client that still requires a region.
+# This internal compatibility default is not an application setting.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 from flask_ask_sdk.skill_adapter import SkillAdapter
 from ingress import IngressMiddleware, ui_path
 from ingress import enabled as ingress_enabled
@@ -22,41 +25,8 @@ from skill_deployment import register_setup
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+initialize()
 
-def _load_addon_options_into_env():
-    """Load Home Assistant add-on options from /data/options.json."""
-    options_path = '/data/options.json'
-    try:
-        if not os.path.exists(options_path):
-            return {}
-        with open(options_path, 'r', encoding='utf-8') as f:
-            options = json.load(f)
-        if not isinstance(options, dict):
-            return {}
-
-        loaded = {}
-        for key, value in options.items():
-            if value is None:
-                continue
-            os.environ[str(key)] = str(value)
-            loaded[str(key)] = str(value)
-        return loaded
-    except Exception:
-        return {}
-
-
-def _safe_options_for_log(options):
-    return {key: ('set' if value else '') if any(part in key.lower()
-            for part in ('password', 'token', 'secret', 'username')) else value
-            for key, value in options.items()}
-
-
-_loaded_addon_options = _load_addon_options_into_env()
-
-# Ensure boto3 has a default region in container/dev environments to avoid
-# NoRegionError during imports that create AWS clients at module import time.
-os.environ.setdefault('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
-os.environ.setdefault('AWS_DEFAULT_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 
 class _CallbackLogFilter(logging.Filter):
     """Keep OAuth query strings out of Werkzeug logs even with QUIET_HTTP=0."""
@@ -70,8 +40,6 @@ class _CallbackLogFilter(logging.Filter):
 logging.getLogger('werkzeug').addFilter(_CallbackLogFilter())
 
 app = Flask(__name__)
-if _loaded_addon_options:
-    app.logger.info('Loaded add-on options from /data/options.json: %s', _safe_options_for_log(_loaded_addon_options))
 # Optionally silence HTTP request logs (werkzeug/urllib3) when running
 # in container or debugger. Set QUIET_HTTP=0 to keep request logging.
 try:

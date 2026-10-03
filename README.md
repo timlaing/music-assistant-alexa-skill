@@ -90,11 +90,9 @@ docker run --rm \
     -e APP_PASSWORD=/run/secrets/APP_PASSWORD \
     -e LWA_CLIENT_ID=YOUR_CLIENT_ID \
     -e LWA_CLIENT_SECRET=/run/secrets/LWA_CLIENT_SECRET \
-    -e LWA_REDIRECT_URI=https://alexa.example.com/setup/oauth/callback \
     -e SKILL_DEPLOYMENT_PATH=/data/skill-deployment.json \
     -e PORT=5000 \
     -e LOCALE=en-US \
-    -e AWS_DEFAULT_REGION=us-east-1 \
     -v "$(pwd)/ask_data:/root/.ask" \
     -v "$(pwd)/deployment_data:/data" \
     -v "$(pwd)/secrets/lwa_client_secret.txt:/run/secrets/LWA_CLIENT_SECRET:ro" \
@@ -110,16 +108,17 @@ Notes:
 
 ### Environment Variables
 
+For candidate **1.3.0-beta.1**, edit application settings on `/setup`; standalone environment variables are bootstrap defaults until the first web save. Persist `/data/app-settings.json` (or set `APP_SETTINGS_PATH`). Home Assistant add-on users use ingress Setup instead of the add-on Configuration tab. Existing available legacy values migrate once; saved web settings take precedence after restarts. Secrets stay masked, blank inputs retain them, and Advanced settings provides an explicit API-password reveal for connecting Music Assistant. The callback is derived from the skill endpoint origin; saving does not deploy to Amazon. The unused AWS region setting has been removed.
+
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
 | `SKILL_HOSTNAME` | Yes | — | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
-| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its separate `ma_hostname` option. |
+| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its setup-page `ma_hostname` setting. |
 | `APP_USERNAME` | Yes for setup | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
 | `APP_PASSWORD` | Yes for setup | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
 | `PORT` | No | `5000` | Port the app lives at. Ensure the `ports` mapping in [docker-compose.yml](docker-compose.yml) matches this value. |
 | `DEBUG_PORT` | No | `5678` | Remote debug port (if you enable remote debugging). |
 | `LOCALE` | *No | `en-US` | ***REQUIRED** if your device is not configured for en-US. Skill locale used by the setup and interaction model operations (examples: `en-US`, `en-GB`, `de-DE`). |
-| `AWS_DEFAULT_REGION` | No | `us-east-1` | AWS region used by ASK CLI operations when applicable. |
 | `TZ` | No | `UTC` | Container timezone (example: `America/Chicago`) to make logs/timestamps match your locale. |
 | `SKIP_URL_VALIDATION` | No | `false` | Skip server-side HEAD/GET validation of the rewritten stream URL before sending it to the Echo. Useful when the skill container cannot reach the external stream URL due to Docker network routing (e.g., macvlan isolation, custom outbound firewall rules). |
 | `ENABLE_APL` | No | `false` | Enable rich APL rendering (cover art, title, on-screen playback controls) on Echo Show and other APL-capable devices, instead of the plain AudioPlayer-only flow. Disabled by default for playback stability; set to `true` to opt back into screen rendering and live metadata refresh on supported devices. |
@@ -161,6 +160,6 @@ See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
 See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclosures.
 
-For `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, `LWA_REDIRECT_URI`, `SKILL_CERTIFICATE_TYPE` and `SKILL_DEPLOYMENT_PATH`, see the [personal skill deployment options and guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+For `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, `SKILL_CERTIFICATE_TYPE`, `APP_SETTINGS_PATH` and `SKILL_DEPLOYMENT_PATH`, see the [personal skill deployment options and guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
 The maintained add-on exposes `/status` and `/setup` through Home Assistant ingress on private port 8099, with no app login. It blocks these pages on the external 5000 listener. Status also checks skill-health, stream-host and current-audio HTTPS reachability in the background; see the [ingress and callback guide](docs/PERSONAL_SKILL_DEPLOYMENT.md#home-assistant-ingress-and-nginx-proxy-manager).

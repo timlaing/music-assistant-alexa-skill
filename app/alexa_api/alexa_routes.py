@@ -1,10 +1,10 @@
 """Route definitions for alexa_api (alexa_routes)."""
 
 import json
-import os
 from pathlib import Path
 
 import shared_store
+from app_settings import get_setting
 from flask import jsonify, request
 
 
@@ -35,7 +35,7 @@ def register_routes(bp):
     
     @bp.route('/intents', methods=['GET'])
     def intents():
-        locale = os.environ.get('LOCALE', 'en-US')
+        locale = get_setting('LOCALE', 'en-US')
         intents_file = Path(__file__).parent.parent / 'models' / 'built-in' / f'{locale}.json'
         try:
             with open(intents_file, 'r', encoding='utf-8') as f:

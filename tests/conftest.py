@@ -14,6 +14,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_SETTINGS_PATH", str(tmp_path / "app-settings.json"))
     import shared_store
     from skill import data
 

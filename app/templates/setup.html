@@ -1,12 +1,35 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Personal Alexa skill setup</title>
-<style>body{font:17px system-ui;background:#f4f6f8;color:#17212b;margin:0}main{max-width:780px;margin:32px auto;padding:28px;background:white;border-radius:12px}h1{font-size:28px}section{border-top:1px solid #ddd;margin-top:24px;padding-top:16px}label{display:block;margin:12px 0}select,button{font:inherit;padding:10px;max-width:100%}select{width:100%}button{cursor:pointer;background:#115d93;color:white;border:0;border-radius:6px;margin:8px 8px 8px 0}button:disabled{opacity:.5;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f6f8;padding:12px}#message{padding:12px;background:#edf5fc}a{color:#115d93}dt{font-weight:600;margin-top:10px}dd{margin-left:0;overflow-wrap:anywhere}[hidden]{display:none!important}</style></head>
+<style>body{font:17px system-ui;background:#f4f6f8;color:#17212b;margin:0}main{max-width:780px;margin:32px auto;padding:28px;background:white;border-radius:12px}h1{font-size:28px}section{border-top:1px solid #ddd;margin-top:24px;padding-top:16px}label{display:block;margin:12px 0}input,select,button{font:inherit;padding:10px;max-width:100%}input:not([type=checkbox]),select{width:100%;box-sizing:border-box}small{display:block;color:#53616d}button{cursor:pointer;background:#115d93;color:white;border:0;border-radius:6px;margin:8px 8px 8px 0}button:disabled{opacity:.5;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f6f8;padding:12px}#message{padding:12px;background:#edf5fc}a{color:#115d93}dt{font-weight:600;margin-top:10px}dd{margin-left:0;overflow-wrap:anywhere}[hidden]{display:none!important}</style></head>
 <body><main><a href="/status">← Status</a><h1>Set up your personal Alexa skill</h1>
 <p>Connect your Amazon developer account, select your existing personal skill, review the settings, and deploy. This enables development testing on your account.</p>
-<p>First register a Login with Amazon security profile and enter its client ID, secret and HTTPS callback URL in your installation settings. <a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html" target="_blank" rel="noreferrer">Amazon registration guide</a>. Open this page in Home Assistant. Amazon sign-in opens in a separate window and returns through the registered callback.</p>
+<p>First register a Login with Amazon security profile and enter its client ID, secret in the settings below, then register the generated HTTPS callback URL with Amazon. <a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html" target="_blank" rel="noreferrer">Amazon registration guide</a>. Open this page in Home Assistant. Amazon sign-in opens in a separate window and returns through the registered callback.</p>
 <p id="error" role="alert" hidden></p>
 <p id="message" role="status" aria-live="polite">Loading setup status…</p>
+<section><h2>Application settings</h2>
+<p>Save your connection settings here. Saving does not deploy changes to Amazon; review and deploy separately.</p>
+<form id="settingsForm">
+<label>Public audio URL<input id="ma_hostname" type="url" placeholder="https://streams.example.com"><small>Public HTTPS address for Music Assistant streams and artwork.</small></label>
+<label>Public skill endpoint<input id="skill_hostname" type="url" placeholder="https://alexa.example.com/ma-alexa-skill/"><small>HTTPS endpoint reached through your proxy.</small></label>
+<label>Amazon callback URL<input id="callback" readonly><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
+<label>Alexa locale<select id="locale"></select></label>
+<label><input id="enable_apl" type="checkbox"> Enable Echo Show artwork and controls</label>
+<label>Music Assistant control API URL<input id="ma_api_url" type="url" placeholder="http://homeassistant:8095"><small>Optional local connection for mapped voice controls.</small></label>
+<label>Music Assistant access token<input id="ma_api_token" type="password" autocomplete="new-password"><small id="ma_api_token_hint"></small></label>
+<label><input id="clear_ma_api_token" type="checkbox"> Remove saved Music Assistant token</label>
+<label>Amazon client ID<input id="lwa_client_id" autocomplete="off"></label>
+<label>Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password"><small id="lwa_client_secret_hint"></small></label>
+<label><input id="clear_lwa_client_secret" type="checkbox"> Remove saved Amazon client secret</label>
+<details><summary>Advanced settings</summary>
+<label>HTTPS certificate type<select id="skill_certificate_type"><option>Trusted</option><option>Wildcard</option></select><small>Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate.</small></label>
+<label>API username<input id="api_username" autocomplete="off"><small>Enter these credentials in Music Assistant’s Alexa provider. Changing them requires updating that provider.</small></label>
+<label>Replace API password<input id="api_password" type="password" autocomplete="new-password"><small id="api_password_hint"></small></label>
+<button id="showPassword" type="button">Show current API password</button><output id="currentPassword" hidden></output>
+<label><input id="skip_url_validation" type="checkbox"> Skip stream URL validation</label>
+<p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
+</details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>
+</form></section>
 <section><h2>1. Connect Amazon</h2><button id="connect">Connect Amazon</button><span id="connected"></span></section>
 <section id="selection" hidden><h2>2. Choose your personal skill</h2>
 <label>Developer account<select id="vendors"><option value="">Choose account…</option></select></label>
@@ -22,7 +45,12 @@
 <script>
 const el = id => document.getElementById(id);
 const base = {{ request.script_root|tojson }};
-let csrf = '', status = {}, accountsLoaded = false, pending = false;
+let csrf = '', status = {}, accountsLoaded = false, pending = false, settingsRevision = '';
+const fields = ['ma_hostname','skill_hostname','locale','enable_apl','ma_api_url','lwa_client_id','skill_certificate_type','api_username','skip_url_validation'];
+const secretFields = ['ma_api_token','lwa_client_secret','api_password'];
+function updateCallback(){try{el('callback').value=new URL(el('skill_hostname').value).origin+'/ma-alexa-skill/setup/oauth/callback';}catch{el('callback').value='';}}
+function showSettings(body){settingsRevision=body.revision;el('locale').replaceChildren();body.locales.forEach(locale=>option(el('locale'),locale,locale));fields.forEach(id=>{if(el(id).type==='checkbox')el(id).checked=body.values[id];else el(id).value=body.values[id];});secretFields.forEach(id=>{el(id).value='';el(id+'_hint').textContent=body.secrets_set[id]?'Saved. Leave blank to keep the current value.':'Not set.';});['ma_api_token','lwa_client_secret'].forEach(id=>el('clear_'+id).checked=false);el('callback').value=body.callback_url;el('currentPassword').hidden=true;el('currentPassword').textContent='';}
+el('skill_hostname').oninput=updateCallback;
 async function api(path, payload) {
  const response = await fetch(base + path, {method: payload === undefined ? 'GET' : 'POST', credentials:'same-origin', headers: payload === undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf}, body: payload === undefined ? undefined : JSON.stringify(payload)});
  const body = await response.json(); if (!response.ok) throw Error(body.error || 'Request failed. Reload and retry.'); return body;
@@ -48,7 +76,7 @@ async function refresh() {
  el('message').textContent=status.configuration_error||status.message||'Connect Amazon to get started.';
  el('connected').textContent=status.connected?'Connected':'';
  el('selection').hidden=!status.connected;el('connect').disabled=busy||Boolean(status.configuration_error);
- ['review','deploy','vendors','skills','reload'].forEach(id=>el(id).disabled=busy);
+ ['review','deploy','vendors','skills','reload','saveSettings'].forEach(id=>el(id).disabled=busy);
  el('resume').hidden=!status.can_resume;el('resume').disabled=busy;
  showReview(status.review);
  if(status.connected&&!accountsLoaded) {const body=await api('/setup/accounts');body.vendors.forEach(v=>option(el('vendors'),v.id,v.name+' — '+v.id));accountsLoaded=true;if(status.vendor_id){el('vendors').value=status.vendor_id;await loadSkills();}}
@@ -60,6 +88,8 @@ el('reload').onclick=()=>action(loadSkills);
 el('review').onclick=()=>action(async()=>{const skill=el('skills').value;if(!el('vendors').value||!skill)throw Error('Choose an account and skill first.');await api('/setup/preview',{vendor:el('vendors').value,skill:skill==='__create__'?'':skill,create:skill==='__create__'});await refresh();});
 el('deploy').onclick=()=>action(async()=>{await api('/setup/deploy',{review_id:status.review.id});await refresh();});
 el('resume').onclick=()=>action(async()=>{await api('/setup/resume',{});await refresh();});
-refresh().catch(error=>el('message').textContent=error.message);
+el('settingsForm').onsubmit=event=>{event.preventDefault();action(async()=>{const values={};fields.forEach(id=>values[id]=el(id).type==='checkbox'?el(id).checked:el(id).value);secretFields.forEach(id=>values[id]=el(id).value);const clear_secrets=['ma_api_token','lwa_client_secret'].filter(id=>el('clear_'+id).checked);showSettings(await api('/setup/settings',{values,clear_secrets,revision:settingsRevision}));el('saved').textContent='Saved. Review and deploy separately to update Amazon.';accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');await refresh();});};
+el('showPassword').onclick=()=>action(async()=>{if(!el('currentPassword').hidden){el('currentPassword').hidden=true;el('currentPassword').textContent='';return;}const result=await api('/setup/settings/api-password',{});el('currentPassword').textContent=result.password;el('currentPassword').hidden=false;});
+refresh().then(()=>api('/setup/settings')).then(showSettings).catch(error=>el('message').textContent=error.message);
 setInterval(()=>{if(!pending)refresh().catch(error=>el('message').textContent=error.message);},3000);
 </script></body></html>

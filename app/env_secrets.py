@@ -1,5 +1,8 @@
 import os
 
+from app_settings import saved_secret
+
+
 def get_env_secret(name: str):
     """Return the environment variable value or, if it points to an existing
     file, return the file contents trimmed.
@@ -7,6 +10,9 @@ def get_env_secret(name: str):
     This allows Docker secrets passed as `/run/secrets/NAME` to work when the
     compose file sets the env var to the secret file path.
     """
+    saved, value = saved_secret(name)
+    if saved:
+        return value or None
     val = os.environ.get(name)
     if not val:
         return None

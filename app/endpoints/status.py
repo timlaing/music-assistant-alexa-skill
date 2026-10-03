@@ -1,11 +1,11 @@
 import json
-import os
 import re
 import shutil
 import subprocess
 import urllib.parse
 from pathlib import Path
 
+from app_settings import get_setting
 from flask import Blueprint, Response, current_app, jsonify, request
 from markupsafe import escape
 from setup_helpers import has_functional_cli_config
@@ -19,7 +19,7 @@ def _build_status_json():
 
     skill_ask_html = '<span class="muted">ASK CLI check unavailable</span>'
     try:
-        skill_host = os.environ.get('SKILL_HOSTNAME', '').strip()
+        skill_host = get_setting('SKILL_HOSTNAME', '').strip()
         deployment = manager().public_status()
         if deployment.get('connected'):
             instance = manager()

@@ -1,12 +1,12 @@
 """Cached reachability checks from the add-on, without blocking playback/status."""
 
 import json
-import os
 import threading
 import time
 from urllib.parse import urlparse, urlunparse
 
 import requests
+from app_settings import get_setting
 from flask import current_app
 from markupsafe import escape
 from public_urls import public_base, rewrite_url
@@ -14,8 +14,8 @@ from shared_store import get_ma
 
 
 def targets():
-    stream = os.environ.get("MA_HOSTNAME", "").strip()
-    skill = os.environ.get("SKILL_HOSTNAME", "").strip()
+    stream = get_setting("MA_HOSTNAME", "").strip()
+    skill = get_setting("SKILL_HOSTNAME", "").strip()
     result = [("Skill endpoint", skill, "skill"), ("Stream host", stream, "host")]
     latest = get_ma() or {}
     if latest.get("url"):
