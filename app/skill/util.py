@@ -1,22 +1,25 @@
 # -*- coding: utf-8 -*-
 
-import datetime
-import os
-import re
 import logging
+import os
 import threading
+
 import requests
-from env_secrets import get_env_secret
-from typing import Dict, Optional
-from ask_sdk_model import Request, Response
-from ask_sdk_model.ui import StandardCard, Image
+from ask_sdk_model.interfaces.alexa.presentation.apl import (
+    ControlMediaCommand,
+    ExecuteCommandsDirective,
+    MediaCommandType,
+)
 from ask_sdk_model.interfaces.audioplayer import (
-    PlayDirective, PlayBehavior, AudioItem, Stream, AudioItemMetadata,
-    StopDirective, ClearQueueDirective, ClearBehavior)
-from ask_sdk_model.interfaces import display
-from ask_sdk_core.response_helper import ResponseFactory
-from ask_sdk_core.handler_input import HandlerInput
-from ask_sdk_model.interfaces.alexa.presentation.apl import ExecuteCommandsDirective, ControlMediaCommand, MediaCommandType
+    AudioItem,
+    ClearBehavior,
+    ClearQueueDirective,
+    PlayBehavior,
+    PlayDirective,
+    StopDirective,
+    Stream,
+)
+
 from . import data
 from .apl import add_apl
 
@@ -52,39 +55,22 @@ def get_resume_offset(device_id, url):
 
 
 def get_ma_hostname(raise_on_http_scheme=True):
-    hostname_raw = os.environ.get('MA_HOSTNAME', '')
-    hostname_raw = hostname_raw.strip()
-    if len(hostname_raw) >= 2 and ((hostname_raw[0] == hostname_raw[-1] == '"') or (hostname_raw[0] == hostname_raw[-1] == "'")):
-        hostname_raw = hostname_raw[1:-1].strip()
-    hostname_raw = hostname_raw.strip('"\' ')
-
-    if hostname_raw == '':
-        return ''
-
-    hostname_clean = hostname_raw.rstrip('/')
-    if hostname_clean.startswith('https://'):
-        return hostname_clean
-    if hostname_clean.startswith('http://'):
+    from public_urls import public_base
+    try:
+        return public_base(os.environ.get('MA_HOSTNAME', ''))
+    except ValueError:
         if raise_on_http_scheme:
-            raise ValueError('http_scheme')
+            raise
         return ''
-
-    return f'https://{hostname_clean}'
 
 
 def replace_ip_in_url(url, hostname):
-    if not url:
-        return url
-    try:
-        new_url = re.sub(r'^https?://\d+\.\d+\.\d+\.\d+(?::\d+)?', hostname, url)
-    except re.error:
-        return url.replace(' ', '%20')
-    return new_url.replace(' ', '%20')
+    from public_urls import rewrite_url
+    return rewrite_url(url, hostname)
 
 def audio_data(request):
     try:
-        data.get_latest()
-        return data.info
+        return data.get_info()
     except Exception:
         return
 
@@ -92,27 +78,13 @@ def audio_data(request):
 def push_alexa_metadata(url):
     payload = {
         'streamUrl': url,
-        'title': data.info.get("primaryText"),
-        'secondary': data.info.get("secondaryText"),
-        'imageUrl': data.info.get("coverImageSource")
+        'title': data.get_info().get("primaryText"),
+        'secondary': data.get_info().get("secondaryText"),
+        'imageUrl': data.get_info().get("coverImageSource")
     }
 
-    try:
-        from app.alexa_api import alexa_routes
-        alexa_routes._store = payload
-    except Exception:
-        try:
-            push_endpoint = 'http://localhost:5000/alexa/push-url'
-            user = get_env_secret('APP_USERNAME')
-            pwd = get_env_secret('APP_PASSWORD')
-            if user and pwd:
-                requests.post(push_endpoint, json=payload, timeout=2, auth=(user, pwd))
-            else:
-                requests.post(push_endpoint, json=payload, timeout=2)
-        except requests.RequestException:
-            logging.exception('Failed to POST to Alexa API %s', push_endpoint)
-        except Exception:
-            logging.exception('Unexpected error while pushing Alexa metadata')
+    import shared_store
+    shared_store.set_alexa(payload)
 
 
 def play(url, offset, text, response_builder, supports_apl=False):
@@ -142,9 +114,12 @@ def play(url, offset, text, response_builder, supports_apl=False):
                 head_resp = requests.head(url, allow_redirects=True, timeout=5)
                 resp = head_resp
                 if head_resp.status_code >= 400:
+                    head_resp.close()
                     resp = requests.get(url, stream=True, allow_redirects=True, timeout=5)
 
-                if resp.status_code >= 400:
+                status_code = resp.status_code
+                resp.close()
+                if status_code >= 400:
                     logging.error('Audio URL returned HTTP %s: %s', resp.status_code, url)
                     response_builder.speak(
                         "Sorry, I can't reach the audio file. Please check that your stream URL is internet accessible via HTTPS at the MA_HOSTNAME variable you provided.")
@@ -179,38 +154,6 @@ def play(url, offset, text, response_builder, supports_apl=False):
         push_alexa_metadata(url)
     except Exception:
         logging.exception('Error while preparing Alexa API push payload')
-
-    return response_builder.response
-
-
-# FIX: play_later mit korrektem expected_previous_token
-def play_later(url, response_builder):
-    try:
-        hostname = get_ma_hostname(raise_on_http_scheme=True)
-    except ValueError:
-        logging.warning("play_later: Invalid MA_HOSTNAME")
-        return response_builder.response
-
-    if not hostname:
-        logging.warning("play_later: MA_HOSTNAME not set")
-        return response_builder.response
-
-    url = replace_ip_in_url(url, hostname)
-
-    # FIX: expected_previous_token muss gesetzt sein fuer ENQUEUE
-    response_builder.add_directive(
-        PlayDirective(
-            play_behavior=PlayBehavior.ENQUEUE,
-            audio_item=AudioItem(
-                stream=Stream(
-                    token=url,
-                    url=url,
-                    offset_in_milliseconds=0,
-                    expected_previous_token=url  # <-- FIX: Nicht None!
-                )
-            )
-        )
-    )
 
     return response_builder.response
 
@@ -272,38 +215,28 @@ def update_apl_metadata(response_builder):
     if not apl_enabled():
         return
     try:
-        # Replace MA-hosted image sources if MA_HOSTNAME is set
-        try:
-            hostname = get_ma_hostname(raise_on_http_scheme=False)
-        except ValueError:
-            hostname = ''
-
-        cover_image = data.info.get("coverImageSource", "")
-        background_image = data.info.get("backgroundImageSource", "")
-
-        if hostname:
-            cover_image = replace_ip_in_url(cover_image, hostname)
-            background_image = replace_ip_in_url(background_image, hostname)
+        cover_image = data.get_info().get("coverImageSource", "")
+        background_image = data.get_info().get("backgroundImageSource", "")
 
         # Build SetValue commands to update individual components
         commands = []
 
         # Update primary text (song title)
-        if data.info.get("primaryText"):
+        if data.get_info().get("primaryText"):
             commands.append({
                 "type": "SetValue",
                 "componentId": "Audio_PrimaryText",
                 "property": "text",
-                "value": data.info["primaryText"]
+                "value": data.get_info()["primaryText"]
             })
 
         # Update secondary text (artist/album)
-        if data.info.get("secondaryText"):
+        if data.get_info().get("secondaryText"):
             commands.append({
                 "type": "SetValue",
                 "componentId": "Audio_SecondaryText",
                 "property": "text",
-                "value": data.info["secondaryText"]
+                "value": data.get_info()["secondaryText"]
             })
 
         # Update cover image and bound data so conditional rendering refreshes.

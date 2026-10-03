@@ -1,8 +1,8 @@
-from flask import Blueprint, Response, current_app, request, redirect, url_for
-from markupsafe import escape
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
+from flask import Blueprint, Response, current_app, redirect, request, url_for
+from markupsafe import escape
 from skill import device_mapping
 
 devices_bp = Blueprint('devices_bp', __name__)
@@ -80,7 +80,7 @@ def devices_page():
                 <form method="POST" action="/devices" class="mapping-form">
                     <input type="hidden" name="device_id" value="{escape(device_id)}">
                     <input type="text" name="player_id" value="{escape(current_player)}"
-                           placeholder="MA player_id (e.g. Studio)">
+                           placeholder="MA player_id">
                     <button type="submit">Save</button>
                 </form>
             </td>
@@ -92,7 +92,7 @@ def devices_page():
     <p class="muted">Alexa does not expose a friendly device name to Custom Skills, only an opaque per-device id.
     Trigger any voice command (e.g. "next") from each Echo you want to control MA from, reload this page,
     then pair each device id with its Music Assistant player_id (the name shown in MA, e.g. "Studio").
-    Only Next/Previous are currently routed to MA.</p>
+    Next/Previous/StartOver and Pause/Stop/Resume are routed to mapped MA players.</p>
     <table>
         <thead><tr><th>Device id (last 12 chars)</th><th>Last seen</th><th>Last request</th><th>MA player_id</th></tr></thead>
         <tbody>

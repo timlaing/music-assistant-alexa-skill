@@ -1,4 +1,4 @@
-from flask import Blueprint, Response, jsonify, request, current_app
+from flask import Blueprint, Response, jsonify, request
 from pathlib import Path
 import json
 import os

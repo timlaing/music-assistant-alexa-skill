@@ -1,28 +1,36 @@
-import os
-from flask import Flask, request, jsonify, Response, g
-from flask_ask_sdk.skill_adapter import SkillAdapter
-from skill.lambda_function import sb  # sb is the SkillBuilder from skill/lambda_function.py
+import base64
 import json
-import music_assistant_api as ma_api
-import alexa_api as alexa_api
-from werkzeug.middleware.dispatcher import DispatcherMiddleware
-from werkzeug.middleware.proxy_fix import ProxyFix
-from env_secrets import get_env_secret
-import swagger_ui as maa_swagger
-from collections import deque
-import threading
-import subprocess
-from pathlib import Path
-import time
+import logging
+import os
 import pty
 import re
-import base64
-import logging
+import subprocess
+import threading
+import time
+from collections import deque
+from pathlib import Path
 
-
-from setup_helpers import sanitize_log, enqueue_setup_log, setup_reader_thread as _helpers_setup_reader_thread, read_master_loop as _helpers_read_master_loop
-from setup_helpers import ask_home_from_credentials_dir, has_functional_cli_config, prepare_cli_config_for_configure
+import alexa_api as alexa_api
+import music_assistant_api as ma_api
+import swagger_ui as maa_swagger
+from env_secrets import get_env_secret
+from flask import Flask, Response, g, jsonify, request
+from flask_ask_sdk.skill_adapter import SkillAdapter
+from setup_helpers import (
+    ask_home_from_credentials_dir,
+    enqueue_setup_log,
+    has_functional_cli_config,
+    prepare_cli_config_for_configure,
+    sanitize_log,
+)
+from setup_helpers import read_master_loop as _helpers_read_master_loop
+from setup_helpers import setup_reader_thread as _helpers_setup_reader_thread
 from signal_helpers import register_signal_handlers
+from skill.lambda_function import (
+    sb,  # sb is the SkillBuilder from skill/lambda_function.py
+)
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 def _load_addon_options_into_env():
@@ -48,14 +56,9 @@ def _load_addon_options_into_env():
 
 
 def _safe_options_for_log(options):
-    redacted = {}
-    secret_keys = {'APP_USERNAME', 'APP_PASSWORD'}
-    for key, value in options.items():
-        if key in secret_keys:
-            redacted[key] = 'set' if value else ''
-        else:
-            redacted[key] = value
-    return redacted
+    return {key: ('set' if value else '') if any(part in key.lower()
+            for part in ('password', 'token', 'secret', 'username')) else value
+            for key, value in options.items()}
 
 
 _loaded_addon_options = _load_addon_options_into_env()
@@ -175,7 +178,7 @@ except Exception:
 @app.before_request
 def _check_app_basic_auth():
     # Allow the Alexa skill POST endpoint to be called without app-level auth
-    if request.path == '/' and request.method == 'POST':
+    if request.path == '/health' or (request.path == '/' and request.method == 'POST'):
         return None
     # Read credentials from secrets (APP_USERNAME/APP_PASSWORD)
     app_user = get_env_secret('APP_USERNAME')
@@ -260,7 +263,7 @@ app.config['INTENT_LOGS_MAXLEN'] = 500
 
 # Register endpoint blueprints moved out of app.py (status, invocations, simulator)
 try:
-    from endpoints import status_bp, invocations_bp, simulator_bp, devices_bp
+    from endpoints import devices_bp, invocations_bp, simulator_bp, status_bp
     app.register_blueprint(status_bp)
     app.register_blueprint(invocations_bp)
     app.register_blueprint(simulator_bp)
@@ -281,14 +284,14 @@ def _enqueue_setup_log(line: str):
     enqueue_setup_log(_setup_logs, line)
 
 
-# Register signal handlers via the helper module so Ctrl+C/SIGTERM are
-# forwarded to spawned ask/create processes. The getter returns current
-# live process references so the handler can operate on up-to-date values.
-try:
-    register_signal_handlers(lambda: {'_setup_auth_proc': _setup_auth_proc, '_setup_proc': _setup_proc, 'master_fd': _setup_auth_master_fd})
-except Exception:
-    pass
+def shutdown_setup_children(signum):
+    """Called by the server's worker-exit hook to reap isolated ASK processes."""
+    from signal_helpers import _shutdown_children
+    _shutdown_children(lambda: {'_setup_auth_proc': _setup_auth_proc,
+        '_setup_proc': _setup_proc, 'master_fd': _setup_auth_master_fd}, signum, None)
 
+
+# Gunicorn owns worker signals. Register standalone handlers only in __main__.
 
 def _setup_reader_thread(proc, prefix=None):
     # Delegate implementation to helpers while binding enqueue function
@@ -309,9 +312,17 @@ def invoke_skill():
     # normal requests we keep the existing behavior.
     try:
         if request.headers.get('X-Simulator-Bypass') or request.headers.get('X-Simulator-Signature'):
+            # Simulator bypass is available only to authenticated API users.
+            user = get_env_secret('APP_USERNAME')
+            password = get_env_secret('APP_PASSWORD')
+            auth = request.authorization
+            if not user or not password or not auth or auth.username != user or auth.password != password:
+                return Response('Simulator authentication required', 403)
             try:
-                from ask_sdk_webservice_support.webservice_handler import WebserviceSkillHandler
                 from ask_sdk_webservice_support import verifier_constants
+                from ask_sdk_webservice_support.webservice_handler import (
+                    WebserviceSkillHandler,
+                )
                 content = request.data.decode(verifier_constants.CHARACTER_ENCODING)
                 handler = WebserviceSkillHandler(skill_adapter._skill, verify_signature=False, verify_timestamp=False, verifiers=[])
                 response = handler.verify_request_and_dispatch(http_request_headers=request.headers, http_request_body=content)
@@ -524,7 +535,7 @@ def setup_start():
                     # Spawn ask configure inside a pseudo-tty so it prints the auth URL.
                     master_fd, slave_fd = pty.openpty()
                     auth_cmd = ['ask','configure','--no-browser']
-                    _setup_auth_proc = subprocess.Popen(auth_cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
+                    _setup_auth_proc = subprocess.Popen(auth_cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True, start_new_session=True)
                     os.close(slave_fd)
                     # remember the endpoint requested so we can start creation after auth
                     global _pending_endpoint, _setup_auth_master_fd
@@ -575,7 +586,7 @@ def setup_start():
             cmd = ['/bin/bash', script_path, '--endpoint', endpoint, '--profile', profile, '--locale', locale, '--stage', stage]
             if not upload_models:
                 cmd.append('--no-upload-models')
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
             _setup_proc = proc
             t = threading.Thread(target=_setup_reader_thread, args=(proc, 'CREATE'), daemon=True)
             t.start()
@@ -682,7 +693,7 @@ def setup_code():
         cmd = ['/bin/bash', script_path, '--endpoint', endpoint_val, '--profile', profile, '--locale', locale, '--stage', stage]
         _enqueue_setup_log(f'Starting create script: {cmd}')
         try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
         except Exception as e:
             _enqueue_setup_log(f'Failed to spawn create script: {e}')
             raise
@@ -733,7 +744,19 @@ def setup_stop():
     return jsonify({'status':'stopped'})
 
 
+@app.before_request
+def _request_playback_snapshot():
+    from skill import data
+    data.begin_request()
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok'})
+
+
 if __name__ == "__main__":
+    register_signal_handlers(lambda: {'_setup_auth_proc': _setup_auth_proc, '_setup_proc': _setup_proc, 'master_fd': _setup_auth_master_fd})
     port = int(os.environ.get('PORT', '5000'))
     # Respect FLASK_DEBUG (1 enables debug mode) and FLASK_RELOADER (1 enables reloader)
     flask_debug = os.environ.get('FLASK_DEBUG', '0') == '1'
