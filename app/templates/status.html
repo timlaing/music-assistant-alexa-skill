@@ -19,6 +19,8 @@
             </head>
             <body>
                 <h1>Service Status</h1>
+                <p><a href="/setup">Set up personal Alexa skill</a></p>
+                <div class="row" id="urls-row">__URLS_HTML__</div>
                 <div class="row">__SKILL_HTML__</div>
                 <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
                 <div class="row" id="api-row">__MA_API_HTML__</div>
@@ -26,6 +28,12 @@
                 <div class="row" id="metadata-row">__METADATA_HTML__</div>
                 <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
                 <script>
+                (function pollUrls(){
+                    fetch('/status/urls').then(r=>r.json()).then(j=>{
+                        document.getElementById('urls-row').innerHTML = j.urls_html;
+                        setTimeout(pollUrls, j.checking ? 2000 : 15000);
+                    }).catch(()=>setTimeout(pollUrls, 10000));
+                })();
                 // Fetch MA and Alexa checks independently so each row updates when ready
                 (function pollMa(){
                     fetch('/status/ma').then(r=>r.json()).then(j=>{

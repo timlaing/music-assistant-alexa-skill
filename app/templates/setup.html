@@ -4,7 +4,7 @@
 <style>body{font:17px system-ui;background:#f4f6f8;color:#17212b;margin:0}main{max-width:780px;margin:32px auto;padding:28px;background:white;border-radius:12px}h1{font-size:28px}section{border-top:1px solid #ddd;margin-top:24px;padding-top:16px}label{display:block;margin:12px 0}select,button{font:inherit;padding:10px;max-width:100%}select{width:100%}button{cursor:pointer;background:#115d93;color:white;border:0;border-radius:6px;margin:8px 8px 8px 0}button:disabled{opacity:.5;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f6f8;padding:12px}#message{padding:12px;background:#edf5fc}a{color:#115d93}dt{font-weight:600;margin-top:10px}dd{margin-left:0;overflow-wrap:anywhere}[hidden]{display:none!important}</style></head>
 <body><main><a href="/status">← Status</a><h1>Set up your personal Alexa skill</h1>
 <p>Connect your Amazon developer account, select your existing personal skill, review the settings, and deploy. This enables development testing on your account.</p>
-<p>First register a Login with Amazon security profile and enter its client ID, secret and HTTPS callback URL in your installation settings. <a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html" target="_blank" rel="noreferrer">Amazon registration guide</a>. Open this page on that public HTTPS hostname.</p>
+<p>First register a Login with Amazon security profile and enter its client ID, secret and HTTPS callback URL in your installation settings. <a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html" target="_blank" rel="noreferrer">Amazon registration guide</a>. Open this page in Home Assistant. Amazon sign-in opens in a separate window and returns through the registered callback.</p>
 <p id="error" role="alert" hidden></p>
 <p id="message" role="status" aria-live="polite">Loading setup status…</p>
 <section><h2>1. Connect Amazon</h2><button id="connect">Connect Amazon</button><span id="connected"></span></section>
@@ -21,9 +21,10 @@
 <p>After Amazon confirms deployment, test playback on your Echo. Your Echo must use this Amazon account and the configured locale. No publication or certification is requested.</p></main>
 <script>
 const el = id => document.getElementById(id);
+const base = {{ request.script_root|tojson }};
 let csrf = '', status = {}, accountsLoaded = false, pending = false;
 async function api(path, payload) {
- const response = await fetch(path, {method: payload === undefined ? 'GET' : 'POST', credentials:'same-origin', headers: payload === undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf}, body: payload === undefined ? undefined : JSON.stringify(payload)});
+ const response = await fetch(base + path, {method: payload === undefined ? 'GET' : 'POST', credentials:'same-origin', headers: payload === undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf}, body: payload === undefined ? undefined : JSON.stringify(payload)});
  const body = await response.json(); if (!response.ok) throw Error(body.error || 'Request failed. Reload and retry.'); return body;
 }
 function option(select, value, label) { const item = document.createElement('option'); item.value = value; item.textContent = label; select.append(item); }
@@ -42,6 +43,7 @@ async function loadSkills() {
 }
 async function refresh() {
  status=await api('/setup/status');csrf=status.csrf;
+ if(status.oauth_ready){await api('/setup/oauth/finish',{});accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');status=await api('/setup/status');}
  const busy=pending||['preparing','running'].includes(status.phase);
  el('message').textContent=status.configuration_error||status.message||'Connect Amazon to get started.';
  el('connected').textContent=status.connected?'Connected':'';
@@ -52,7 +54,7 @@ async function refresh() {
  if(status.connected&&!accountsLoaded) {const body=await api('/setup/accounts');body.vendors.forEach(v=>option(el('vendors'),v.id,v.name+' — '+v.id));accountsLoaded=true;if(status.vendor_id){el('vendors').value=status.vendor_id;await loadSkills();}}
 }
 async function action(fn) {pending=true;el('error').hidden=true;try{await fn();}catch(error){el('error').textContent=error.message;el('error').hidden=false;}finally{pending=false;}}
-el('connect').onclick=()=>action(async()=>{const body=await api('/setup/oauth/start',{});window.location.assign(body.url);});
+el('connect').onclick=()=>{const popup=window.open('about:blank','amazon-signin');if(!popup){el('error').textContent='Allow pop-ups to connect Amazon.';el('error').hidden=false;return;}popup.opener=null;action(async()=>{try{const body=await api('/setup/oauth/start',{});popup.location.assign(body.url);}catch(error){popup.close();throw error;}});};
 el('vendors').onchange=()=>action(loadSkills);
 el('reload').onclick=()=>action(loadSkills);
 el('review').onclick=()=>action(async()=>{const skill=el('skills').value;if(!el('vendors').value||!skill)throw Error('Choose an account and skill first.');await api('/setup/preview',{vendor:el('vendors').value,skill:skill==='__create__'?'':skill,create:skill==='__create__'});await refresh();});

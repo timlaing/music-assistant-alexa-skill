@@ -10,8 +10,10 @@ import music_assistant_api as ma_api
 import swagger_ui as maa_swagger
 from endpoints import devices_bp, invocations_bp, simulator_bp, status_bp
 from env_secrets import get_env_secret
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, redirect, request
 from flask_ask_sdk.skill_adapter import SkillAdapter
+from ingress import IngressMiddleware, ui_path
+from ingress import enabled as ingress_enabled
 from setup_helpers import ask_home_from_credentials_dir
 from skill.lambda_function import (
     sb,  # sb is the SkillBuilder from skill/lambda_function.py
@@ -165,6 +167,7 @@ alexa_app.wsgi_app = ProxyFix(alexa_app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 ma_app.wsgi_app = BasicAuthMiddleware(ma_app.wsgi_app)
 alexa_app.wsgi_app = BasicAuthMiddleware(alexa_app.wsgi_app)
 app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {'/ma': ma_app.wsgi_app, '/alexa': alexa_app.wsgi_app})
+app.wsgi_app = IngressMiddleware(app.wsgi_app)
 # Log mount information only when running the module as the main program
 try:
     if __name__ == '__main__':
@@ -176,6 +179,14 @@ except Exception:
 # Global basic auth for the app (protect everything except the root Alexa skill endpoint)
 @app.before_request
 def _check_app_basic_auth():
+    if request.environ.get('ma.trusted_ingress'):
+        if request.path == '/':
+            return redirect(request.script_root + '/status')
+        return None
+    if request.path in ('/setup/oauth/callback', '/ma-alexa-skill/setup/oauth/callback'):
+        return None  # one-time state validation; connection completes in the UI browser
+    if ingress_enabled() and ui_path(request.path):
+        return Response('Open this page through Home Assistant ingress', 403)
     # Allow the Alexa skill POST endpoint to be called without app-level auth
     if request.path == '/health' or (request.path == '/' and request.method == 'POST'):
         return None
@@ -190,6 +201,28 @@ def _check_app_basic_auth():
         resp = Response('Access denied', 401)
         resp.headers['WWW-Authenticate'] = 'Basic realm="music-assistant-skill"'
         return resp
+
+
+@app.after_request
+def _ingress_response(response):
+    if not request.environ.get('ma.trusted_ingress'):
+        return response
+    prefix = request.script_root
+    def links(content):
+        return re.sub(r"(href=[\"']|action=[\"']|src=[\"']|fetch\([\"']|window.location=[\"'])/(?!/)",
+                      lambda match: match.group(1) + prefix + '/', content)
+    if response.mimetype == 'text/html':
+        response.set_data(links(response.get_data(as_text=True)))
+    elif response.is_json:
+        body = response.get_json()
+        if isinstance(body, dict):
+            for key, value in body.items():
+                if key.endswith('_html') and isinstance(value, str):
+                    body[key] = links(value)
+            response.set_data(app.json.dumps(body))
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 # Capture incoming Alexa POST payloads so we can show them on the status page

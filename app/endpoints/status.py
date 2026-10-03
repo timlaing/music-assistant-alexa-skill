@@ -243,6 +243,7 @@ def status():
     try:
         tpl_path = Path(__file__).parent.parent / 'templates' / 'status.html'
         tpl = tpl_path.read_text()
+        tpl = tpl.replace('__URLS_HTML__', 'Checking public URLs…')
         tpl = tpl.replace('__SKILL_HTML__', '<span class="led green"></span> Skill running')
         tpl = tpl.replace('__SKILL_ASK_HTML__', '<span class="muted">Checking ASK CLI status...</span>')
         tpl = tpl.replace('__MA_API_HTML__', '<span class="muted">Checking Music Assistant API...</span>')
@@ -293,3 +294,10 @@ def status_invocations():
     else:
         invocations_html = '<span class="muted">No recent invocations</span>'
     return jsonify({'count': count, 'invocations_html': invocations_html})
+
+
+@status_bp.route('/status/urls', methods=['GET'])
+def status_urls():
+    from reachability import html, snapshot
+    result = snapshot()
+    return jsonify(**result, urls_html=html(result))

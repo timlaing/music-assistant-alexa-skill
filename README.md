@@ -29,7 +29,7 @@ For a standalone host, run the project with Docker Compose. This will build and 
     ```
 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured).
-6. Open `/setup` on the public HTTPS callback hostname, authenticate, connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. The browser returns automatically from Amazon. See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+6. For standalone Docker, open `/setup` and authenticate with app credentials; for the maintained add-on use Home Assistant ingress with no second login. Connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. Amazon returns through `/ma-alexa-skill/setup/oauth/callback`, and the original wizard completes the connection automatically. See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
 The new wizard is a **1.3.0-beta.1 candidate**, with live Amazon/Echo acceptance pending. Stable **1.2.0** does not contain it. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this candidate rather than an upstream image.
 
@@ -162,3 +162,5 @@ See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclosures.
 
 For `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, `LWA_REDIRECT_URI`, `SKILL_CERTIFICATE_TYPE` and `SKILL_DEPLOYMENT_PATH`, see the [personal skill deployment options and guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+
+The maintained add-on exposes `/status` and `/setup` through Home Assistant ingress on private port 8099, with no app login. It blocks these pages on the external 5000 listener. Status also checks skill-health, stream-host and current-audio HTTPS reachability in the background; see the [ingress and callback guide](docs/PERSONAL_SKILL_DEPLOYMENT.md#home-assistant-ingress-and-nginx-proxy-manager).

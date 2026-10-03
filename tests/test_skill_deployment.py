@@ -152,7 +152,7 @@ class Amazon:
 def deployment(monkeypatch, tmp_path):
     monkeypatch.setenv("LWA_CLIENT_ID", "client")
     monkeypatch.setenv("LWA_CLIENT_SECRET", "private-client-secret")
-    monkeypatch.setenv("LWA_REDIRECT_URI", BASE_URL + "/setup/oauth/callback")
+    monkeypatch.setenv("LWA_REDIRECT_URI", BASE_URL + "/ma-alexa-skill/setup/oauth/callback")
     monkeypatch.setenv("SKILL_HOSTNAME", BASE_URL + "/ma-alexa-skill/")
     monkeypatch.setenv("LOCALE", "en-GB")
     monkeypatch.setenv("SKILL_CERTIFICATE_TYPE", "Trusted")
@@ -403,8 +403,9 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
         headers=AUTH,
         base_url=BASE_URL,
     )
-    assert response.status_code == 303
-    assert response.headers["Location"] == "/setup"
+    assert response.status_code == 200
+    assert client.get('/setup/status', headers=AUTH, base_url=BASE_URL).json['oauth_ready']
+    assert client.post('/setup/oauth/finish', headers=headers, json={}, base_url=BASE_URL).status_code == 200
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert (
         client.get(
@@ -417,11 +418,11 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
     )
 
 
-def test_setup_requires_credentials_and_public_origin(deployment, client, monkeypatch):
+def test_setup_requires_credentials_outside_ingress(deployment, client, monkeypatch):
     status = client.get("/setup/status", headers=AUTH).json
     headers = {**AUTH, "X-CSRF-Token": status["csrf"]}
     assert (
-        client.post("/setup/oauth/start", headers=headers, json={}).status_code == 400
+        client.post("/setup/oauth/start", headers=headers, json={}).status_code == 200
     )
     monkeypatch.delenv("APP_USERNAME")
     monkeypatch.delenv("APP_PASSWORD")

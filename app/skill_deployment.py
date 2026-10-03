@@ -20,7 +20,7 @@ from urllib.parse import quote, urlencode, urlparse
 
 import requests
 from env_secrets import get_env_secret
-from flask import Blueprint, current_app, jsonify, redirect, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request
 
 APP_DIR = Path(__file__).resolve().parent
 API = "https://api.amazonalexa.com"
@@ -95,8 +95,10 @@ def oauth_config():
     callback = https_url(
         os.environ.get("LWA_REDIRECT_URI", "").strip(), "Amazon callback"
     )
-    if urlparse(callback).path != "/setup/oauth/callback":
-        raise DeploymentError("Amazon callback path must be /setup/oauth/callback.")
+    if urlparse(callback).path != "/ma-alexa-skill/setup/oauth/callback":
+        raise DeploymentError(
+            "Amazon callback path must be /ma-alexa-skill/setup/oauth/callback."
+        )
     if not client or not secret:
         raise DeploymentError(
             "Configure the Login with Amazon client ID and secret first."
@@ -309,31 +311,45 @@ class DeploymentManager:
             }
         )
 
-    def callback(self, state, browser_nonce, code):
+    def accept_callback(self, state, code):
+        """Public return endpoint: retain code, never connect an account here."""
         with self.lock:
-            if self.state.get("phase") in BUSY:
-                raise DeploymentError(
-                    "Wait for the current operation before reconnecting."
-                )
-            pending = self.state.pop("oauth", {})
-            self.save()  # single use, even when Amazon exchange fails
+            pending = self.state.get("oauth", {})
             if (
                 pending.get("expires", 0) < time.time()
+                or not code
                 or not secrets.compare_digest(pending.get("state", ""), digest(state))
+                or pending.get("client_key") != config_key()
+            ):
+                raise DeploymentError(
+                    "Sign-in expired or was already returned. Connect Amazon again."
+                )
+            pending.pop("state")
+            pending["code"] = code
+            self.save()
+
+    def complete_authorization(self, browser_nonce):
+        with self.lock:
+            pending = self.state.get("oauth", {})
+            if (
+                pending.get("expires", 0) < time.time()
+                or not pending.get("code")
                 or not secrets.compare_digest(
                     pending.get("browser", ""), digest(browser_nonce)
                 )
                 or pending.get("client_key") != config_key()
-                or not code
+                or self.state.get("phase") in BUSY
             ):
                 raise DeploymentError(
                     "Sign-in expired or did not match this browser. Connect Amazon again."
                 )
+            self.state.pop("oauth")
             self.state.pop("review", None)
+            self.save()
             self._token(
                 {
                     "grant_type": "authorization_code",
-                    "code": code,
+                    "code": pending["code"],
                     "redirect_uri": oauth_config()[2],
                 }
             )
@@ -342,6 +358,10 @@ class DeploymentManager:
                 message="Amazon connected. Select the developer account and personal skill.",
             )
             self.save()
+
+    def callback(self, state, browser_nonce, code):
+        self.accept_callback(state, code)
+        self.complete_authorization(browser_nonce)
 
     def _token(self, payload):
         client, secret, _ = oauth_config()
@@ -805,7 +825,14 @@ def register_setup(app):
 
     @blueprint.before_request
     def protect():
-        if not get_env_secret("APP_USERNAME") or not get_env_secret("APP_PASSWORD"):
+        if (
+            request.path
+            not in ("/setup/oauth/callback", "/ma-alexa-skill/setup/oauth/callback")
+            and not request.environ.get("ma.trusted_ingress")
+            and (
+                not get_env_secret("APP_USERNAME") or not get_env_secret("APP_PASSWORD")
+            )
+        ):
             return jsonify(
                 error="Set the app username and password before using skill deployment."
             ), 403
@@ -821,7 +848,9 @@ def register_setup(app):
     def private(response):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Frame-Options"] = (
+            "SAMEORIGIN" if request.environ.get("ma.trusted_ingress") else "DENY"
+        )
         return response
 
     @blueprint.errorhandler(DeploymentError)
@@ -836,6 +865,11 @@ def register_setup(app):
     def status():
         response = jsonify(
             **manager().public_status(),
+            oauth_ready=bool(manager().state.get("oauth", {}).get("code"))
+            and secrets.compare_digest(
+                manager().state.get("oauth", {}).get("browser", ""),
+                digest(request.cookies.get("setup_oauth", "")),
+            ),
             csrf=request.cookies.get("setup_csrf") or secrets.token_urlsafe(32),
         )
         body = response.get_json()
@@ -845,40 +879,42 @@ def register_setup(app):
             httponly=True,
             secure=request.is_secure,
             samesite="Strict",
+            path=request.script_root + "/setup",
         )
         return response
 
     @blueprint.route("/setup/oauth/start", methods=["POST"])
     def connect():
-        callback = urlparse(oauth_config()[2])
-        if request.host != callback.netloc or not request.is_secure:
-            raise DeploymentError(
-                "Open /setup on the public HTTPS callback hostname before connecting Amazon."
-            )
+        oauth_config()  # validate the separate public callback registration
         nonce = secrets.token_urlsafe(32)
         response = jsonify(url=manager().authorize(nonce))
         response.set_cookie(
             "setup_oauth",
             nonce,
             max_age=600,
-            secure=True,
+            secure=request.is_secure,
             httponly=True,
             samesite="Lax",
-            path="/setup",
+            path=request.script_root + "/setup",
         )
         return response
 
+    @blueprint.route("/ma-alexa-skill/setup/oauth/callback")
     @blueprint.route("/setup/oauth/callback")
     def callback():
-        manager().callback(
-            request.args.get("state", ""),
-            request.cookies.get("setup_oauth", ""),
-            request.args.get("code", ""),
+        manager().accept_callback(
+            request.args.get("state", ""), request.args.get("code", "")
         )
-        response = redirect("/setup", code=303)
-        response.delete_cookie(
-            "setup_oauth", path="/setup", secure=True, httponly=True, samesite="Lax"
+        return Response(
+            "<!doctype html><title>Amazon sign-in returned</title><p>Return to the Home Assistant setup page to finish connecting Amazon. You can close this window.</p><script>window.close();</script>",
+            mimetype="text/html",
         )
+
+    @blueprint.route("/setup/oauth/finish", methods=["POST"])
+    def finish_authorization():
+        manager().complete_authorization(request.cookies.get("setup_oauth", ""))
+        response = jsonify(status="connected")
+        response.delete_cookie("setup_oauth", path=request.script_root + "/setup")
         return response
 
     @blueprint.route("/setup/accounts")
