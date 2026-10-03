@@ -240,6 +240,9 @@ class DeploymentManager:
         self.cancel = threading.Event()
         self.thread = None
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if self.state.get("import_unknown") and not self.state.get("import_attempt_id"):
+            self.state["import_attempt_id"] = secrets.token_urlsafe(24)
+            self.save()
         if self.state.get("phase") in BUSY:
             self.state.update(
                 phase="interrupted",
@@ -278,6 +281,7 @@ class DeploymentManager:
                     "creation_unknown",
                     "review",
                     "verified_at",
+                    "import_attempt_id",
                 )
             }
             if self.state.get("import_unknown"):
@@ -728,7 +732,7 @@ class DeploymentManager:
         )
         # Persist the uncertain transition BEFORE Amazon can accept the mutation.
         # A lost response, invalid operation URL or shutdown must block another import.
-        self.update(import_unknown=True)
+        self.update(import_unknown=True, import_attempt_id=secrets.token_urlsafe(24))
         try:
             response = self.api(
                 "POST",
@@ -745,6 +749,78 @@ class DeploymentManager:
             message="Amazon is importing and building the skill…",
         )
         self.finish()
+
+    def reconcile_import(self, payload):
+        """Record an owner's Amazon-confirmed terminal result before releasing a block."""
+        with self.lock:
+            if self.state.get("phase") in BUSY or (
+                self.thread and self.thread.is_alive()
+            ):
+                raise DeploymentError(
+                    "Wait for the current operation before reconciling."
+                )
+            if not self.state.get("import_unknown") or self.state.get("import_path"):
+                raise DeploymentError(
+                    "There is no import without a recovery ID to reconcile."
+                )
+            if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+                raise DeploymentError(
+                    "Confirm the terminal result with Amazon before continuing."
+                )
+            if payload.get("attempt_id") != self.state.get(
+                "import_attempt_id"
+            ) or payload.get("skill_id") != self.state.get("skill_id"):
+                raise DeploymentError(
+                    "The pending import changed. Reload and verify the displayed skill."
+                )
+            result, reference = payload.get("result"), payload.get("reference")
+            if result not in ("SUCCEEDED", "FAILED", "NOT_ACCEPTED"):
+                raise DeploymentError(
+                    "Record a confirmed success, failure or non-acceptance; a running or unknown operation cannot be cleared."
+                )
+            if (
+                not isinstance(reference, str)
+                or not 1 <= len(reference.strip()) <= 1000
+                or any(ord(c) < 32 for c in reference)
+            ):
+                raise DeploymentError(
+                    "Provide Amazon's confirmation reference or an explanation without secrets."
+                )
+            vendor, skill = self.state.get("vendor_id"), self.state.get("skill_id")
+            if not vendor or not any(
+                item["id"] == skill for item in self.skills(vendor)
+            ):
+                raise DeploymentError(
+                    "Reconnect the original developer account and verify ownership of the saved skill."
+                )
+            state = copy.deepcopy(self.state)
+            state.setdefault("import_reconciliations", []).append(
+                {
+                    "attempt_id": state["import_attempt_id"],
+                    "skill_id": skill,
+                    "vendor_id": vendor,
+                    "result": result,
+                    "reference": reference.strip(),
+                    "recorded_at": time.time(),
+                    "source": "owner_confirmed_with_amazon",
+                }
+            )
+            state.update(
+                import_unknown=False,
+                review=None,
+                verified_at=None,
+                phase="reconciled",
+                message="Your confirmed Amazon result was recorded. Prepare a fresh review before deploying again.",
+            )
+            # The confirmation and marker change are committed together; a write failure
+            # keeps the in-memory block too. Owner attestation is not API verification.
+            try:
+                atomic_write(self.path, json.dumps(state).encode())
+            except OSError as exc:
+                raise DeploymentError(
+                    "Could not record the confirmation. The import remains blocked; check private storage and retry."
+                ) from exc
+            self.state = state
 
     def wait_manifest(self, skill):
         deadline = time.monotonic() + 600
@@ -1017,6 +1093,11 @@ def register_setup(app):
             raise DeploymentError("Prepare a review before deploying.")
         manager().start_job("running", manager().deploy, payload["review_id"])
         return jsonify(status="running"), 202
+
+    @blueprint.route("/setup/reconcile-import", methods=["POST"])
+    def reconcile():
+        manager().reconcile_import(request.get_json(silent=True))
+        return jsonify(status="reconciled")
 
     @blueprint.route("/setup/resume", methods=["POST"])
     def resume():

@@ -739,3 +739,142 @@ def test_resume_checks_original_vendor_and_skill_ownership(deployment, other_acc
     assert manager.state["phase"] != "complete"
     assert not any(method == "PUT" for method, _, _ in amazon.calls)
     assert not any("/imports/" in url for _, url, _ in amazon.calls)
+
+
+def uncertain_import(manager):
+    manager.update(
+        import_unknown=True,
+        import_path=None,
+        import_attempt_id="pending-attempt",
+        vendor_id="vendor",
+        skill_id=SKILL,
+        phase="interrupted",
+    )
+    return {
+        "attempt_id": "pending-attempt",
+        "skill_id": SKILL,
+        "result": "FAILED",
+        "reference": "Amazon support confirmed this attempt finished",
+        "confirmed": True,
+    }
+
+
+@pytest.mark.parametrize("result", ["SUCCEEDED", "FAILED", "NOT_ACCEPTED"])
+def test_owner_reconciliation_records_terminal_result_before_clearing(
+    deployment, client, monkeypatch, result
+):
+    from app import app
+    from test_ingress import gateway
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    payload = uncertain_import(manager)
+    payload["result"] = result
+    csrf = gateway(client, "/setup/status").json["csrf"]
+    assert (
+        client.post("/setup/reconcile-import", json=payload, headers=AUTH).status_code
+        == 403
+    )
+    assert (
+        gateway(client, "/setup/reconcile-import", "post", json=payload).status_code
+        == 403
+    )
+    response = gateway(
+        client,
+        "/setup/reconcile-import",
+        "post",
+        json=payload,
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200
+    saved = json.loads(manager.path.read_text())
+    assert saved["import_unknown"] is False
+    record = saved["import_reconciliations"][-1]
+    assert (
+        record["result"] == result and record["source"] == "owner_confirmed_with_amazon"
+    )
+    assert record["attempt_id"] == "pending-attempt" and record["skill_id"] == SKILL
+    assert record["vendor_id"] == "vendor" and record["recorded_at"] > 0
+    assert record["reference"] == payload["reference"]
+    assert saved["phase"] == "reconciled" and saved["verified_at"] is None
+    assert saved["review"] is None and amazon.created == 0 and not amazon.imported
+    manager.prepare("vendor", SKILL, False)
+    assert manager.state["phase"] == "ready"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"confirmed": False},
+        {"confirmed": "true"},
+        {"result": "IN_PROGRESS"},
+        {"result": "UNKNOWN"},
+        {"result": ""},
+        {"reference": ""},
+        {"reference": "bad\nreference"},
+        {"skill_id": OTHER},
+        {"attempt_id": "stale-attempt"},
+    ],
+)
+def test_reconciliation_requires_explicit_current_amazon_confirmation(
+    deployment, changes
+):
+    manager, _ = deployment
+    payload = uncertain_import(manager)
+    payload.update(changes)
+    with pytest.raises(DeploymentError):
+        manager.reconcile_import(payload)
+    assert manager.state["import_unknown"] is True
+    assert "import_reconciliations" not in manager.state
+
+
+def test_reconciliation_blocks_busy_jobs_and_other_account(deployment):
+    manager, amazon = deployment
+    payload = uncertain_import(manager)
+    manager.update(phase="running")
+    with pytest.raises(DeploymentError, match="current operation"):
+        manager.reconcile_import(payload)
+    manager.update(phase="interrupted")
+    original = amazon.request
+
+    def other_vendor(method, url, **kwargs):
+        if url == API + "/v1/vendors":
+            return Response({"vendors": [{"id": "other-vendor"}]})
+        return original(method, url, **kwargs)
+
+    amazon.request = other_vendor
+    with pytest.raises(DeploymentError):
+        manager.reconcile_import(payload)
+    assert manager.state["import_unknown"] is True
+
+
+def test_failed_reconciliation_save_keeps_both_blocks(deployment, monkeypatch):
+    import skill_deployment
+
+    manager, _ = deployment
+    payload = uncertain_import(manager)
+
+    def failed_write(*_args):
+        raise OSError("simulated persistence failure")
+
+    monkeypatch.setattr(skill_deployment, "atomic_write", failed_write)
+    with pytest.raises(DeploymentError, match="Could not record"):
+        manager.reconcile_import(payload)
+    assert manager.state["import_unknown"] is True
+    assert json.loads(manager.path.read_text())["import_unknown"] is True
+    assert "import_reconciliations" not in manager.state
+
+
+def test_restart_gives_legacy_uncertain_import_a_stable_attempt_id(deployment):
+    manager, amazon = deployment
+    uncertain_import(manager)
+    manager.state.pop("import_attempt_id")
+    manager.save()
+    restored = DeploymentManager(manager.path, amazon)
+    attempt = restored.public_status()["import_attempt_id"]
+    assert attempt
+    assert (
+        DeploymentManager(manager.path, amazon).public_status()["import_attempt_id"]
+        == attempt
+    )

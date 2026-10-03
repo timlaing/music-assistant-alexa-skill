@@ -163,3 +163,7 @@ See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclos
 For `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, `SKILL_CERTIFICATE_TYPE`, `APP_SETTINGS_PATH` and `SKILL_DEPLOYMENT_PATH`, see the [personal skill deployment options and guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
 The maintained add-on exposes `/status` and `/setup` through Home Assistant ingress on private port 8099, with no app login. It blocks these pages on the external 5000 listener. Status also checks skill-health, stream-host and current-audio HTTPS reachability in the background; see the [ingress and callback guide](docs/PERSONAL_SKILL_DEPLOYMENT.md#home-assistant-ingress-and-nginx-proxy-manager).
+
+### Migration release compatibility
+
+Candidate 1.3.0-beta.1 keeps the legacy Supervisor schema with migration-only labels to preserve existing configuration during upgrade. Settings are imported once into `/data/app-settings.json`; all subsequent edits belong in ingress Setup. Later edits to the legacy fields are ignored. The obsolete AWS region option remains removed. Remove this temporary compatibility schema only in a later release once migration is verified.

@@ -31,6 +31,15 @@
 </details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>
 </form></section>
 <section><h2>1. Connect Amazon</h2><button id="connect">Connect Amazon</button><span id="connected"></span></section>
+<section id="reconciliation" hidden><h2>Recover an uncertain import</h2>
+<p>Amazon may have accepted an import without returning its recovery ID. Check the saved skill’s import with Amazon before continuing. Do not clear this block while the operation is running or its result remains unknown.</p>
+<p>Saved skill: <strong id="reconcileSkill"></strong></p>
+<label>Type the saved skill ID to confirm<input id="reconcileSkillInput" autocomplete="off"></label>
+<label>Confirmed Amazon result<select id="reconcileResult"><option value="">Choose a confirmed result…</option><option value="SUCCEEDED">Import succeeded</option><option value="FAILED">Import failed</option><option value="NOT_ACCEPTED">Amazon confirmed it was not accepted</option></select></label>
+<label>Amazon confirmation reference or explanation<input id="reconcileReference" maxlength="1000"><small>Do not include credentials or authorization codes.</small></label>
+<label><input id="reconcileConfirmed" type="checkbox"> I confirmed this result with Amazon and verified no import is still running for this attempt.</label>
+<button id="reconcileImport">Record confirmed result</button>
+<p>This records your confirmation, clears the retry block and requires a fresh review. It does not mark deployment verified or submit another import.</p></section>
 <section id="selection" hidden><h2>2. Choose your personal skill</h2>
 <label>Developer account<select id="vendors"><option value="">Choose account…</option></select></label>
 <label>Skill<select id="skills"><option value="">Choose skill…</option></select></label>
@@ -79,6 +88,7 @@ async function refresh() {
  ['vendors','skills','reload','saveSettings'].forEach(id=>el(id).disabled=busy);
  ['review','deploy'].forEach(id=>el(id).disabled=busy||Boolean(status.import_unknown));
  el('resume').hidden=!status.can_resume;el('resume').disabled=busy;
+ el('reconciliation').hidden=!status.import_unknown||status.can_resume;el('reconcileSkill').textContent=status.skill_id||'';el('reconcileImport').disabled=busy||!status.connected;
  showReview(status.review);
  if(status.connected&&!accountsLoaded) {const body=await api('/setup/accounts');body.vendors.forEach(v=>option(el('vendors'),v.id,v.name+' — '+v.id));accountsLoaded=true;if(status.vendor_id){el('vendors').value=status.vendor_id;await loadSkills();}}
 }
@@ -88,6 +98,7 @@ el('vendors').onchange=()=>action(loadSkills);
 el('reload').onclick=()=>action(loadSkills);
 el('review').onclick=()=>action(async()=>{const skill=el('skills').value;if(!el('vendors').value||!skill)throw Error('Choose an account and skill first.');await api('/setup/preview',{vendor:el('vendors').value,skill:skill==='__create__'?'':skill,create:skill==='__create__'});await refresh();});
 el('deploy').onclick=()=>action(async()=>{await api('/setup/deploy',{review_id:status.review.id});await refresh();});
+el('reconcileImport').onclick=()=>action(async()=>{await api('/setup/reconcile-import',{attempt_id:status.import_attempt_id,skill_id:el('reconcileSkillInput').value,result:el('reconcileResult').value,reference:el('reconcileReference').value,confirmed:el('reconcileConfirmed').checked});el('reconcileReference').value='';el('reconcileConfirmed').checked=false;await refresh();});
 el('resume').onclick=()=>action(async()=>{await api('/setup/resume',{});await refresh();});
 el('settingsForm').onsubmit=event=>{event.preventDefault();action(async()=>{const values={};fields.forEach(id=>values[id]=el(id).type==='checkbox'?el(id).checked:el(id).value);secretFields.forEach(id=>values[id]=el(id).value);const clear_secrets=['ma_api_token','lwa_client_secret'].filter(id=>el('clear_'+id).checked);showSettings(await api('/setup/settings',{values,clear_secrets,revision:settingsRevision}));el('saved').textContent='Saved. Review and deploy separately to update Amazon.';accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');await refresh();});};
 el('showPassword').onclick=()=>action(async()=>{if(!el('currentPassword').hidden){el('currentPassword').hidden=true;el('currentPassword').textContent='';return;}const result=await api('/setup/settings/api-password',{});el('currentPassword').textContent=result.password;el('currentPassword').hidden=false;});
