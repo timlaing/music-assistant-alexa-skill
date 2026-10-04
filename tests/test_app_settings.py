@@ -247,10 +247,7 @@ def test_full_form_boolean_settings_and_request_control_credentials(monkeypatch)
 def test_skill_endpoint_defaults_to_audio_url_and_supports_override(monkeypatch):
     monkeypatch.setenv("SKILL_HOSTNAME", "")
     monkeypatch.setenv("MA_HOSTNAME", "https://public.example.com/audio/")
-    assert (
-        get_setting("SKILL_HOSTNAME")
-        == "https://public.example.com/audio/ma-alexa-skill/"
-    )
+    assert get_setting("SKILL_HOSTNAME") == "https://public.example.com/ma-alexa-skill/"
     assert settings()["endpoint"] == get_setting("SKILL_HOSTNAME")
     assert store().public()["values"]["skill_hostname"] == ""
     assert (
@@ -282,3 +279,23 @@ def test_saved_empty_override_tracks_audio_url_changes():
     )
     assert settings()["endpoint"] == "https://two.example.com/ma-alexa-skill/"
     assert instance.public()["values"]["skill_hostname"] == ""
+
+
+@pytest.mark.parametrize(
+    "audio,expected",
+    [
+        (
+            "https://public.example.com:8443/audio/?source=ma#stream",
+            "https://public.example.com:8443/ma-alexa-skill/",
+        ),
+        ("", ""),
+        ("audio.local/prefix", "audio.local/prefix/ma-alexa-skill/"),
+    ],
+)
+def test_default_skill_endpoint_origin_and_legacy_inputs(audio, expected):
+    from app_settings import effective_skill_endpoint
+
+    assert (
+        effective_skill_endpoint({"ma_hostname": audio, "skill_hostname": ""})
+        == expected
+    )
