@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from cryptography import x509
+
 DEFAULTS = {
     "ma_hostname": "",
     "skill_hostname": "",
@@ -22,6 +24,7 @@ DEFAULTS = {
     "lwa_client_id": "",
     "lwa_client_secret": "",
     "skill_certificate_type": "Trusted",
+    "skill_certificate_pem": "",
 }
 ENV = {key: key.upper() for key in DEFAULTS}
 ENV.update(api_username="APP_USERNAME", api_password="APP_PASSWORD")
@@ -32,6 +35,24 @@ _STORES = {}
 
 class SettingsError(ValueError):
     pass
+
+
+def validate_certificate(value):
+    if not isinstance(value, str) or len(value) > 16384:
+        raise SettingsError("Choose a public PEM certificate file smaller than 16 KB.")
+    value = value.strip()
+    if (
+        not value.startswith("-----BEGIN CERTIFICATE-----")
+        or value.count("-----BEGIN CERTIFICATE-----") != 1
+        or not value.endswith("-----END CERTIFICATE-----")
+        or "PRIVATE KEY" in value
+    ):
+        raise SettingsError("Upload one public PEM certificate, without a private key.")
+    try:
+        x509.load_pem_x509_certificate(value.encode("ascii"))
+    except (ValueError, UnicodeError) as exc:
+        raise SettingsError("The file is not a valid public PEM certificate.") from exc
+    return value
 
 
 def effective_skill_endpoint(values):
@@ -79,6 +100,10 @@ class SettingsStore:
         self.values = None
         if self.path.exists():
             self.values = json.loads(self.path.read_text())
+            if isinstance(self.values, dict) and set(self.values) == set(DEFAULTS) - {
+                "skill_certificate_pem"
+            }:
+                self.values["skill_certificate_pem"] = ""
             if not isinstance(self.values, dict) or set(self.values) != set(DEFAULTS):
                 raise SettingsError(
                     "Saved settings are invalid; restore your settings backup."
@@ -120,6 +145,8 @@ class SettingsStore:
                     if key in options and options[key] is not None:
                         values[key] = options[key]
             # Never import the unused AWS region or the now-derived callback.
+            if values["skill_certificate_type"] == "SelfSigned":
+                validate_certificate(values["skill_certificate_pem"])
             if not values["api_username"]:
                 values["api_username"] = DEFAULTS["api_username"]
             if not values["api_password"]:
@@ -168,6 +195,9 @@ class SettingsStore:
                 if isinstance(DEFAULTS[key], bool):
                     if type(value) is not bool:
                         raise SettingsError("Checkbox settings must be true or false.")
+                elif key == "skill_certificate_pem":
+                    if value:
+                        value = validate_certificate(value)
                 elif (
                     not isinstance(value, str)
                     or len(value) > 8192
@@ -216,8 +246,16 @@ class SettingsStore:
                     )
             if values["locale"] not in self.public()["locales"]:
                 raise SettingsError("Choose a locale with a bundled voice model.")
-            if values["skill_certificate_type"] not in ("Trusted", "Wildcard"):
-                raise SettingsError("Choose Trusted or Wildcard certificate type.")
+            if values["skill_certificate_type"] not in (
+                "Trusted",
+                "Wildcard",
+                "SelfSigned",
+            ):
+                raise SettingsError(
+                    "Choose Trusted, Trusted sub-domain or File certificate type."
+                )
+            if values["skill_certificate_type"] == "SelfSigned":
+                validate_certificate(values["skill_certificate_pem"])
             if not values["api_username"] or not values["api_password"]:
                 raise SettingsError("Set both API username and password.")
             self.write(values)
