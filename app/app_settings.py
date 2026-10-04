@@ -37,7 +37,12 @@ class SettingsError(ValueError):
 def effective_skill_endpoint(values):
     override = values["skill_hostname"].strip()
     audio = values["ma_hostname"].strip()
-    return override or (audio.rstrip("/") + "/ma-alexa-skill/" if audio else "")
+    if override or not audio:
+        return override
+    parsed = urlsplit(audio)
+    if not parsed.netloc:
+        return audio.rstrip("/") + "/ma-alexa-skill/"
+    return urlunsplit((parsed.scheme, parsed.netloc, "/ma-alexa-skill/", "", ""))
 
 
 def callback_url(endpoint):
