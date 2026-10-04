@@ -31,7 +31,7 @@ For a standalone host, run the project with Docker Compose. This will build and 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured).
 6. For standalone Docker, open `/setup` and authenticate with app credentials; for the maintained add-on use Home Assistant ingress with no second login. Connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. Amazon returns through `/ma-alexa-skill/setup/oauth/callback`, and the original wizard completes the connection automatically. See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
-The new wizard is a **1.3.0-beta.3 candidate**, with live Amazon/Echo acceptance pending. Stable **1.2.0** does not contain it. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this candidate rather than an upstream image.
+The wizard is available in stable **1.3.0**. The maintainer confirmed it was tested and working on 4 October 2026. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this implementation rather than an upstream image.
 
 ### 2. Home Assistant add-on
 
@@ -108,7 +108,7 @@ Notes:
 
 ### Environment Variables
 
-For candidate **1.3.0-beta.3**, edit application settings on `/setup`; standalone environment variables are bootstrap defaults until the first web save. Persist `/data/app-settings.json` (or set `APP_SETTINGS_PATH`). Home Assistant add-on users use ingress Setup instead of the add-on Configuration tab. Existing available legacy values migrate once; saved web settings take precedence after restarts. Secrets stay masked, blank inputs retain them, and Credentials provides an explicit API-password reveal for connecting Music Assistant. The callback is derived from the skill endpoint origin; saving does not deploy to Amazon. The unused AWS region setting has been removed.
+For stable **1.3.0**, edit application settings on `/setup`; standalone environment variables are bootstrap defaults until the first web save. Persist `/data/app-settings.json` (or set `APP_SETTINGS_PATH`). Home Assistant add-on users use ingress Setup instead of the add-on Configuration tab. Existing available legacy values migrate once; saved web settings take precedence after restarts. Secrets stay masked, blank inputs retain them, and Credentials provides an explicit API-password reveal for connecting Music Assistant. The callback is derived from the skill endpoint origin; saving does not deploy to Amazon. The unused AWS region setting has been removed.
 
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
@@ -166,4 +166,4 @@ The maintained add-on exposes `/status` and `/setup` through Home Assistant ingr
 
 ### Migration release compatibility
 
-Candidate 1.3.0-beta.3 keeps the legacy Supervisor schema with migration-only labels to preserve existing configuration during upgrade. Settings are imported once into `/data/app-settings.json`; all subsequent edits belong in ingress Setup. Later edits to the legacy fields are ignored. The obsolete AWS region option remains removed. Remove this temporary compatibility schema only in a later release once migration is verified.
+Stable 1.3.0 keeps the legacy Supervisor schema with migration-only labels to preserve existing configuration during upgrade. Settings are imported once into `/data/app-settings.json`; all subsequent edits belong in ingress Setup. Later edits to the legacy fields are ignored. The obsolete AWS region option remains removed. Remove this temporary compatibility schema only in a later release once migration is verified.
