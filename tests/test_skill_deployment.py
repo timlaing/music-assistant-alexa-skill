@@ -589,7 +589,10 @@ def test_shutdown_interrupts_api_calls_and_persists(deployment):
     assert recovered.state["phase"] == "interrupted"
 
 
-@pytest.mark.parametrize("field,value", [("LOCALE", "invalid"), ("SKILL_HOSTNAME", "")])
+@pytest.mark.parametrize(
+    "field,value",
+    [("LOCALE", "invalid"), ("SKILL_HOSTNAME", BASE_URL + "/?invalid=true")],
+)
 def test_status_preserves_connected_deployment_with_invalid_current_settings(
     deployment, client, monkeypatch, field, value
 ):

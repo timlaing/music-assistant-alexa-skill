@@ -112,7 +112,7 @@ For candidate **1.3.0-beta.3**, edit application settings on `/setup`; standalon
 
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
-| `SKILL_HOSTNAME` | Yes | — | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
+| `SKILL_HOSTNAME` | No | `MA_HOSTNAME` + `/ma-alexa-skill/` | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
 | `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its setup-page `ma_hostname` setting. |
 | `APP_USERNAME` | Yes for setup | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
 | `APP_PASSWORD` | Yes for setup | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
