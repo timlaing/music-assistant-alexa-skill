@@ -261,16 +261,14 @@ class DeploymentManager:
     def public_status(self):
         with self.lock:
             try:
+                oauth_config()  # Validate prerequisites even before tokens exist.
                 ready = (
                     bool(self.state.get("tokens"))
                     and self.state.get("client_key") == config_key()
                 )
                 error = None
-            except (DeploymentError, ValueError):
-                ready, error = (
-                    False,
-                    "Configure Login with Amazon in Setup before connecting.",
-                )
+            except (DeploymentError, ValueError) as exc:
+                ready, error = False, str(exc)
             result = {
                 key: copy.deepcopy(self.state.get(key))
                 for key in (

@@ -142,3 +142,34 @@ def test_cached_double_slash_ingress_entry_opens_status(client, monkeypatch):
         headers={"X-Ingress-Path": PREFIX, "X-Forwarded-For": "172.30.32.2"},
     )
     assert spoofed.status_code == 403
+
+
+def test_status_and_setup_share_page_styling(client, monkeypatch):
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    from pathlib import Path
+
+    shared = (
+        (Path(__file__).resolve().parents[1] / "app/templates/_page_style.html")
+        .read_text()
+        .strip()
+    )
+    for path in ("/status", "/setup"):
+        response = gateway(client, path)
+        assert shared in response.text
+        assert '<meta name="viewport"' in response.text
+        assert "<main>" in response.text
+
+
+def test_connect_reports_missing_amazon_settings_before_first_signin(
+    client, monkeypatch
+):
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    monkeypatch.setenv("SKILL_HOSTNAME", BASE_URL + "/ma-alexa-skill/")
+    monkeypatch.delenv("LWA_CLIENT_ID", raising=False)
+    monkeypatch.delenv("LWA_CLIENT_SECRET", raising=False)
+    status = gateway(client, "/setup/status").json
+    assert not status["connected"]
+    assert "client ID and secret" in status["configuration_error"]
+    monkeypatch.setenv("LWA_CLIENT_ID", "client")
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "test-secret")
+    assert gateway(client, "/setup/status").json["configuration_error"] is None

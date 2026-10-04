@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Personal Alexa skill setup</title>
-<style>body{font:17px system-ui;background:#f4f6f8;color:#17212b;margin:0}main{max-width:780px;margin:32px auto;padding:28px;background:white;border-radius:12px}h1{font-size:28px}section{border-top:1px solid #ddd;margin-top:24px;padding-top:16px}label{display:block;margin:12px 0}input,select,button{font:inherit;padding:10px;max-width:100%}input:not([type=checkbox]),select{width:100%;box-sizing:border-box}small{display:block;color:#53616d}button{cursor:pointer;background:#115d93;color:white;border:0;border-radius:6px;margin:8px 8px 8px 0}button:disabled{opacity:.5;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f6f8;padding:12px}#message{padding:12px;background:#edf5fc}a{color:#115d93}dt{font-weight:600;margin-top:10px}dd{margin-left:0;overflow-wrap:anywhere}[hidden]{display:none!important}</style></head>
+{% include '_page_style.html' %}</head>
 <body><main><a href="/status">← Status</a><h1>Set up your personal Alexa skill</h1>
 <p>Connect your Amazon developer account, select your existing personal skill, review the settings, and deploy. This enables development testing on your account.</p>
 <p>First register a Login with Amazon security profile and enter its client ID, secret in the settings below, then register the generated HTTPS callback URL with Amazon. <a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html" target="_blank" rel="noreferrer">Amazon registration guide</a>. Open this page in Home Assistant. Amazon sign-in opens in a separate window and returns through the registered callback.</p>
@@ -30,7 +30,7 @@
 <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
 </details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>
 </form></section>
-<section><h2>1. Connect Amazon</h2><button id="connect">Connect Amazon</button><span id="connected"></span></section>
+<section><h2>1. Connect Amazon</h2><button id="connect" disabled>Connect Amazon</button><span id="connected"></span><p id="connectMessage" role="status" aria-live="polite"></p><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
 <section id="reconciliation" hidden><h2>Recover an uncertain import</h2>
 <p>Amazon may have accepted an import without returning its recovery ID. Check the saved skill’s import with Amazon before continuing. Do not clear this block while the operation is running or its result remains unknown.</p>
 <p>Saved skill: <strong id="reconcileSkill"></strong></p>
@@ -83,8 +83,8 @@ async function refresh() {
  if(status.oauth_ready){await api('/setup/oauth/finish',{});accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');status=await api('/setup/status');}
  const busy=pending||['preparing','running'].includes(status.phase);
  el('message').textContent=status.configuration_error||status.message||'Connect Amazon to get started.';
- el('connected').textContent=status.connected?'Connected':'';
- el('selection').hidden=!status.connected;el('connect').disabled=busy||Boolean(status.configuration_error);
+ el('connected').textContent=status.connected?'Connected':'';if(status.connected){el('amazonSignin').hidden=true;el('amazonSignin').removeAttribute('href');el('connectMessage').textContent='Amazon account connected.';}
+ el('selection').hidden=!status.connected;el('connect').disabled=busy||!csrf;if(!pending&&!status.connected&&!el('amazonSignin').hasAttribute('href'))el('connectMessage').textContent=status.configuration_error||'Save your Amazon settings, then connect.';
  ['vendors','skills','reload','saveSettings'].forEach(id=>el(id).disabled=busy);
  ['review','deploy'].forEach(id=>el(id).disabled=busy||Boolean(status.import_unknown));
  el('resume').hidden=!status.can_resume;el('resume').disabled=busy;
@@ -93,7 +93,22 @@ async function refresh() {
  if(status.connected&&!accountsLoaded) {const body=await api('/setup/accounts');body.vendors.forEach(v=>option(el('vendors'),v.id,v.name+' — '+v.id));accountsLoaded=true;if(status.vendor_id){el('vendors').value=status.vendor_id;await loadSkills();}}
 }
 async function action(fn) {pending=true;el('error').hidden=true;try{await fn();}catch(error){el('error').textContent=error.message;el('error').hidden=false;}finally{pending=false;}}
-el('connect').onclick=()=>{const popup=window.open('about:blank','amazon-signin');if(!popup){el('error').textContent='Allow pop-ups to connect Amazon.';el('error').hidden=false;return;}popup.opener=null;action(async()=>{try{const body=await api('/setup/oauth/start',{});popup.location.assign(body.url);}catch(error){popup.close();throw error;}});};
+el('connect').onclick=()=>{
+ if(status.configuration_error){el('connectMessage').textContent=status.configuration_error+' Enter and save these settings above.';return;}
+ let popup=null;try{popup=window.open('about:blank','_blank');if(popup)popup.opener=null;}catch{popup=null;}
+ el('amazonSignin').hidden=true;el('amazonSignin').removeAttribute('href');
+ el('connectMessage').textContent='Preparing Amazon sign-in…';
+ action(async()=>{try{
+  const body=await api('/setup/oauth/start',{});
+  el('amazonSignin').href=body.url;el('amazonSignin').hidden=false;
+  el('connectMessage').textContent='Complete sign-in in the Amazon window, then return here. If it did not open, use the link below.';
+  if(popup)popup.location.assign(body.url);
+ }catch(error){
+  if(popup)popup.close();
+  el('connectMessage').textContent=error.message;
+  throw error;
+ }});
+};
 el('vendors').onchange=()=>action(loadSkills);
 el('reload').onclick=()=>action(loadSkills);
 el('review').onclick=()=>action(async()=>{const skill=el('skills').value;if(!el('vendors').value||!skill)throw Error('Choose an account and skill first.');await api('/setup/preview',{vendor:el('vendors').value,skill:skill==='__create__'?'':skill,create:skill==='__create__'});await refresh();});
@@ -102,6 +117,6 @@ el('reconcileImport').onclick=()=>action(async()=>{await api('/setup/reconcile-i
 el('resume').onclick=()=>action(async()=>{await api('/setup/resume',{});await refresh();});
 el('settingsForm').onsubmit=event=>{event.preventDefault();action(async()=>{const values={};fields.forEach(id=>values[id]=el(id).type==='checkbox'?el(id).checked:el(id).value);secretFields.forEach(id=>values[id]=el(id).value);const clear_secrets=['ma_api_token','lwa_client_secret'].filter(id=>el('clear_'+id).checked);showSettings(await api('/setup/settings',{values,clear_secrets,revision:settingsRevision}));el('saved').textContent='Saved. Review and deploy separately to update Amazon.';accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');await refresh();});};
 el('showPassword').onclick=()=>action(async()=>{if(!el('currentPassword').hidden){el('currentPassword').hidden=true;el('currentPassword').textContent='';return;}const result=await api('/setup/settings/api-password',{});el('currentPassword').textContent=result.password;el('currentPassword').hidden=false;});
-refresh().then(()=>api('/setup/settings')).then(showSettings).catch(error=>el('message').textContent=error.message);
+refresh().then(()=>api('/setup/settings')).then(showSettings).catch(error=>{el('message').textContent=error.message;el('connectMessage').textContent=error.message;});
 setInterval(()=>{if(!pending)refresh().catch(error=>el('message').textContent=error.message);},3000);
 </script></body></html>

@@ -3,10 +3,9 @@ import re
 import shutil
 import subprocess
 import urllib.parse
-from pathlib import Path
 
 from app_settings import get_setting
-from flask import Blueprint, Response, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from markupsafe import escape
 from setup_helpers import has_functional_cli_config
 from skill_deployment import DeploymentError, manager, settings
@@ -244,8 +243,7 @@ def status():
 
     # Non-JSON: render status template
     try:
-        tpl_path = Path(__file__).parent.parent / 'templates' / 'status.html'
-        tpl = tpl_path.read_text()
+        tpl = render_template('status.html')
         tpl = tpl.replace('__URLS_HTML__', 'Checking public URLs…')
         tpl = tpl.replace('__SKILL_HTML__', '<span class="led green"></span> Skill running')
         tpl = tpl.replace('__SKILL_ASK_HTML__', '<span class="muted">Checking ASK CLI status...</span>')
