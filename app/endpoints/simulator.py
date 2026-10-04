@@ -1,10 +1,11 @@
-from flask import Blueprint, Response, jsonify, request
-from pathlib import Path
 import json
-import os
-from copy import deepcopy
-import requests
 import urllib.parse
+from copy import deepcopy
+from pathlib import Path
+
+import requests
+from app_settings import get_setting
+from flask import Blueprint, Response, jsonify, request
 
 simulator_bp = Blueprint('simulator_bp', __name__)
 
@@ -42,7 +43,7 @@ def simulator_index():
     tpl_path = Path(__file__).parent.parent / 'templates' / 'simulator.html'
     page = tpl_path.read_text()
     # expose configured SKILL_HOSTNAME to the client for convenience
-    page = page.replace('__SKILL_HOSTNAME__', json.dumps(os.environ.get('SKILL_HOSTNAME', '')))
+    page = page.replace('__SKILL_HOSTNAME__', json.dumps(get_setting('SKILL_HOSTNAME', '')))
     return Response(page, mimetype='text/html')
 
 
@@ -70,7 +71,7 @@ def _load_model_intents():
 def simulator_api():
     """Return available intents and server-side config for the simulator UI."""
     intents = _load_model_intents()
-    return jsonify({'intents': intents, 'skill_hostname': os.environ.get('SKILL_HOSTNAME', '')})
+    return jsonify({'intents': intents, 'skill_hostname': get_setting('SKILL_HOSTNAME', '')})
 
 
 @simulator_bp.route('/simulator/payload', methods=['GET'])
@@ -164,7 +165,7 @@ def simulator_send():
         auth = None
 
     if use == 'hostname':
-        raw = os.environ.get('SKILL_HOSTNAME', '').strip()
+        raw = get_setting('SKILL_HOSTNAME', '').strip()
         if not raw:
             return jsonify({'error': 'SKILL_HOSTNAME not configured'}), 400
         # normalize scheme

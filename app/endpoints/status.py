@@ -1,14 +1,15 @@
 import json
-import os
 import re
 import shutil
 import subprocess
 import urllib.parse
 from pathlib import Path
 
+from app_settings import get_setting
 from flask import Blueprint, Response, current_app, jsonify, request
 from markupsafe import escape
 from setup_helpers import has_functional_cli_config
+from skill_deployment import DeploymentError, manager, settings
 
 status_bp = Blueprint('status_bp', __name__)
 
@@ -18,8 +19,22 @@ def _build_status_json():
 
     skill_ask_html = '<span class="muted">ASK CLI check unavailable</span>'
     try:
-        skill_host = os.environ.get('SKILL_HOSTNAME', '').strip()
-        if shutil.which('ask') and skill_host:
+        skill_host = get_setting('SKILL_HOSTNAME', '').strip()
+        deployment = manager().public_status()
+        if deployment.get('connected'):
+            instance = manager()
+            current = instance.state.get('deployed_settings')
+            try:
+                matches = current == settings() if current else False
+            except DeploymentError:
+                matches = False
+            ready = deployment.get('phase') == 'complete' and matches
+            color = 'green' if ready else 'yellow'
+            note = 'Amazon verified deployment' if ready else (deployment.get('message') or 'Select your personal skill')
+            skill_ask_html = f'<span class="led {color}"></span> {escape(note)} <a href="/setup">Open Setup</a>'
+            if ready:
+                skill_ask_html += f' (verified at {escape(str(deployment.get("verified_at")))}, saved ID: {escape(deployment.get("skill_id"))})'
+        elif shutil.which('ask') and skill_host:
             if not has_functional_cli_config(profile='default'):
                 skill_ask_html = '<span class="led yellow"></span> ASK CLI credentials are not configured for profile default'
                 try:
@@ -231,6 +246,7 @@ def status():
     try:
         tpl_path = Path(__file__).parent.parent / 'templates' / 'status.html'
         tpl = tpl_path.read_text()
+        tpl = tpl.replace('__URLS_HTML__', 'Checking public URLs…')
         tpl = tpl.replace('__SKILL_HTML__', '<span class="led green"></span> Skill running')
         tpl = tpl.replace('__SKILL_ASK_HTML__', '<span class="muted">Checking ASK CLI status...</span>')
         tpl = tpl.replace('__MA_API_HTML__', '<span class="muted">Checking Music Assistant API...</span>')
@@ -281,3 +297,10 @@ def status_invocations():
     else:
         invocations_html = '<span class="muted">No recent invocations</span>'
     return jsonify({'count': count, 'invocations_html': invocations_html})
+
+
+@status_bp.route('/status/urls', methods=['GET'])
+def status_urls():
+    from reachability import html, snapshot
+    result = snapshot()
+    return jsonify(**result, urls_html=html(result))

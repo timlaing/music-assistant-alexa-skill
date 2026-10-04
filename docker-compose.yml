@@ -1,24 +1,29 @@
 services:
   music-assistant-skill:
-    image: ghcr.io/alams154/music-assistant-skill:latest
+    build: .
     environment:
       - SKILL_HOSTNAME=<hostname> #required
       - MA_HOSTNAME=<hostname> #optional, if only using APL devices
       - APP_USERNAME=/run/secrets/APP_USERNAME #optional
       - APP_PASSWORD=/run/secrets/APP_PASSWORD #optional
       - PORT=5000 #optional
-      - DEBUG_PORT=5678 #optional
+      - DEBUG_PORT=0 # enable only for local debugging
+      - LWA_CLIENT_ID= # one-time security profile registration
+      - LWA_CLIENT_SECRET=/run/secrets/LWA_CLIENT_SECRET
+      - SKILL_CERTIFICATE_TYPE=Trusted
+      - APP_SETTINGS_PATH=/data/app-settings.json
+      - SKILL_DEPLOYMENT_PATH=/data/skill-deployment.json
       - LOCALE=en-US # optional: skill locale (e.g. en-US, en-GB, de-DE)
-      - AWS_DEFAULT_REGION=us-east-1 #optional
       - TZ=America/Chicago # set container timezone (override as needed)
     secrets:
       - APP_USERNAME
       - APP_PASSWORD
+      - LWA_CLIENT_SECRET
     ports:
       - 5000:5000 # Must match PORT
-      - 5678:5678 # Must match DEBUG_PORT #optional
     volumes:
       - ./ask_data:/root/.ask
+      - ./deployment_data:/data
     restart: no
 
 secrets:
@@ -26,3 +31,5 @@ secrets:
     file: ./secrets/app_username.txt
   APP_PASSWORD:
     file: ./secrets/app_password.txt
+  LWA_CLIENT_SECRET:
+    file: ./secrets/lwa_client_secret.txt

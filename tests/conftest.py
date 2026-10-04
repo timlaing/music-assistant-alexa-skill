@@ -14,6 +14,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_SETTINGS_PATH", str(tmp_path / "app-settings.json"))
     import shared_store
     from skill import data
 
@@ -28,6 +29,9 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_APL", "false")
     monkeypatch.delenv("MA_API_URL", raising=False)
     monkeypatch.delenv("MA_API_TOKEN", raising=False)
+    monkeypatch.setenv("SKILL_DEPLOYMENT_PATH", str(tmp_path / "skill-deployment.json"))
+    from app import app
+    app.extensions.pop("skill_deployment", None)
     data._request_info.set(None)
     yield
     data._request_info.set(None)

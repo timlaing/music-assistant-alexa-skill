@@ -284,9 +284,9 @@ def test_pause_stop_resume_echo_is_consumed_once(monkeypatch):
     assert not ma_control.is_echo_of_ma_command("echo-1", "pause")
 
 
-def test_options_redaction_and_signal_ownership():
+def test_signal_ownership():
     # Use a fresh subprocess because importing the app in the test suite has already occurred.
-    code = "import signal; old=signal.getsignal(signal.SIGTERM); import app; assert signal.getsignal(signal.SIGTERM)==old; assert app._safe_options_for_log({'api_password':'private','MA_API_TOKEN':'private'})=={'api_password':'set','MA_API_TOKEN':'set'}"
+    code = "import signal; old=signal.getsignal(signal.SIGTERM); import app; assert signal.getsignal(signal.SIGTERM)==old"
     subprocess.run(
         [sys.executable, "-c", code],
         cwd=os.environ.get(

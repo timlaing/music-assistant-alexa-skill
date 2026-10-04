@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-
 import logging
-import os
 import threading
 
 import requests
+from app_settings import get_setting
 from ask_sdk_model.interfaces.alexa.presentation.apl import (
     ControlMediaCommand,
     ExecuteCommandsDirective,
@@ -25,7 +24,7 @@ from .apl import add_apl
 
 
 def apl_enabled():
-    return os.environ.get('ENABLE_APL', 'false').lower() in ('true', '1', 'yes')
+    return get_setting('ENABLE_APL', 'false').lower() in ('true', '1', 'yes')
 
 
 # Last known playback-stopped position per device, so Resume can continue
@@ -57,7 +56,7 @@ def get_resume_offset(device_id, url):
 def get_ma_hostname(raise_on_http_scheme=True):
     from public_urls import public_base
     try:
-        return public_base(os.environ.get('MA_HOSTNAME', ''))
+        return public_base(get_setting('MA_HOSTNAME', ''))
     except ValueError:
         if raise_on_http_scheme:
             raise
@@ -105,7 +104,7 @@ def play(url, offset, text, response_builder, supports_apl=False):
 
         url = replace_ip_in_url(url, hostname)
 
-        skip_validation = os.environ.get('SKIP_URL_VALIDATION', 'false').lower() in ('true', '1', 'yes')
+        skip_validation = get_setting('SKIP_URL_VALIDATION', 'false').lower() in ('true', '1', 'yes')
 
         if skip_validation:
             logging.info('Stream URL (validation skipped via SKIP_URL_VALIDATION): %s', url)

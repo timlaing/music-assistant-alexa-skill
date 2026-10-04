@@ -151,9 +151,6 @@ COPY assets /app/assets
 COPY scripts /app/scripts
 RUN chmod +x /app/scripts/ask_create_skill.sh || true
 
-# Amazon Skill & Host Configuration
-ENV AWS_DEFAULT_REGION=us-east-1
-
 # Timezone (defaults to UTC) — can be overridden at runtime via TZ env
 ENV TZ=UTC
 
