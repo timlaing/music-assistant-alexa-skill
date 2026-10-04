@@ -143,6 +143,11 @@ class Amazon:
             )
         if path.endswith("/manifest"):
             return Response(json.loads(self.files["skill-package/skill.json"]))
+        if path.endswith("/sslCertificateSets/~latest"):
+            if method == "PUT":
+                self.certificates = kwargs["json"]
+                return Response(status=204)
+            return Response(self.certificates)
         if path.endswith("/enablement"):
             return Response(status=204)
         raise AssertionError((method, path))
@@ -231,10 +236,14 @@ def test_duplicate_names_require_explicit_id(deployment):
     assert manager.state["review"]["skill"] == OTHER
 
 
-@pytest.mark.parametrize("stage", ["FAILED", "IN_PROGRESS", None])
-def test_no_success_without_model_build(deployment, stage):
+@pytest.mark.parametrize("stage", ["FAILED", "IN_PROGRESS"])
+def test_no_success_without_model_build(deployment, stage, monkeypatch):
     manager, amazon = deployment
     amazon.model_status = stage
+    if stage == "IN_PROGRESS":
+        clock = [0]
+        monkeypatch.setattr("skill_deployment.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr(manager, "pause", lambda seconds: clock.__setitem__(0, 601))
     with pytest.raises(DeploymentError, match="not confirmed"):
         deploy(manager)
     assert manager.state.get("verified_at") is None
@@ -980,3 +989,83 @@ def test_reconciliation_rejects_changed_oauth_configuration_during_listing(
         manager.reconcile_import(payload)
     assert manager.state["import_unknown"] is True
     assert "import_reconciliations" not in manager.state
+
+
+def test_file_certificate_uploaded_and_verified_before_enablement(
+    deployment, monkeypatch
+):
+    from cryptography.hazmat.primitives import serialization
+    from test_verification import certificate
+
+    manager, amazon = deployment
+    _, cert = certificate()
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode().strip()
+    monkeypatch.setenv("SKILL_CERTIFICATE_TYPE", "SelfSigned")
+    monkeypatch.setenv("SKILL_CERTIFICATE_PEM", pem)
+    deploy(manager)
+    assert amazon.certificates == {
+        "sslCertificate": pem,
+        "regions": {"EU": {"sslCertificate": pem}},
+    }
+    calls = [(method, url) for method, url, _ in amazon.calls]
+    assert calls.index(
+        ("GET", API + f"/v1/skills/{SKILL}/sslCertificateSets/~latest")
+    ) < calls.index(("PUT", API + f"/v1/skills/{SKILL}/stages/development/enablement"))
+
+
+def test_unconfirmed_file_certificate_blocks_enablement(deployment, monkeypatch):
+    from cryptography.hazmat.primitives import serialization
+    from test_verification import certificate
+
+    manager, amazon = deployment
+    _, cert = certificate()
+    monkeypatch.setenv("SKILL_CERTIFICATE_TYPE", "SelfSigned")
+    monkeypatch.setenv(
+        "SKILL_CERTIFICATE_PEM", cert.public_bytes(serialization.Encoding.PEM).decode()
+    )
+    original = amazon.request
+
+    def wrong_certificate(method, url, **kwargs):
+        if method == "GET" and url.endswith("/sslCertificateSets/~latest"):
+            return Response({"sslCertificate": "wrong"})
+        return original(method, url, **kwargs)
+
+    monkeypatch.setattr(amazon, "request", wrong_certificate)
+    with pytest.raises(
+        DeploymentError, match="did not confirm the uploaded certificate"
+    ):
+        deploy(manager)
+    assert not any(url.endswith("/enablement") for _, url, _ in amazon.calls)
+
+
+def test_deployed_skill_uses_maintained_addon_icons(deployment):
+    manager, amazon = deployment
+    deploy(manager)
+    manifest = json.loads(amazon.files["skill-package/skill.json"])["manifest"]
+    for locale in manifest["publishingInformation"]["locales"].values():
+        assert (
+            locale["smallIconUri"]
+            == "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_108x108.png"
+        )
+        assert (
+            locale["largeIconUri"]
+            == "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_512x512.png"
+        )
+
+
+def test_build_can_finish_after_package_import(deployment, monkeypatch):
+    manager, amazon = deployment
+    amazon.model_status = "IN_PROGRESS"
+    monkeypatch.setattr(
+        manager, "pause", lambda seconds: setattr(amazon, "model_status", "SUCCEEDED")
+    )
+    deploy(manager)
+    assert manager.state["phase"] == "complete"
+
+
+def test_missing_legacy_build_status_uses_verified_import_and_export(deployment):
+    manager, amazon = deployment
+    amazon.model_status = None
+    deploy(manager)
+    assert manager.state["phase"] == "complete"
+    assert any("/exports" in url for _, url, _ in amazon.calls)

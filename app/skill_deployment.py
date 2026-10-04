@@ -19,7 +19,13 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode, urlparse
 
 import requests
-from app_settings import SettingsError, callback_url, get_setting, store
+from app_settings import (
+    SettingsError,
+    callback_url,
+    get_setting,
+    store,
+    validate_certificate,
+)
 from env_secrets import get_env_secret
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 
@@ -77,11 +83,18 @@ def settings():
     ):
         raise DeploymentError("The configured locale has no bundled interaction model.")
     certificate = get_setting("SKILL_CERTIFICATE_TYPE", "Trusted")
-    if certificate not in ("Trusted", "Wildcard"):
+    if certificate not in ("Trusted", "Wildcard", "SelfSigned"):
         raise DeploymentError(
-            "Choose Trusted or Wildcard for the public HTTPS certificate."
+            "Choose Trusted, Trusted sub-domain or File for the public HTTPS certificate."
         )
+    pem = ""
+    if certificate == "SelfSigned":
+        try:
+            pem = validate_certificate(get_setting("SKILL_CERTIFICATE_PEM", ""))
+        except SettingsError as exc:
+            raise DeploymentError(str(exc)) from exc
     return {
+        "certificate_pem": pem,
         "endpoint": endpoint,
         "locale": locale,
         "certificate": certificate,
@@ -194,6 +207,13 @@ def configure_package(files, manifest_path, config, existing):
                 "Alexa, ask music assistant to play",
                 "Alexa, play music assistant",
             ]
+    for publishing_locale in locales.values():
+        publishing_locale["smallIconUri"] = (
+            "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_108x108.png"
+        )
+        publishing_locale["largeIconUri"] = (
+            "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_512x512.png"
+        )
     custom = manifest.setdefault("apis", {}).setdefault("custom", {})
     endpoint = {"uri": config["endpoint"], "sslCertificateType": config["certificate"]}
     custom["endpoint"] = endpoint
@@ -876,25 +896,43 @@ class DeploymentManager:
         self.poll(self.state["import_path"], "package import")
         skill, config = self.state["skill_id"], self.state["deployed_settings"]
         path = f"/v1/skills/{quote(skill, safe='')}"
-        status = self.api(
-            "GET",
-            path + "/status",
-            params=[("resource", "manifest"), ("resource", "interactionModel")],
-        ).json()
-        model_status = (
-            status.get("interactionModel", {})
-            .get(config["locale"], {})
-            .get("lastUpdateRequest", {})
-            .get("status")
-        )
-        if (
-            status.get("manifest", {}).get("lastUpdateRequest", {}).get("status")
-            != "SUCCEEDED"
-            or model_status != "SUCCEEDED"
-        ):
-            raise DeploymentError(
-                "Amazon has not confirmed a successful manifest and voice-model build. Resume later or check build diagnostics."
+        # Package imports are authoritative; the legacy skill-status API can omit
+        # resources. Wait for any explicitly running build and reject failed ones,
+        # then verify the exported approved package below, including its model.
+        deadline = time.monotonic() + 600
+        while True:
+            status = self.api(
+                "GET",
+                path + "/status",
+                params=[("resource", "manifest"), ("resource", "interactionModel")],
+            ).json()
+            statuses = [
+                status.get("manifest", {}).get("lastUpdateRequest", {}).get("status"),
+                status.get("interactionModel", {})
+                .get(config["locale"], {})
+                .get("lastUpdateRequest", {})
+                .get("status"),
+            ]
+            if "FAILED" in statuses:
+                raise DeploymentError(
+                    "Amazon has not confirmed a successful build: manifest or voice model failed. Check the selected locale’s build diagnostics before retrying."
+                )
+            if any(
+                value not in (None, "SUCCEEDED", "IN_PROGRESS") for value in statuses
+            ):
+                raise DeploymentError(
+                    "Amazon returned an unexpected manifest or voice-model status. Resume later."
+                )
+            if "IN_PROGRESS" not in statuses:
+                break
+            if time.monotonic() >= deadline:
+                raise DeploymentError(
+                    "Amazon has not confirmed a successful manifest and voice-model build after ten minutes. Resume later to verify the accepted import."
+                )
+            self.update(
+                message="Amazon accepted the import; waiting for the selected locale’s build to finish…"
             )
+            self.pause(3)
         manifest = self.api("GET", path + "/stages/development/manifest").json()[
             "manifest"
         ]
@@ -923,13 +961,36 @@ class DeploymentManager:
             raise DeploymentError(
                 "Amazon’s exported package differs from the approved deployment. Review again before enabling testing."
             )
+        if config["certificate"] == "SelfSigned":
+            certificates = {"sslCertificate": config["certificate_pem"]}
+            regions = custom.get("regions", {})
+            if regions:
+                certificates["regions"] = {
+                    region: {"sslCertificate": config["certificate_pem"]}
+                    for region in regions
+                }
+            self.api("PUT", path + "/sslCertificateSets/~latest", json=certificates)
+            actual = self.api("GET", path + "/sslCertificateSets/~latest").json()
+            if actual.get("sslCertificate", "").strip() != config[
+                "certificate_pem"
+            ] or any(
+                actual.get("regions", {})
+                .get(region, {})
+                .get("sslCertificate", "")
+                .strip()
+                != config["certificate_pem"]
+                for region in regions
+            ):
+                raise DeploymentError(
+                    "Amazon did not confirm the uploaded certificate. Resume to retry before enabling testing."
+                )
         self.api("PUT", path + "/stages/development/enablement")
         enabled = self.api("GET", path + "/stages/development/enablement")
         if enabled.status_code != 204:
             raise DeploymentError("Amazon did not confirm development enablement.")
         self.update(
             phase="complete",
-            message="Amazon confirmed the endpoint, voice-model build and development enablement. Test playback on your Echo.",
+            message="Amazon confirmed the import, approved package, endpoint and development enablement. Test playback on your Echo.",
             verified_at=time.time(),
             import_path=None,
             import_unknown=False,

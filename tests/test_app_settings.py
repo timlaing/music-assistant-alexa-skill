@@ -299,3 +299,52 @@ def test_default_skill_endpoint_origin_and_legacy_inputs(audio, expected):
         effective_skill_endpoint({"ma_hostname": audio, "skill_hostname": ""})
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    "pem",
+    [
+        "invalid",
+        "-----BEGIN PRIVATE KEY-----\nsecret",
+        "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+        "x" * 16385,
+    ],
+)
+def test_certificate_file_validation_rejects_invalid_or_private_inputs(pem):
+    from app_settings import validate_certificate
+
+    with pytest.raises(SettingsError):
+        validate_certificate(pem)
+
+
+def test_certificate_file_is_saved_and_required_for_file_selection():
+    from cryptography.hazmat.primitives import serialization
+    from test_verification import certificate
+
+    instance = store()
+    payload = {
+        "revision": instance.public()["revision"],
+        "values": {"skill_certificate_type": "SelfSigned"},
+    }
+    with pytest.raises(SettingsError):
+        instance.save(payload)
+    _, cert = certificate()
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    payload["values"]["skill_certificate_pem"] = pem
+    result = instance.save(payload)
+    assert result["values"]["skill_certificate_pem"] == pem.strip()
+    assert settings()["certificate_pem"] == pem.strip()
+
+
+def test_existing_beta_settings_load_with_empty_certificate_file(tmp_path):
+    from app_settings import DEFAULTS
+
+    previous = {
+        key: value for key, value in DEFAULTS.items() if key != "skill_certificate_pem"
+    }
+    previous["api_password"] = "preserved-password"
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(previous))
+    instance = SettingsStore(path)
+    assert instance.snapshot()["skill_certificate_pem"] == ""
+    assert instance.snapshot()["api_password"] == "preserved-password"

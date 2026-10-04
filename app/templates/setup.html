@@ -4,15 +4,13 @@
 {% include '_page_style.html' %}</head>
 <body><main><a href="/status">← Status</a><h1>Set up your personal Alexa skill</h1>
 <p>Connect your Amazon developer account, select your existing personal skill, review the settings, and deploy. This enables development testing on your account.</p>
-<p>First register a Login with Amazon security profile and enter its client ID, secret in the settings below, then register the generated HTTPS callback URL with Amazon. <a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html" target="_blank" rel="noreferrer">Amazon registration guide</a>. Open this page in Home Assistant. Amazon sign-in opens in a separate window and returns through the registered callback.</p>
-<p id="error" role="alert" hidden></p>
-<p id="message" role="status" aria-live="polite">Loading setup status…</p>
-<section><h2>Application settings</h2>
+
+<section id="applicationSettings"><h2>Application settings</h2>
 <p>Save your connection settings here. Saving does not deploy changes to Amazon; review and deploy separately.</p>
 <form id="settingsForm">
 <label>Public audio URL<input id="ma_hostname" type="url" placeholder="https://streams.example.com"><small>Public HTTPS address for Music Assistant streams and artwork.</small></label>
-<label>Alexa locale<select id="locale"></select></label>
-<label><input id="enable_apl" type="checkbox"> Enable Echo Show artwork and controls</label>
+
+
 <section aria-labelledby="credentials-heading"><h3 id="credentials-heading">Credentials</h3>
 <p>Music Assistant needs this username and password to authenticate with the Alexa API. Use Show current API password to copy the saved password into the provider.</p>
 <label>API username<input id="api_username" autocomplete="off"><small>Enter these credentials in Music Assistant’s Alexa provider. Changing them requires updating that provider.</small></label>
@@ -20,22 +18,33 @@
 <button id="showPassword" type="button">Show current API password</button><output id="currentPassword" hidden></output>
 </section>
 <details><summary>Advanced settings</summary>
-<label>Public skill endpoint override<input id="skill_hostname" type="url"><small>Optional. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override only when your skill uses another public endpoint.</small></label>
-<label>Amazon callback URL<input id="callback" readonly><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
+
 <label>Music Assistant control API URL<input id="ma_api_url" type="url" placeholder="http://homeassistant:8095"><small>Optional local connection for mapped voice controls.</small></label>
 <label>Music Assistant access token<input id="ma_api_token" type="password" autocomplete="new-password"><small id="ma_api_token_hint"></small></label>
 <label><input id="clear_ma_api_token" type="checkbox"> Remove saved Music Assistant token</label>
 
-<label>HTTPS certificate type<select id="skill_certificate_type"><option>Trusted</option><option>Wildcard</option></select><small>Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate.</small></label>
+
+
 <label><input id="skip_url_validation" type="checkbox"> Skip stream URL validation</label>
 <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
 </details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>
 </form></section>
-<section><h2>Connect to Amazon</h2>
+<section id="amazonConnection"><h2>Connect to Amazon</h2>
+<p id="error" role="alert" hidden></p><p id="message" role="status" aria-live="polite">Loading setup status…</p>
+<p>Create a Login with Amazon (LWA) security profile once, using the Amazon developer account that owns your personal skill.</p>
+<ol>
+<li>Save your public audio URL above so the callback URL below is correct.</li>
+<li>Open the <a href="https://developer.amazon.com/loginwithamazon/console/site/lwa/overview.html" target="_blank" rel="noopener noreferrer">Login with Amazon developer console ↗</a>. Choose <strong>Create a New Security Profile</strong>, enter a name (for example Music Assistant), a description and the required privacy notice URL, then save.</li>
+<li>Open the profile’s gear menu → <strong>Web Settings → Edit</strong>. Add the exact callback below to <strong>Allowed Return URLs</strong>, then save. Use Allowed Return URLs, rather than Allowed Origins or the Home Assistant ingress address.</li>
+<li>Copy the profile’s <strong>Client ID</strong> and <strong>Client Secret</strong> into the fields below. Select <strong>Save Amazon settings</strong>, then <strong>Connect</strong>.</li>
+</ol>
+<label>Amazon callback URL<input id="callback" readonly><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
+<p id="callbackHint">The callback must be publicly reachable over HTTPS through your /ma-alexa-skill/ proxy route. Amazon sign-in opens in a separate window; return here when it completes. If you change the public hostname, update the profile’s Allowed Return URLs and reconnect.</p>
+<p><a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html#configure-an-lwa-security-profile-to-use-with-smapi" target="_blank" rel="noopener noreferrer">Amazon’s security profile instructions ↗</a>. This app supplies its own callback above; the ASK CLI localhost callback examples in that guide are for CLI use.</p>
 <label>Amazon client ID<input id="lwa_client_id" form="settingsForm" autocomplete="off"></label>
 <label>Amazon client secret<input id="lwa_client_secret" form="settingsForm" type="password" autocomplete="new-password"><small id="lwa_client_secret_hint"></small></label>
 <label><input id="clear_lwa_client_secret" form="settingsForm" type="checkbox"> Remove saved Amazon client secret</label>
-<button id="saveAmazon" type="submit" form="settingsForm">Save Amazon settings</button><button id="connect" disabled>Connect</button><span id="connected"></span><p id="connectMessage" role="status" aria-live="polite"></p><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
+<button id="saveAmazon" type="submit" form="settingsForm">Save Amazon settings</button><button id="connect" disabled>Connect</button><span id="connected"></span><p id="connectMessage" class="notice" role="status" aria-live="polite"></p><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
 <section id="reconciliation" hidden><h2>Recover an uncertain import</h2>
 <p>Amazon may have accepted an import without returning its recovery ID. Check the saved skill’s import with Amazon before continuing. Do not clear this block while the operation is running or its result remains unknown.</p>
 <p>Saved skill: <strong id="reconcileSkill"></strong></p>
@@ -45,11 +54,20 @@
 <label><input id="reconcileConfirmed" type="checkbox"> I confirmed this result with Amazon and verified no import is still running for this attempt.</label>
 <button id="reconcileImport">Record confirmed result</button>
 <p>This records your confirmation, clears the retry block and requires a fresh review. It does not mark deployment verified or submit another import.</p></section>
-<section id="selection" hidden><h2>2. Choose your personal skill</h2>
+<section id="skillSetup"><h2>Skill setup</h2>
+<p>Save these skill settings, then review and deploy to apply them to Amazon.</p>
+<label>Alexa locale<select form="settingsForm" id="locale"></select></label>
+<label><input form="settingsForm" id="enable_apl" type="checkbox"> Enable Echo Show artwork and controls</label>
+<details><summary>Advanced skill settings</summary>
+<label>Public skill endpoint override<input form="settingsForm" id="skill_hostname" type="url"><small>Optional. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override only when your skill uses another public endpoint.</small></label>
+<label>HTTPS certificate type<select form="settingsForm" id="skill_certificate_type"><option value="Trusted">Trusted</option><option value="Wildcard">Trusted sub-domain</option><option value="SelfSigned">File</option></select><small>Choose Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate, Trusted sub-domain for a CA-issued wildcard certificate, or File for a self-signed development certificate.</small></label>
+<div id="certificateFile" hidden><label>Public certificate file<input id="certificateUpload" type="file" accept=".pem,.crt,.cer"><small>One PEM-encoded public certificate, up to 16 KB. Never upload a private key. A file certificate applies to skill development testing; Amazon sign-in still needs publicly trusted HTTPS.</small></label><p id="certificateSaved" role="status"></p><button id="clearCertificate" type="button">Remove saved certificate</button></div>
+</details><button id="saveSkill" type="submit" form="settingsForm">Save skill settings</button>
+<div id="selection" hidden><h3>Choose your personal skill</h3>
 <label>Developer account<select id="vendors"><option value="">Choose account…</option></select></label>
 <label>Skill<select id="skills"><option value="">Choose skill…</option></select></label>
 <p>The skill ID identifies which skill is updated, even when names are identical. Only development custom skills are shown. Other skills are never deleted.</p>
-<button id="reload">Refresh skill list</button><button id="review">Review settings</button><button id="resume" hidden>Resume accepted import</button></section>
+<button id="reload">Refresh skill list</button><button id="review">Review settings</button><button id="resume" hidden>Resume accepted import</button></div></section>
 <section id="approval" hidden><h2>3. Review and deploy</h2><dl id="details"></dl>
 <p>This replaces the selected locale’s voice model with Music Assistant’s model, preserving an existing invocation name, other locales and unrelated package files. It updates the HTTPS endpoint and regional endpoints, enables AudioPlayer, applies your APL preference and enables development testing.</p>
 <p id="newWarning" hidden>Creating a skill adds a new personal skill to this Amazon developer account.</p>
@@ -59,11 +77,16 @@
 <script>
 const el = id => document.getElementById(id);
 const base = {{ request.script_root|tojson }};
+let certificatePem = '';
 let csrf = '', status = {}, accountsLoaded = false, pending = false, settingsRevision = '';
 const fields = ['ma_hostname','skill_hostname','locale','enable_apl','ma_api_url','lwa_client_id','skill_certificate_type','api_username','skip_url_validation'];
 const secretFields = ['ma_api_token','lwa_client_secret','api_password'];
 function updateCallback(){const audio=el('ma_hostname').value.trim();let derived='';if(audio){try{derived=new URL(audio).origin+'/ma-alexa-skill/';}catch{derived=audio.replace(/\/+$/,'')+'/ma-alexa-skill/';}}const endpoint=el('skill_hostname').value.trim()||derived;el('skill_hostname').placeholder=derived||'Derived from public audio URL';try{el('callback').value=new URL(endpoint).origin+'/ma-alexa-skill/setup/oauth/callback';}catch{el('callback').value='';}}
-function showSettings(body){settingsRevision=body.revision;el('locale').replaceChildren();body.locales.forEach(locale=>option(el('locale'),locale,locale));fields.forEach(id=>{if(el(id).type==='checkbox')el(id).checked=body.values[id];else el(id).value=body.values[id];});secretFields.forEach(id=>{el(id).value='';el(id+'_hint').textContent=body.secrets_set[id]?'Saved. Leave blank to keep the current value.':'Not set.';});['ma_api_token','lwa_client_secret'].forEach(id=>el('clear_'+id).checked=false);updateCallback();el('callback').value=body.callback_url;el('currentPassword').hidden=true;el('currentPassword').textContent='';}
+function updateCertificate(){el('certificateFile').hidden=el('skill_certificate_type').value!=='SelfSigned';el('certificateSaved').textContent=certificatePem?'Public certificate loaded. Save settings to retain it.':'No public certificate loaded.';}
+el('skill_certificate_type').onchange=updateCertificate;
+el('certificateUpload').onchange=()=>action(async()=>{const file=el('certificateUpload').files[0];if(!file)return;if(file.size>16384)throw Error('Choose a public PEM certificate smaller than 16 KB.');const text=await file.text();if(!text.trim().startsWith('-----BEGIN CERTIFICATE-----')||text.includes('PRIVATE KEY'))throw Error('Choose a public PEM certificate, without a private key.');certificatePem=text;updateCertificate();});
+el('clearCertificate').onclick=()=>{certificatePem='';el('certificateUpload').value='';updateCertificate();};
+function showSettings(body){certificatePem=body.values.skill_certificate_pem||'';settingsRevision=body.revision;el('locale').replaceChildren();body.locales.forEach(locale=>option(el('locale'),locale,locale));fields.forEach(id=>{if(el(id).type==='checkbox')el(id).checked=body.values[id];else el(id).value=body.values[id];});secretFields.forEach(id=>{el(id).value='';el(id+'_hint').textContent=body.secrets_set[id]?'Saved. Leave blank to keep the current value.':'Not set.';});['ma_api_token','lwa_client_secret'].forEach(id=>el('clear_'+id).checked=false);updateCallback();updateCertificate();el('callback').value=body.callback_url;el('currentPassword').hidden=true;el('currentPassword').textContent='';}
 el('skill_hostname').oninput=updateCallback;el('ma_hostname').oninput=updateCallback;
 async function api(path, payload) {
  const response = await fetch(base + path, {method: payload === undefined ? 'GET' : 'POST', credentials:'same-origin', headers: payload === undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf}, body: payload === undefined ? undefined : JSON.stringify(payload)});
@@ -72,7 +95,7 @@ async function api(path, payload) {
 function option(select, value, label) { const item = document.createElement('option'); item.value = value; item.textContent = label; select.append(item); }
 function detail(label,value) {const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;el('details').append(dt,dd);}
 function showReview(review) {
- el('approval').hidden = !review || status.phase !== 'ready'; if (el('approval').hidden) return;
+ const ready=review&&status.phase==='ready';el('approval').hidden=!ready&&!['running','complete','failed','interrupted'].includes(status.phase);el('deploy').hidden=!ready;if(!ready)return;
  el('details').replaceChildren();detail('Action', review.create ? 'Create a personal skill' : 'Update '+review.skill);detail('Name',review.name);detail('HTTPS endpoint',review.settings.endpoint);detail('Locale',review.settings.locale);detail('Invocation name',review.invocation);detail('Certificate',review.settings.certificate);detail('Echo Show display',review.settings.apl ? 'Enabled' : 'Disabled');detail('Locales retained',review.locales.join(', '));
  el('newWarning').hidden=!review.create;el('manifest').textContent=JSON.stringify(review.manifest,null,2);
 }
@@ -87,17 +110,18 @@ async function refresh() {
  status=await api('/setup/status');csrf=status.csrf;
  if(status.oauth_ready){await api('/setup/oauth/finish',{});accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');status=await api('/setup/status');}
  const busy=pending||['preparing','running'].includes(status.phase);
- el('message').textContent=status.configuration_error||status.message||'Connect Amazon to get started.';
- el('connected').textContent=status.connected?'Connected':'';if(status.connected){el('amazonSignin').hidden=true;el('amazonSignin').removeAttribute('href');el('connectMessage').textContent='Amazon account connected.';}
+ const feedbackSection=status.configuration_error||!status.connected?'amazonConnection':(['ready','running','complete','failed','interrupted'].includes(status.phase)?'approval':'selection');el(feedbackSection).append(el('message'));el('message').hidden=feedbackSection==='amazonConnection';el('message').textContent=status.configuration_error||status.message||(status.connected?'Choose your developer account and personal skill.':'Connect Amazon to get started.');
+ el('connected').textContent='';if(status.connected){el('amazonSignin').hidden=true;el('amazonSignin').removeAttribute('href');el('connectMessage').textContent='✓ Amazon account connected.';el('connectMessage').classList.add('success');}
+ if(!status.connected)el('connectMessage').classList.remove('success');
  el('selection').hidden=!status.connected;el('connect').disabled=busy||!csrf;if(!pending&&!status.connected&&!el('amazonSignin').hasAttribute('href'))el('connectMessage').textContent=status.configuration_error||'Save your Amazon settings, then connect.';
- ['vendors','skills','reload','saveSettings','saveAmazon'].forEach(id=>el(id).disabled=busy);
+ ['vendors','skills','reload','saveSettings','saveAmazon','saveSkill'].forEach(id=>el(id).disabled=busy);
  ['review','deploy'].forEach(id=>el(id).disabled=busy||Boolean(status.import_unknown));
  el('resume').hidden=!status.can_resume;el('resume').disabled=busy;
  el('reconciliation').hidden=!status.import_unknown||status.can_resume;el('reconcileSkill').textContent=status.skill_id||'';el('reconcileImport').disabled=busy||!status.connected;
  showReview(status.review);
  if(status.connected&&!accountsLoaded) {const body=await api('/setup/accounts');body.vendors.forEach(v=>option(el('vendors'),v.id,v.name+' — '+v.id));accountsLoaded=true;if(status.vendor_id){el('vendors').value=status.vendor_id;await loadSkills();}}
 }
-async function action(fn) {pending=true;el('error').hidden=true;try{await fn();}catch(error){el('error').textContent=error.message;el('error').hidden=false;}finally{pending=false;}}
+async function action(fn) {const section=document.activeElement?.closest('section');if(section)section.append(el('error'));pending=true;el('error').hidden=true;try{await fn();}catch(error){el('error').textContent=error.message;el('error').hidden=false;}finally{pending=false;}}
 el('connect').onclick=()=>{
  if(status.configuration_error){el('connectMessage').textContent=status.configuration_error+' Enter and save these settings above.';return;}
  let popup=null;try{popup=window.open('about:blank','_blank');if(popup)popup.opener=null;}catch{popup=null;}
@@ -120,7 +144,7 @@ el('review').onclick=()=>action(async()=>{const skill=el('skills').value;if(!el(
 el('deploy').onclick=()=>action(async()=>{await api('/setup/deploy',{review_id:status.review.id});await refresh();});
 el('reconcileImport').onclick=()=>action(async()=>{await api('/setup/reconcile-import',{attempt_id:status.import_attempt_id,skill_id:el('reconcileSkillInput').value,result:el('reconcileResult').value,reference:el('reconcileReference').value,confirmed:el('reconcileConfirmed').checked});el('reconcileReference').value='';el('reconcileConfirmed').checked=false;await refresh();});
 el('resume').onclick=()=>action(async()=>{await api('/setup/resume',{});await refresh();});
-el('settingsForm').onsubmit=event=>{event.preventDefault();action(async()=>{const values={};fields.forEach(id=>values[id]=el(id).type==='checkbox'?el(id).checked:el(id).value);secretFields.forEach(id=>values[id]=el(id).value);const clear_secrets=['ma_api_token','lwa_client_secret'].filter(id=>el('clear_'+id).checked);showSettings(await api('/setup/settings',{values,clear_secrets,revision:settingsRevision}));el('saved').textContent='Saved. Review and deploy separately to update Amazon.';accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');await refresh();});};
+el('settingsForm').onsubmit=event=>{event.preventDefault();const section=document.activeElement?.closest('section');if(section)section.append(el('saved'));action(async()=>{const values={};fields.forEach(id=>values[id]=el(id).type==='checkbox'?el(id).checked:el(id).value);secretFields.forEach(id=>values[id]=el(id).value);values.skill_certificate_pem=certificatePem;const clear_secrets=['ma_api_token','lwa_client_secret'].filter(id=>el('clear_'+id).checked);showSettings(await api('/setup/settings',{values,clear_secrets,revision:settingsRevision}));el('saved').textContent='Saved. Review and deploy separately to update Amazon.';accountsLoaded=false;el('vendors').replaceChildren();option(el('vendors'),'','Choose account…');await refresh();});};
 el('showPassword').onclick=()=>action(async()=>{if(!el('currentPassword').hidden){el('currentPassword').hidden=true;el('currentPassword').textContent='';return;}const result=await api('/setup/settings/api-password',{});el('currentPassword').textContent=result.password;el('currentPassword').hidden=false;});
 refresh().then(()=>api('/setup/settings')).then(showSettings).catch(error=>{el('message').textContent=error.message;el('connectMessage').textContent=error.message;});
 setInterval(()=>{if(!pending)refresh().catch(error=>el('message').textContent=error.message);},3000);
