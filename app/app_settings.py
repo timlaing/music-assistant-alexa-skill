@@ -34,6 +34,12 @@ class SettingsError(ValueError):
     pass
 
 
+def effective_skill_endpoint(values):
+    override = values["skill_hostname"].strip()
+    audio = values["ma_hostname"].strip()
+    return override or (audio.rstrip("/") + "/ma-alexa-skill/" if audio else "")
+
+
 def callback_url(endpoint):
     parsed = urlsplit(endpoint)
     return (
@@ -125,7 +131,8 @@ class SettingsStore:
                 key: value for key, value in values.items() if key not in SECRET_FIELDS
             },
             "secrets_set": {key: bool(values[key]) for key in SECRET_FIELDS},
-            "callback_url": callback_url(values["skill_hostname"]),
+            "skill_endpoint": effective_skill_endpoint(values),
+            "callback_url": callback_url(effective_skill_endpoint(values)),
             "revision": revision,
             "locales": sorted(
                 path.stem for path in (Path(__file__).parent / "models").glob("*.json")
@@ -229,7 +236,8 @@ def get_setting(name, default=""):
     key = next((key for key, env in ENV.items() if env == name), None)
     if key is None:
         return os.environ.get(name, default)
-    value = store().snapshot()[key]
+    values = store().snapshot()
+    value = effective_skill_endpoint(values) if key == "skill_hostname" else values[key]
     return str(value).lower() if isinstance(value, bool) else value
 
 

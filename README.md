@@ -31,7 +31,7 @@ For a standalone host, run the project with Docker Compose. This will build and 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured).
 6. For standalone Docker, open `/setup` and authenticate with app credentials; for the maintained add-on use Home Assistant ingress with no second login. Connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. Amazon returns through `/ma-alexa-skill/setup/oauth/callback`, and the original wizard completes the connection automatically. See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
-The new wizard is a **1.3.0-beta.2 candidate**, with live Amazon/Echo acceptance pending. Stable **1.2.0** does not contain it. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this candidate rather than an upstream image.
+The new wizard is a **1.3.0-beta.3 candidate**, with live Amazon/Echo acceptance pending. Stable **1.2.0** does not contain it. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this candidate rather than an upstream image.
 
 ### 2. Home Assistant add-on
 
@@ -108,11 +108,11 @@ Notes:
 
 ### Environment Variables
 
-For candidate **1.3.0-beta.2**, edit application settings on `/setup`; standalone environment variables are bootstrap defaults until the first web save. Persist `/data/app-settings.json` (or set `APP_SETTINGS_PATH`). Home Assistant add-on users use ingress Setup instead of the add-on Configuration tab. Existing available legacy values migrate once; saved web settings take precedence after restarts. Secrets stay masked, blank inputs retain them, and Advanced settings provides an explicit API-password reveal for connecting Music Assistant. The callback is derived from the skill endpoint origin; saving does not deploy to Amazon. The unused AWS region setting has been removed.
+For candidate **1.3.0-beta.3**, edit application settings on `/setup`; standalone environment variables are bootstrap defaults until the first web save. Persist `/data/app-settings.json` (or set `APP_SETTINGS_PATH`). Home Assistant add-on users use ingress Setup instead of the add-on Configuration tab. Existing available legacy values migrate once; saved web settings take precedence after restarts. Secrets stay masked, blank inputs retain them, and Credentials provides an explicit API-password reveal for connecting Music Assistant. The callback is derived from the skill endpoint origin; saving does not deploy to Amazon. The unused AWS region setting has been removed.
 
 | Variable | Required | Default | Description |
 |---|:---:|:---:|---|
-| `SKILL_HOSTNAME` | Yes | — | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
+| `SKILL_HOSTNAME` | No | `MA_HOSTNAME` + `/ma-alexa-skill/` | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
 | `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its setup-page `ma_hostname` setting. |
 | `APP_USERNAME` | Yes for setup | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
 | `APP_PASSWORD` | Yes for setup | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
@@ -166,4 +166,4 @@ The maintained add-on exposes `/status` and `/setup` through Home Assistant ingr
 
 ### Migration release compatibility
 
-Candidate 1.3.0-beta.2 keeps the legacy Supervisor schema with migration-only labels to preserve existing configuration during upgrade. Settings are imported once into `/data/app-settings.json`; all subsequent edits belong in ingress Setup. Later edits to the legacy fields are ignored. The obsolete AWS region option remains removed. Remove this temporary compatibility schema only in a later release once migration is verified.
+Candidate 1.3.0-beta.3 keeps the legacy Supervisor schema with migration-only labels to preserve existing configuration during upgrade. Settings are imported once into `/data/app-settings.json`; all subsequent edits belong in ingress Setup. Later edits to the legacy fields are ignored. The obsolete AWS region option remains removed. Remove this temporary compatibility schema only in a later release once migration is verified.

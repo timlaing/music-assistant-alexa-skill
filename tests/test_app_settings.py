@@ -242,3 +242,43 @@ def test_full_form_boolean_settings_and_request_control_credentials(monkeypatch)
     monkeypatch.setattr(ma_control, "_send_command", command)
     assert ma_control.send_player_command("player", "next")
     assert called == [("http://ma.local:8095", "control-token", "player", "next")]
+
+
+def test_skill_endpoint_defaults_to_audio_url_and_supports_override(monkeypatch):
+    monkeypatch.setenv("SKILL_HOSTNAME", "")
+    monkeypatch.setenv("MA_HOSTNAME", "https://public.example.com/audio/")
+    assert (
+        get_setting("SKILL_HOSTNAME")
+        == "https://public.example.com/audio/ma-alexa-skill/"
+    )
+    assert settings()["endpoint"] == get_setting("SKILL_HOSTNAME")
+    assert store().public()["values"]["skill_hostname"] == ""
+    assert (
+        store().public()["callback_url"]
+        == "https://public.example.com/ma-alexa-skill/setup/oauth/callback"
+    )
+    monkeypatch.setenv("SKILL_HOSTNAME", "https://skill.example.com/ma-alexa-skill/")
+    assert settings()["endpoint"] == "https://skill.example.com/ma-alexa-skill/"
+    assert (
+        store().public()["callback_url"]
+        == "https://skill.example.com/ma-alexa-skill/setup/oauth/callback"
+    )
+
+
+def test_saved_empty_override_tracks_audio_url_changes():
+    instance = store()
+    instance.save(
+        {
+            "values": {"ma_hostname": "https://one.example.com/", "skill_hostname": ""},
+            "revision": instance.public()["revision"],
+        }
+    )
+    assert settings()["endpoint"] == "https://one.example.com/ma-alexa-skill/"
+    instance.save(
+        {
+            "values": {"ma_hostname": "https://two.example.com"},
+            "revision": instance.public()["revision"],
+        }
+    )
+    assert settings()["endpoint"] == "https://two.example.com/ma-alexa-skill/"
+    assert instance.public()["values"]["skill_hostname"] == ""

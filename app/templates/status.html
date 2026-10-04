@@ -1,32 +1,32 @@
 <!doctype html>
-            <html>
+            <html lang="en">
             <head>
                 <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
                 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0%200%20100%20100'><circle cx='50' cy='50' r='50' fill='%2300A4E3'/><circle cx='50' cy='50' r='34' fill='none' stroke='%23FFFFFF' stroke-width='8' opacity='0.8'/></svg>">
                 <title>Service Status</title>
-                <style>
-                body { font-family: Arial, Helvetica, sans-serif; padding: 20px; }
-                .led { display:inline-block; width:14px; height:14px; border-radius:50%; margin-right:8px; }
-                .green { background:#2ecc71; }
-                .yellow { background:#f1c40f; }
-                .red { background:#e74c3c; }
-                .row { margin: 8px 0; }
-                .muted { color:#666; font-size:0.9em }
-                .intent-toggle { cursor: pointer; background: transparent; border: none; padding: 0; font-size: 1em }
-                .intent-entry { margin-bottom:12px }
-                .status-box:focus { outline: 2px solid #00A4E3; outline-offset: 2px; }
-                </style>
+                {% include '_page_style.html' %}
             </head>
-            <body>
+            <body><main>
+                <a href="/setup">Set up personal Alexa skill →</a>
                 <h1>Service Status</h1>
-                <p><a href="/setup">Set up personal Alexa skill</a></p>
-                <div class="row" id="urls-row">__URLS_HTML__</div>
-                <div class="row">__SKILL_HTML__</div>
-                <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
-                <div class="row" id="api-row">__MA_API_HTML__</div>
-                <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
-                <div class="row" id="metadata-row">__METADATA_HTML__</div>
-                <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
+                <section aria-labelledby="reachability-heading"><h2 id="reachability-heading">Public URL reachability</h2>
+                    <div class="row" id="urls-row">__URLS_HTML__</div>
+                </section>
+                <section aria-labelledby="skill-heading"><h2 id="skill-heading">Alexa skill</h2>
+                    <div class="row">__SKILL_HTML__</div>
+                    <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
+                </section>
+                <section aria-labelledby="playback-heading"><h2 id="playback-heading">Playback APIs</h2>
+                    <div class="row" id="api-row">__MA_API_HTML__</div>
+                    <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
+                </section>
+                <section aria-labelledby="display-heading"><h2 id="display-heading">Echo Show display</h2>
+                    <div class="row" id="metadata-row">__METADATA_HTML__</div>
+                </section>
+                <section aria-labelledby="activity-heading"><h2 id="activity-heading">Recent activity</h2>
+                    <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
+                </section>
                 <script>
                 (function pollUrls(){
                     fetch('/status/urls').then(r=>r.json()).then(j=>{
@@ -119,5 +119,5 @@
                     }catch(err){}
                 });
                 </script>
-            </body>
+            </main></body>
             </html>
