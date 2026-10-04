@@ -11,21 +11,25 @@
 <p>Save your connection settings here. Saving does not deploy changes to Amazon; review and deploy separately.</p>
 <form id="settingsForm">
 <label>Public audio URL<input id="ma_hostname" type="url" placeholder="https://streams.example.com"><small>Public HTTPS address for Music Assistant streams and artwork.</small></label>
-<label>Public skill endpoint<input id="skill_hostname" type="url" placeholder="https://alexa.example.com/ma-alexa-skill/"><small>HTTPS endpoint reached through your proxy.</small></label>
-<label>Amazon callback URL<input id="callback" readonly><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
 <label>Alexa locale<select id="locale"></select></label>
 <label><input id="enable_apl" type="checkbox"> Enable Echo Show artwork and controls</label>
-<label>Music Assistant control API URL<input id="ma_api_url" type="url" placeholder="http://homeassistant:8095"><small>Optional local connection for mapped voice controls.</small></label>
-<label>Music Assistant access token<input id="ma_api_token" type="password" autocomplete="new-password"><small id="ma_api_token_hint"></small></label>
-<label><input id="clear_ma_api_token" type="checkbox"> Remove saved Music Assistant token</label>
 <label>Amazon client ID<input id="lwa_client_id" autocomplete="off"></label>
 <label>Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password"><small id="lwa_client_secret_hint"></small></label>
 <label><input id="clear_lwa_client_secret" type="checkbox"> Remove saved Amazon client secret</label>
-<details><summary>Advanced settings</summary>
-<label>HTTPS certificate type<select id="skill_certificate_type"><option>Trusted</option><option>Wildcard</option></select><small>Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate.</small></label>
+<section aria-labelledby="credentials-heading"><h3 id="credentials-heading">Credentials</h3>
+<p>Music Assistant needs this username and password to authenticate with the Alexa API. Use Show current API password to copy the saved password into the provider.</p>
 <label>API username<input id="api_username" autocomplete="off"><small>Enter these credentials in Music Assistant’s Alexa provider. Changing them requires updating that provider.</small></label>
 <label>Replace API password<input id="api_password" type="password" autocomplete="new-password"><small id="api_password_hint"></small></label>
 <button id="showPassword" type="button">Show current API password</button><output id="currentPassword" hidden></output>
+</section>
+<details><summary>Advanced settings</summary>
+<label>Public skill endpoint<input id="skill_hostname" type="url" placeholder="https://alexa.example.com/ma-alexa-skill/"><small>Required for Amazon deployment: the public HTTPS endpoint reached through your proxy.</small></label>
+<label>Amazon callback URL<input id="callback" readonly><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
+<label>Music Assistant control API URL<input id="ma_api_url" type="url" placeholder="http://homeassistant:8095"><small>Optional local connection for mapped voice controls.</small></label>
+<label>Music Assistant access token<input id="ma_api_token" type="password" autocomplete="new-password"><small id="ma_api_token_hint"></small></label>
+<label><input id="clear_ma_api_token" type="checkbox"> Remove saved Music Assistant token</label>
+
+<label>HTTPS certificate type<select id="skill_certificate_type"><option>Trusted</option><option>Wildcard</option></select><small>Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate.</small></label>
 <label><input id="skip_url_validation" type="checkbox"> Skip stream URL validation</label>
 <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
 </details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>

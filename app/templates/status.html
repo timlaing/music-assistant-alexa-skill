@@ -8,15 +8,25 @@
                 {% include '_page_style.html' %}
             </head>
             <body><main>
+                <a href="/setup">← Set up personal Alexa skill</a>
                 <h1>Service Status</h1>
-                <p><a href="/setup">Set up personal Alexa skill</a></p>
-                <div class="row" id="urls-row">__URLS_HTML__</div>
-                <div class="row">__SKILL_HTML__</div>
-                <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
-                <div class="row" id="api-row">__MA_API_HTML__</div>
-                <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
-                <div class="row" id="metadata-row">__METADATA_HTML__</div>
-                <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
+                <section aria-labelledby="reachability-heading"><h2 id="reachability-heading">Public URL reachability</h2>
+                    <div class="row" id="urls-row">__URLS_HTML__</div>
+                </section>
+                <section aria-labelledby="skill-heading"><h2 id="skill-heading">Alexa skill</h2>
+                    <div class="row">__SKILL_HTML__</div>
+                    <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
+                </section>
+                <section aria-labelledby="playback-heading"><h2 id="playback-heading">Playback APIs</h2>
+                    <div class="row" id="api-row">__MA_API_HTML__</div>
+                    <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
+                </section>
+                <section aria-labelledby="display-heading"><h2 id="display-heading">Echo Show display</h2>
+                    <div class="row" id="metadata-row">__METADATA_HTML__</div>
+                </section>
+                <section aria-labelledby="activity-heading"><h2 id="activity-heading">Recent activity</h2>
+                    <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
+                </section>
                 <script>
                 (function pollUrls(){
                     fetch('/status/urls').then(r=>r.json()).then(j=>{
