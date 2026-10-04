@@ -109,3 +109,36 @@ def test_oauth_public_callback_finishes_only_in_original_ingress_browser(
     )
     assert manager.public_status()["connected"]
     assert fake.calls[0][0] == "TOKEN"
+
+
+def test_cached_double_slash_ingress_entry_opens_status(client, monkeypatch):
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    response = client.get(
+        "/status",
+        environ_overrides={
+            "REMOTE_ADDR": "172.30.32.2",
+            "SERVER_PORT": "8099",
+            "PATH_INFO": "//status",
+        },
+        headers={"X-Ingress-Path": PREFIX},
+    )
+    assert response.status_code == 200
+    assert "fetch('" + PREFIX + "/status/ma" in response.text
+    # Normalization must not permit playback APIs through the private listener.
+    blocked = client.get(
+        "/ma/latest-url",
+        environ_overrides={
+            "REMOTE_ADDR": "172.30.32.2",
+            "SERVER_PORT": "8099",
+            "PATH_INFO": "//ma/latest-url",
+        },
+        headers={"X-Ingress-Path": PREFIX},
+    )
+    assert blocked.status_code == 403
+    # A doubled slash and ingress headers cannot establish gateway trust.
+    spoofed = client.get(
+        "/status",
+        environ_overrides={"SERVER_PORT": "8099", "PATH_INFO": "//status"},
+        headers={"X-Ingress-Path": PREFIX, "X-Forwarded-For": "172.30.32.2"},
+    )
+    assert spoofed.status_code == 403

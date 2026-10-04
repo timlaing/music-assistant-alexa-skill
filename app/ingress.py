@@ -39,12 +39,14 @@ class IngressMiddleware:
                 return Response("Ingress gateway required", 403)(
                     environ, start_response
                 )
-            if not (
-                ui_path(environ.get("PATH_INFO", "")) or environ.get("PATH_INFO") == "/"
-            ):
+            # Supervisor appends ingress_entry to a URL ending in /. Older
+            # metadata used /status, so cached entry links can send //status.
+            path = "/" + environ.get("PATH_INFO", "").lstrip("/")
+            if not (ui_path(path) or path == "/"):
                 return Response("Use the API listener for playback APIs", 403)(
                     environ, start_response
                 )
+            environ["PATH_INFO"] = path
             environ["ma.trusted_ingress"] = True
             environ["SCRIPT_NAME"] = prefix
         return self.application(environ, start_response)
