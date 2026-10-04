@@ -13,9 +13,6 @@
 <label>Public audio URL<input id="ma_hostname" type="url" placeholder="https://streams.example.com"><small>Public HTTPS address for Music Assistant streams and artwork.</small></label>
 <label>Alexa locale<select id="locale"></select></label>
 <label><input id="enable_apl" type="checkbox"> Enable Echo Show artwork and controls</label>
-<label>Amazon client ID<input id="lwa_client_id" autocomplete="off"></label>
-<label>Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password"><small id="lwa_client_secret_hint"></small></label>
-<label><input id="clear_lwa_client_secret" type="checkbox"> Remove saved Amazon client secret</label>
 <section aria-labelledby="credentials-heading"><h3 id="credentials-heading">Credentials</h3>
 <p>Music Assistant needs this username and password to authenticate with the Alexa API. Use Show current API password to copy the saved password into the provider.</p>
 <label>API username<input id="api_username" autocomplete="off"><small>Enter these credentials in Music Assistant’s Alexa provider. Changing them requires updating that provider.</small></label>
@@ -34,7 +31,11 @@
 <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
 </details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>
 </form></section>
-<section><h2>1. Connect Amazon</h2><button id="connect" disabled>Connect Amazon</button><span id="connected"></span><p id="connectMessage" role="status" aria-live="polite"></p><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
+<section><h2>Connect to Amazon</h2>
+<label>Amazon client ID<input id="lwa_client_id" form="settingsForm" autocomplete="off"></label>
+<label>Amazon client secret<input id="lwa_client_secret" form="settingsForm" type="password" autocomplete="new-password"><small id="lwa_client_secret_hint"></small></label>
+<label><input id="clear_lwa_client_secret" form="settingsForm" type="checkbox"> Remove saved Amazon client secret</label>
+<button id="saveAmazon" type="submit" form="settingsForm">Save Amazon settings</button><button id="connect" disabled>Connect</button><span id="connected"></span><p id="connectMessage" role="status" aria-live="polite"></p><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
 <section id="reconciliation" hidden><h2>Recover an uncertain import</h2>
 <p>Amazon may have accepted an import without returning its recovery ID. Check the saved skill’s import with Amazon before continuing. Do not clear this block while the operation is running or its result remains unknown.</p>
 <p>Saved skill: <strong id="reconcileSkill"></strong></p>
@@ -89,7 +90,7 @@ async function refresh() {
  el('message').textContent=status.configuration_error||status.message||'Connect Amazon to get started.';
  el('connected').textContent=status.connected?'Connected':'';if(status.connected){el('amazonSignin').hidden=true;el('amazonSignin').removeAttribute('href');el('connectMessage').textContent='Amazon account connected.';}
  el('selection').hidden=!status.connected;el('connect').disabled=busy||!csrf;if(!pending&&!status.connected&&!el('amazonSignin').hasAttribute('href'))el('connectMessage').textContent=status.configuration_error||'Save your Amazon settings, then connect.';
- ['vendors','skills','reload','saveSettings'].forEach(id=>el(id).disabled=busy);
+ ['vendors','skills','reload','saveSettings','saveAmazon'].forEach(id=>el(id).disabled=busy);
  ['review','deploy'].forEach(id=>el(id).disabled=busy||Boolean(status.import_unknown));
  el('resume').hidden=!status.can_resume;el('resume').disabled=busy;
  el('reconciliation').hidden=!status.import_unknown||status.can_resume;el('reconcileSkill').textContent=status.skill_id||'';el('reconcileImport').disabled=busy||!status.connected;
