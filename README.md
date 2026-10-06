@@ -55,6 +55,10 @@ Expose NPM's HTTPS port **443** to the internet; keep add-on **5000** and Music 
 
 Separate proxy hosts simplify configuration. A skill location such as `/ma-alexa-skill/` must strip that prefix when proxying to the add-on root. Stream locations preserve their paths. Version 1.2.0 supports a public stream URL path prefix without duplicating it during URL rewriting.
 
+For a shared public hostname, forward `/flow/`, `/pluginsource/`, `/source/`, `/announcement/` and `/imageproxy/` to `http://<MA-LAN-IP>:8097`, preserving the full path. Live sources, including iPhone audio via Music Assistant's AirPlay Receiver, can use `/source/` rather than the ordinary queue stream route. A dedicated stream hostname forwarding all paths to port **8097** already covers these routes and needs no extra custom locations. Keep `/ma-alexa-skill/` pointing to the add-on on **5000**, with that prefix stripped.
+
+If a live stream returns 404, compare the same path through the public HTTPS hostname and directly against the internal Music Assistant stream server while the iPhone is actively streaming. Internal success with a public 404 points to proxy routing; a 404 from both requires investigation of the Music Assistant stream URL. The maintainer confirmed successful iPhone-to-Alexa playback on 6 October 2026 after adding `/source/` and correcting the NPM configuration. This confirms the tested installation, rather than every live-source configuration.
+
 If Music Assistant connects directly to the add-on LAN API URL above, no NPM locations are needed for `/alexa/` or `/ma/`. If it connects through a shared public hostname instead, set its Alexa provider **API URL** to that hostname's base URL (for example, `https://music.example.com`, without `/ma` or `/ma-alexa-skill`) and add these NPM custom locations:
 
 | Location | Forward to | Path handling |
