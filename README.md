@@ -38,8 +38,8 @@ The wizard is available in stable **1.3.0**. The maintainer confirmed it was tes
 Use [timlaing/music-assistant-alexa-api](https://github.com/timlaing/music-assistant-alexa-api) as the custom add-on repository. Install **Music Assistant Alexa API add-on** on an **aarch64** or **amd64** Home Assistant Supervisor installation.
 
 1. Add `https://github.com/timlaing/music-assistant-alexa-api` in **Settings > Add-ons > Add-on Store > Repositories**.
-2. Configure the lowercase Supervisor options `ma_hostname`, `skill_hostname`, `api_username`, `api_password` and `locale` in the add-on. These map to the standalone environment variables described below; do not enter uppercase variable names as Supervisor options. The default locale is `en-US`, and an empty API password is generated and saved on startup.
-3. Configure the public HTTPS endpoints described below, start the add-on, open its Web UI and select **Setup**. The guided flow creates or updates the Alexa skill and interaction model for the selected locale.
+2. Start the add-on and open **Web UI → Setup** through Home Assistant ingress. Edit application settings there; the old Supervisor options are retained only for one-time migration. The default locale is `en-US`, and an empty API password is generated and saved on startup.
+3. Configure the public HTTPS endpoints described below, then follow [Skill Setup](#skill-setup) to register LWA, connect Amazon and create or update your personal skill.
 4. In Music Assistant's Alexa provider, set **API URL** to the add-on LAN base URL, such as `http://<HA-LAN-IP>:5000`, without `/ma`. Use the add-on API username and password for Basic Auth.
 
 The maintained add-on is a separate implementation from the development wrapper in [`addons/music-assistant-skill`](addons/music-assistant-skill/README.md). Use the companion repository's [setup guide](https://github.com/timlaing/music-assistant-alexa-api#configuration) and [option reference](https://github.com/timlaing/music-assistant-alexa-api/blob/main/music-assistant-alexa-api/DOCS.md) for Supervisor deployment.
@@ -88,7 +88,7 @@ Version 1.2.0 passed 46 combined application/add-on tests and HTTP, concurrency 
 
 ### 3. Using `docker run`
 
-Build this checkout to include the candidate wizard. This standalone Dockerfile has not been validated by the maintained add-on container checks. Set the Login with Amazon options and persist `/data` as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+Build this checkout to include the setup wizard. This standalone Dockerfile has not been validated by the maintained add-on container checks. Set the Login with Amazon options and persist `/data` as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
 
 ```sh
 docker build -t music-assistant-skill:local .
@@ -115,6 +115,20 @@ Notes:
 - Adjust `SKILL_HOSTNAME` to the public HTTPS host you'll use in the skill manifest.
 - The `ask_data` volume preserves legacy CLI credentials. The new wizard uses its own OAuth client and requires a persistent `/data` volume.
 - Mounting files into `/run/secrets` is a simple way to provide secrets for local testing; for production use Docker secrets or your platform's secret manager.
+
+## Skill Setup
+
+Create or update your personal Alexa development skill through the **Setup** page. You do not need to manually create the skill, import interaction-model JSON, configure interfaces or build it in the Alexa Developer Console. One-time **Login with Amazon (LWA) security-profile registration** is still required.
+
+1. Configure the public HTTPS skill and audio routes in the NPM table above, then start the add-on. Open **Web UI** in Home Assistant and select **Set up personal Alexa skill →** on the status page. Setup uses Home Assistant ingress with no separate app login. For standalone Docker, open `/setup` and sign in with the app credentials.
+2. In **Application settings**, enter the public audio URL and save. In **Credentials**, set or reveal the API username/password that Music Assistant will use. The public skill endpoint defaults to the audio URL's origin plus `/ma-alexa-skill/`; use **Skill setup → Advanced skill settings** only if you need to override it.
+3. In **Connect to Amazon**, follow the registration instructions and open the linked [Login with Amazon console](https://developer.amazon.com/loginwithamazon/console/site/lwa/overview.html). Create a security profile with the Amazon developer account associated with your Echo devices. Copy the page's generated **Amazon callback URL** into the profile's **Web Settings → Allowed Return URLs**. It uses `https://<public-host>/ma-alexa-skill/setup/oauth/callback` and the existing skill proxy route.
+4. Copy the profile's **Client ID** and **Client Secret** into **Connect to Amazon**, select **Save Amazon settings**, then **Connect**. Approve Amazon access and return to Setup; the connection finishes automatically. Allow pop-ups, or use **Continue to Amazon sign-in** if the window does not open. A green tick confirms connection.
+5. In **Skill setup**, select the developer account and your existing personal skill, or explicitly choose **Create a new personal skill**. Set the Echo's locale and optional Echo Show display. Under **Advanced skill settings**, choose **Trusted** for a normal CA-issued certificate such as NPM Let's Encrypt, **Trusted sub-domain** for a wildcard certificate, or **File** for a self-signed development certificate with a public PEM upload. Select **Save skill settings**.
+6. Select **Review settings**, check the skill ID/name, endpoint, locale, certificate and display preference, then select **Deploy approved settings**. The app configures the skill, imports/builds the voice model, applies the add-on icon and enables development testing. Saving settings alone does not deploy them. This creates a personal development skill; it does not publish it to the Alexa Skills Store.
+7. In Music Assistant's Alexa provider, set **API URL** to `http://<HA-LAN-IP>:5000` (without `/ma`) and copy the API credentials from Setup. Return to **Status** to check URL reachability, then start playback in Music Assistant and test your Echo using the skill's displayed invocation name.
+
+See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md) for registration details, persistent settings, recovery and certificate requirements. The callback and audio must be publicly reachable; Home Assistant's Setup and Status pages remain private through ingress. For standalone deployment, use your container's API address instead of the add-on LAN address.
 
 ### Environment Variables
 
