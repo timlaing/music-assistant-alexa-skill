@@ -1,38 +1,30 @@
-<!-- Please provide a short, descriptive title for the change in the PR title. -->
-
 ## Summary
 
-- Describe what this PR changes and why. Keep it concise.
-
-## Related issues
-
-- Fixes # (if applicable)
-- Related-to: # (if applicable)
+<!-- Describe the problem and resulting behavior. -->
 
 ## Type of change
-- [ ] Bugfix
-- [ ] New feature
-- [ ] Documentation
-- [ ] Refactor
-- [ ] Tests
-- [ ] CI / tooling
 
-## How has this been tested?
+- [ ] Feature (`enhancement`)
+- [ ] Bug fix (`bug`)
+- [ ] Maintenance / dependencies (`maintenance` / `dependencies`)
+- [ ] Documentation (`documentation`)
+- [ ] Breaking change (`major`)
 
-- Describe test steps or how reviewers can validate the change locally.
+## Related issues and companion PR
 
-## Checklist
+<!-- Fixes #123. Link the matching add-on/skill PR where applicable. -->
 
-- [ ] I have read the [CONTRIBUTING.md](CONTRIBUTING.md) guidelines.
-- [ ] Code builds and lints locally (if applicable).
-- [ ] Relevant tests have been added or updated.
-- [ ] Documentation has been updated where needed.
-- [ ] All continuous integration checks are passing.
+## Verification
 
-## Release notes (optional)
+<!-- Describe checks run and their results. Separate automated checks from real
+     Home Assistant, Amazon and Echo tests; identify anything not tested. -->
 
-- Short note for changelog/release (e.g., "Adds X feature", "Fixes Y bug").
+- [ ] The change is focused and maintainers can edit the branch where applicable.
+- [ ] Applicable tests, lint and CI pass.
+- [ ] Documentation is updated in both repositories where applicable.
+- [ ] Runtime/configuration changes explain migration and persistence effects.
+- [ ] Add-on container changes are checked on AMD64 and ARM64 where applicable.
 
----
+## Release notes
 
-By submitting this pull request, I confirm that you have the right to contribute this work and that it can be used, modified, copied, and redistributed under the project's license.
+<!-- A short user-facing note, or explain why skip-changelog applies. -->
