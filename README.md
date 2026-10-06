@@ -21,7 +21,7 @@ For a standalone host, run the project with Docker Compose. This will build and 
 
 1. Ensure `docker-compose.yml` is present and edit environment variables as needed (e.g., `SKILL_HOSTNAME`, `MA_HOSTNAME`, `PORT`). See the [Environment Variables](#environment-variables) section below for details on each variable.
 2. Create `./secrets/app_username.txt` and `./secrets/app_password.txt` to provide `APP_USERNAME` and `APP_PASSWORD` for basic authentication of the web UI and API. Also create `./secrets/lwa_client_secret.txt`: put your Login with Amazon client secret in it, or create an empty file if you will enter the secret later through Setup. Compose requires all three declared secret files to exist, even when you do not use the deployment wizard.
-3. Persist `./deployment_data:/data` for private deployment credentials/progress. Register Login with Amazon and configure the client ID and secret, then register the generated callback as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+3. Persist `./deployment_data:/data` for private deployment credentials/progress. Register Login with Amazon and configure the client ID and secret, then register the generated callback as described in the [Skill Setup](#skill-setup).
 4. Start the service:
 
     ```sh
@@ -29,7 +29,7 @@ For a standalone host, run the project with Docker Compose. This will build and 
     ```
 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured).
-6. For standalone Docker, open `/setup` and authenticate with app credentials; for the maintained add-on use Home Assistant ingress with no second login. Connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. Amazon returns through `/ma-alexa-skill/setup/oauth/callback`, and the original wizard completes the connection automatically. See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+6. For standalone Docker, open `/setup` and authenticate with app credentials; for the maintained add-on use Home Assistant ingress with no second login. Connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. Amazon returns through `/ma-alexa-skill/setup/oauth/callback`, and the original wizard completes the connection automatically. See the [Skill Setup](#skill-setup).
 
 The wizard is available in stable **1.3.0**. The maintainer confirmed it was tested and working on 4 October 2026. Login with Amazon security-profile registration is a one-time manual prerequisite; the skill configuration pages are populated through the management API afterwards. The bundled Compose file builds this checkout so it includes this implementation rather than an upstream image.
 
@@ -88,7 +88,7 @@ Version 1.2.0 passed 46 combined application/add-on tests and HTTP, concurrency 
 
 ### 3. Using `docker run`
 
-Build this checkout to include the setup wizard. This standalone Dockerfile has not been validated by the maintained add-on container checks. Set the Login with Amazon options and persist `/data` as described in the [deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+Build this checkout to include the setup wizard. This standalone Dockerfile has not been validated by the maintained add-on container checks. Set the Login with Amazon options and persist `/data` as described in the [Skill Setup](#skill-setup).
 
 ```sh
 docker build -t music-assistant-skill:local .
@@ -128,7 +128,7 @@ Create or update your personal Alexa development skill through the **Setup** pag
 6. Select **Review settings**, check the skill ID/name, endpoint, locale, certificate and display preference, then select **Deploy approved settings**. The app configures the skill, imports/builds the voice model, applies the add-on icon and enables development testing. Saving settings alone does not deploy them. This creates a personal development skill; it does not publish it to the Alexa Skills Store.
 7. In Music Assistant's Alexa provider, set **API URL** to `http://<HA-LAN-IP>:5000` (without `/ma`) and copy the API credentials from Setup. Return to **Status** to check URL reachability, then start playback in Music Assistant and test your Echo using the skill's displayed invocation name.
 
-See the [personal skill deployment guide](docs/PERSONAL_SKILL_DEPLOYMENT.md) for registration details, persistent settings, recovery and certificate requirements. The callback and audio must be publicly reachable; Home Assistant's Setup and Status pages remain private through ingress. For standalone deployment, use your container's API address instead of the add-on LAN address.
+The callback and audio must be publicly reachable; Home Assistant's Setup and Status pages remain private through ingress. For standalone deployment, use your container's API address instead of the add-on LAN address.
 
 ### Environment Variables
 
@@ -184,9 +184,9 @@ See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
 See [DISCLAIMER.md](DISCLAIMER.md) for security concerns and development disclosures.
 
-For `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, `SKILL_CERTIFICATE_TYPE`, `APP_SETTINGS_PATH` and `SKILL_DEPLOYMENT_PATH`, see the [personal skill deployment options and guide](docs/PERSONAL_SKILL_DEPLOYMENT.md).
+Standalone deployments can bootstrap Amazon credentials with `LWA_CLIENT_ID` and `LWA_CLIENT_SECRET`, and certificate selection with `SKILL_CERTIFICATE_TYPE`. Settings persist at `/data/app-settings.json` (`APP_SETTINGS_PATH` override), and deployment credentials/progress at `/data/skill-deployment.json` (`SKILL_DEPLOYMENT_PATH` override). Persist and protect `/data`; Home Assistant users edit these settings in Setup.
 
-The maintained add-on exposes `/status` and `/setup` through Home Assistant ingress on private port 8099, with no app login. It blocks these pages on the external 5000 listener. Status also checks skill-health, stream-host and current-audio HTTPS reachability in the background; see the [ingress and callback guide](docs/PERSONAL_SKILL_DEPLOYMENT.md#home-assistant-ingress-and-nginx-proxy-manager).
+The maintained add-on exposes `/status` and `/setup` through Home Assistant ingress on private port 8099, with no app login. It blocks these pages on the external 5000 listener. Status also checks skill-health, stream-host and current-audio HTTPS reachability in the background; see the [Skill Setup](#skill-setup).
 
 ### Migration release compatibility
 
