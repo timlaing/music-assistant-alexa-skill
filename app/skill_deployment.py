@@ -234,6 +234,11 @@ def configure_package(files, manifest_path, config, existing):
     prefix = "" if prefix == "." else prefix + "/"
     model_path = f"{prefix}interactionModels/custom/{locale}.json"
     model = json.loads((APP_DIR / "models" / f"{locale}.json").read_text())
+    # Amazon's import build canonicalizes models to include the custom slot
+    # type list. A bundled model that omits it is re-exported with
+    # "types": [], so the approved-package fingerprint would never match
+    # and deployment would be blocked for that locale.
+    model["interactionModel"]["languageModel"].setdefault("types", [])
     if model_path in files:
         original = json.loads(files[model_path])
         invocation = (

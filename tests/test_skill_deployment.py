@@ -2,6 +2,7 @@
 
 import copy
 import json
+import shutil
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -215,6 +216,44 @@ def test_existing_skill_preserves_identity_resources_and_invocation(deployment):
     assert model["interactionModel"]["languageModel"]["invocationName"] == "my radio"
     assert not any(method == "DELETE" for method, _, _ in amazon.calls)
     assert all("/live/" not in url for _, url, _ in amazon.calls)
+
+
+def test_model_without_types_round_trips_through_amazon(
+    deployment, monkeypatch, tmp_path
+):
+    # Amazon's import build canonicalizes models to include the custom slot
+    # type list, so a bundled model that omits "types" is re-exported with
+    # "types": [] and the approved-package fingerprint never matches.
+    manager, amazon = deployment
+    doctor = tmp_path / "app"
+    shutil.copytree(APP_DIR, doctor)
+    model_path = doctor / "models" / "es-ES.json"
+    model = json.loads(model_path.read_text())
+    del model["interactionModel"]["languageModel"]["types"]
+    model_path.write_text(json.dumps(model))
+    monkeypatch.setattr("skill_deployment.APP_DIR", doctor)
+    monkeypatch.setenv("LOCALE", "es-ES")
+    original = amazon.request
+
+    def request(method, url, **kwargs):
+        response = original(method, url, **kwargs)
+        if url.endswith("/imports"):
+            for name, content in amazon.files.items():
+                if "interactionModels" in name:
+                    normalized = json.loads(content)
+                    normalized["interactionModel"]["languageModel"].setdefault(
+                        "types", []
+                    )
+                    amazon.files[name] = json.dumps(normalized).encode()
+        return response
+
+    monkeypatch.setattr(amazon, "request", request)
+    deploy(manager)
+    assert manager.state["phase"] == "complete"
+    deployed = json.loads(
+        amazon.files["skill-package/interactionModels/custom/es-ES.json"]
+    )
+    assert deployed["interactionModel"]["languageModel"]["types"] == []
 
 
 def test_create_and_repeat_never_creates_duplicates(deployment):

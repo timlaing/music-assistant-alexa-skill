@@ -59,7 +59,8 @@
         {
           "name": "AMAZON.StartOverIntent"
         }
-      ]
+      ],
+      "types": []
     }
   }
 }
