@@ -1,5 +1,5 @@
-# Music Assistant Alexa Skill Prototype
-This project is an Alexa skill prototype for controlling the Music Assistant server. It provides a Flask-based web service, Alexa skill handler, and API, with support for Docker deployment.
+# Music Assistant Alexa Skill
+This project is an Alexa skill integration for controlling the Music Assistant server. It provides a Flask-based web service, Alexa skill handler, and API, with support for Docker deployment.
 
 For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api) and the [README deployment guide](README.md#2-home-assistant-add-on). The steps below describe standalone Docker deployment and manual Alexa Console setup. The maintained add-on also provides guided setup through `/setup`. Screenshots illustrate the older Console flow; follow the current interaction-model import and interface instructions below.
 

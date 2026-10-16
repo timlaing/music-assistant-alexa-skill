@@ -1,4 +1,4 @@
-# Music Assistant Alexa Skill Prototype
+# Music Assistant Alexa Skill
 This project provides the Alexa skill service for Music Assistant, with a Flask API and a personal-skill deployment wizard.
 
 For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api). This skill repository contains the application; the companion repository packages and configures it for Home Assistant.
