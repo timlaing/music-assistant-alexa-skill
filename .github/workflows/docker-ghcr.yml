@@ -2,14 +2,14 @@ name: Build and Push Docker image to GHCR
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
     paths:
       - 'Dockerfile'
       - '.github/workflows/docker-ghcr.yml'
       - 'app/**'
       - 'VERSION'
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
     paths:
       - 'Dockerfile'
       - '.github/workflows/docker-ghcr.yml'
