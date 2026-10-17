@@ -32,6 +32,9 @@ on:
 permissions:
   contents: read
   packages: write
+  # Keyless (Fulcio) cosign signing of pushed images, so the add-on can
+  # verify the base image signature before building from it.
+  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -103,3 +106,23 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Sign the pushed multi-arch manifest (and its per-arch children)
+      # keyless via Fulcio. Consumers — the music-assistant-alexa-api
+      # add-on build — verify with:
+      #   cosign-issuer:   https://token.actions.githubusercontent.com
+      #   cosign-identity: https://github.com/timlaing/music-assistant-alexa-skill/.*
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Sign pushed images
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          # All generated tags point at the same manifest; sign it once by digest.
+          ref="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n 1)"
+          digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"
+          echo "Signing $ref@$digest"
+          cosign sign --yes --recursive "$ref@$digest"
