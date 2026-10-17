@@ -675,6 +675,55 @@ def test_package_mismatch_skips_json_that_only_differs_in_formatting():
     assert report["skill-package/skill.json"] == ["manifest.version: value differs"]
 
 
+def test_package_comparison_ignores_amazon_icon_uri_rewrites():
+    def manifest(small, large, name="Music Assistant"):
+        return json.dumps(
+            {
+                "manifest": {
+                    "publishingInformation": {
+                        "locales": {
+                            "en-GB": {
+                                "name": name,
+                                "smallIconUri": small,
+                                "largeIconUri": large,
+                            }
+                        }
+                    }
+                }
+            }
+        ).encode()
+
+    ours = manifest(
+        "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill"
+        "/main/assets/icons/ma_108x108.png",
+        "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill"
+        "/main/assets/icons/ma_512x512.png",
+    )
+    amazons = manifest(
+        "https://m.media-amazon.com/images/I/small.png?v=1",
+        "https://m.media-amazon.com/images/I/large.png?v=1",
+    )
+    approved = {"skill-package/skill.json": ours}
+    exported = {"skill-package/skill.json": amazons}
+    # Amazon's icon rewrites are cosmetic and never count as a difference.
+    assert package_fingerprint(approved) == package_fingerprint(exported)
+    assert package_mismatch(approved, exported) == {}
+    # Any other difference in the same file still counts, without the icons.
+    changed = {
+        "skill-package/skill.json": manifest(
+            "https://m.media-amazon.com/images/I/small.png?v=1",
+            "https://m.media-amazon.com/images/I/large.png?v=1",
+            name="Something Else",
+        )
+    }
+    assert package_fingerprint(approved) != package_fingerprint(changed)
+    assert package_mismatch(approved, changed) == {
+        "skill-package/skill.json": [
+            "manifest.publishingInformation.locales.en-GB.name: value differs"
+        ]
+    }
+
+
 def test_mismatch_names_the_differing_file_and_path_and_clears_on_resume(deployment):
     manager, amazon = deployment
     original = amazon.request
@@ -728,7 +777,8 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
         response = original(method, url, **kwargs)
         if url.endswith("/imports"):
             # Amazon's import build canonicalizes every locale's model to
-            # include the slot type list, exactly as in production.
+            # include the slot type list and rewrites the manifest icon
+            # URIs, exactly as in production.
             for name, content in amazon.files.items():
                 if "interactionModels" in name:
                     normalized = json.loads(content)
@@ -736,6 +786,18 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
                         "types", []
                     )
                     amazon.files[name] = json.dumps(normalized).encode()
+                elif name.endswith("skill.json"):
+                    manifest = json.loads(content)
+                    for locale in manifest["manifest"]["publishingInformation"][
+                        "locales"
+                    ].values():
+                        locale["smallIconUri"] = (
+                            "https://m.media-amazon.com/images/I/small.png"
+                        )
+                        locale["largeIconUri"] = (
+                            "https://m.media-amazon.com/images/I/large.png"
+                        )
+                    amazon.files[name] = json.dumps(manifest).encode()
         return response
 
     amazon.request = request
@@ -758,6 +820,28 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
         amazon.files["skill-package/interactionModels/custom/en-GB.json"]
     )["interactionModel"]["languageModel"]
     assert model["invocationName"] == "my radio"
+
+
+def test_deploy_succeeds_when_amazon_rewrites_icon_uris(deployment):
+    manager, amazon = deployment
+    original = amazon.request
+
+    def request(method, url, **kwargs):
+        response = original(method, url, **kwargs)
+        if url.endswith("/imports"):
+            manifest = json.loads(amazon.files["skill-package/skill.json"])
+            locales = manifest["manifest"]["publishingInformation"]["locales"]
+            for locale in locales.values():
+                locale["smallIconUri"] += "?w=108&h=108"
+                locale["largeIconUri"] += "?w=512&h=512"
+            amazon.files["skill-package/skill.json"] = json.dumps(manifest).encode()
+        return response
+
+    amazon.request = request
+    deploy(manager)
+    assert manager.state["phase"] == "complete"
+    assert manager.state.get("package_mismatch") is None
+    assert manager.public_status()["package_mismatch"] is None
 
 
 def test_routes_review_deploy_and_replay(deployment, client):

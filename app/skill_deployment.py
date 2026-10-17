@@ -168,14 +168,36 @@ def unpack_package(content):
     return files, manifests[0]
 
 
+ICON_KEYS = frozenset({"smallIconUri", "largeIconUri"})
+
+
+def strip_icons(value):
+    """Remove icon URIs from parsed package JSON.
+
+    Amazon rewrites smallIconUri/largeIconUri during import/export, so icons
+    are excluded wherever package content is compared; every other field
+    stays subject to the deployment-integrity check.
+    """
+    if isinstance(value, dict):
+        return {
+            key: strip_icons(item)
+            for key, item in value.items()
+            if key not in ICON_KEYS
+        }
+    if isinstance(value, list):
+        return [strip_icons(item) for item in value]
+    return value
+
+
 def canonical_json(content):
-    """Canonical byte form of a JSON package file.
+    """Canonical byte form of a JSON package file, excluding icon URIs.
 
     Shared by the fingerprint and the mismatch report so both judge file
-    differences identically: whitespace and key order are never differences.
+    differences identically: whitespace, key order and Amazon's icon-URI
+    rewrites are never differences.
     """
     return json.dumps(
-        json.loads(content), sort_keys=True, separators=(",", ":")
+        strip_icons(json.loads(content)), sort_keys=True, separators=(",", ":")
     ).encode()
 
 
@@ -229,9 +251,10 @@ def package_mismatch(approved, actual):
         elif name.endswith(".json"):
             try:
                 if canonical_json(approved[name]) == canonical_json(actual[name]):
-                    continue  # only formatting differs; the fingerprint ignores it
+                    continue  # only formatting or icons differ; the fingerprint ignores it
                 differences = _json_diff(
-                    json.loads(approved[name]), json.loads(actual[name])
+                    strip_icons(json.loads(approved[name])),
+                    strip_icons(json.loads(actual[name])),
                 )
             except (ValueError, TypeError):
                 differences = []
