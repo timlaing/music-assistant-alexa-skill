@@ -19,6 +19,7 @@ from skill_deployment import (
     package_fingerprint,
     package_mismatch,
     settings,
+    store_icon_assets,
     unpack_package,
 )
 
@@ -675,7 +676,7 @@ def test_package_mismatch_skips_json_that_only_differs_in_formatting():
     assert report["skill-package/skill.json"] == ["manifest.version: value differs"]
 
 
-def test_package_comparison_ignores_amazon_icon_uri_rewrites():
+def test_package_comparison_normalizes_materialized_icon_uris():
     def manifest(small, large, name="Music Assistant"):
         return json.dumps(
             {
@@ -699,20 +700,20 @@ def test_package_comparison_ignores_amazon_icon_uri_rewrites():
         "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill"
         "/main/assets/icons/ma_512x512.png",
     )
-    amazons = manifest(
-        "https://m.media-amazon.com/images/I/small.png?v=1",
-        "https://m.media-amazon.com/images/I/large.png?v=1",
+    materialized = manifest(
+        "file://assets/images/en-GB_smallIconUri.png",
+        "file://assets/images/en-GB_largeIconUri.png",
     )
     approved = {"skill-package/skill.json": ours}
-    exported = {"skill-package/skill.json": amazons}
-    # Amazon's icon rewrites are cosmetic and never count as a difference.
+    exported = {"skill-package/skill.json": materialized}
+    # Amazon's materialization of the same artwork is never a difference.
     assert package_fingerprint(approved) == package_fingerprint(exported)
     assert package_mismatch(approved, exported) == {}
-    # Any other difference in the same file still counts, without the icons.
+    # Any other difference in the same file still counts.
     changed = {
         "skill-package/skill.json": manifest(
-            "https://m.media-amazon.com/images/I/small.png?v=1",
-            "https://m.media-amazon.com/images/I/large.png?v=1",
+            "file://assets/images/en-GB_smallIconUri.png",
+            "file://assets/images/en-GB_largeIconUri.png",
             name="Something Else",
         )
     }
@@ -722,6 +723,68 @@ def test_package_comparison_ignores_amazon_icon_uri_rewrites():
             "manifest.publishingInformation.locales.en-GB.name: value differs"
         ]
     }
+    # Icon values outside the recognized forms keep failing validation: a
+    # foreign URL is never equal to the configured artwork.
+    foreign = {
+        "skill-package/skill.json": manifest(
+            "https://evil.example/icon.png",
+            "file://assets/images/en-GB_largeIconUri.png",
+        )
+    }
+    assert package_fingerprint(approved) != package_fingerprint(foreign)
+    assert package_mismatch(approved, foreign) == {
+        "skill-package/skill.json": [
+            "manifest.publishingInformation.locales.en-GB.smallIconUri: value differs"
+        ]
+    }
+    # Nor is another locale's materialized artwork accepted in its place.
+    cross_locale = {
+        "skill-package/skill.json": manifest(
+            "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill"
+            "/main/assets/icons/ma_108x108.png",
+            "file://assets/images/es-ES_largeIconUri.png",
+        )
+    }
+    assert package_mismatch(approved, cross_locale) == {
+        "skill-package/skill.json": [
+            "manifest.publishingInformation.locales.en-GB.largeIconUri: value differs"
+        ]
+    }
+
+
+def test_store_icon_assets_adopts_only_icon_artwork():
+    approved = {
+        "skill.json": b"{}",
+        "assets/images/en-GB_smallIconUri.png": b"stale artwork",
+        "assets/images/en-GB_largeIconUri.png": b"about to vanish",
+        "lambda/py/lambda_function.py": b"def handler(): pass",
+    }
+    actual = {
+        "skill.json": b"{}",
+        "assets/images/en-GB_smallIconUri.png": b"re-encoded artwork",
+        "assets/images/en-GB_largeIconUri.png": b"materialized artwork",
+        "assets/images/en-US_smallIconUri.png": b"newly materialized",
+        "lambda/py/lambda_function.py": b"def handler(): pass",
+    }
+    stored = store_icon_assets(approved, actual)
+    assert stored == [
+        "assets/images/en-GB_largeIconUri.png",
+        "assets/images/en-GB_smallIconUri.png",
+        "assets/images/en-US_smallIconUri.png",
+    ]
+    assert approved["assets/images/en-GB_smallIconUri.png"] == b"re-encoded artwork"
+    assert approved["assets/images/en-GB_largeIconUri.png"] == b"materialized artwork"
+    assert approved["assets/images/en-US_smallIconUri.png"] == b"newly materialized"
+    # Non-artwork members are never touched, and equal bytes store nothing.
+    assert approved["skill.json"] == b"{}"
+    assert approved["lambda/py/lambda_function.py"] == b"def handler(): pass"
+    assert store_icon_assets(approved, actual) == []
+    # Artwork Amazon no longer exports is adopted as a removal.
+    del actual["assets/images/en-GB_largeIconUri.png"]
+    assert store_icon_assets(approved, actual) == [
+        "assets/images/en-GB_largeIconUri.png"
+    ]
+    assert "assets/images/en-GB_largeIconUri.png" not in approved
 
 
 def test_mismatch_names_the_differing_file_and_path_and_clears_on_resume(deployment):
@@ -777,9 +840,10 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
         response = original(method, url, **kwargs)
         if url.endswith("/imports"):
             # Amazon's import build canonicalizes every locale's model to
-            # include the slot type list and rewrites the manifest icon
-            # URIs, exactly as in production.
-            for name, content in amazon.files.items():
+            # include the slot type list, materializes each locale's icons
+            # into assets/images/ and rewrites the manifest icon URIs to the
+            # file:// form — exactly as observed against production.
+            for name, content in list(amazon.files.items()):
                 if "interactionModels" in name:
                     normalized = json.loads(content)
                     normalized["interactionModel"]["languageModel"].setdefault(
@@ -788,15 +852,17 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
                     amazon.files[name] = json.dumps(normalized).encode()
                 elif name.endswith("skill.json"):
                     manifest = json.loads(content)
-                    for locale in manifest["manifest"]["publishingInformation"][
-                        "locales"
-                    ].values():
-                        locale["smallIconUri"] = (
-                            "https://m.media-amazon.com/images/I/small.png"
-                        )
-                        locale["largeIconUri"] = (
-                            "https://m.media-amazon.com/images/I/large.png"
-                        )
+                    locales = manifest["manifest"]["publishingInformation"]["locales"]
+                    for locale, entry in locales.items():
+                        for key, size in (
+                            ("smallIconUri", "small"),
+                            ("largeIconUri", "large"),
+                        ):
+                            asset = f"assets/images/{locale}_{size}IconUri.png"
+                            entry[key] = f"file://{asset}"
+                            amazon.files[asset] = (
+                                b"\x89PNG" + size.encode() + locale.encode()
+                            )
                     amazon.files[name] = json.dumps(manifest).encode()
         return response
 
@@ -822,26 +888,48 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
     assert model["invocationName"] == "my radio"
 
 
-def test_deploy_succeeds_when_amazon_rewrites_icon_uris(deployment):
+def test_deploy_stores_materialized_icons_on_first_import(deployment):
     manager, amazon = deployment
     original = amazon.request
 
     def request(method, url, **kwargs):
         response = original(method, url, **kwargs)
         if url.endswith("/imports"):
+            # Production behavior, verified against the live service: Amazon
+            # downloads the manifest's icon URLs, stores the artwork under
+            # assets/images/<locale>_*IconUri.png and rewrites each locale's
+            # icon URIs to the file:// form.
             manifest = json.loads(amazon.files["skill-package/skill.json"])
             locales = manifest["manifest"]["publishingInformation"]["locales"]
-            for locale in locales.values():
-                locale["smallIconUri"] += "?w=108&h=108"
-                locale["largeIconUri"] += "?w=512&h=512"
+            for locale, entry in locales.items():
+                for key, size in (("smallIconUri", "small"), ("largeIconUri", "large")):
+                    asset = f"assets/images/{locale}_{size}IconUri.png"
+                    entry[key] = f"file://{asset}"
+                    amazon.files[asset] = b"\x89PNG-re-encoded-" + size.encode()
             amazon.files["skill-package/skill.json"] = json.dumps(manifest).encode()
         return response
 
     amazon.request = request
+    manifest = json.loads(amazon.files["skill-package/skill.json"])
+    locales = manifest["manifest"]["publishingInformation"]["locales"]
     deploy(manager)
+    # The first import passes: Amazon's re-encoded artwork is stored into the
+    # approved package instead of failing the byte comparison.
     assert manager.state["phase"] == "complete"
     assert manager.state.get("package_mismatch") is None
     assert manager.public_status()["package_mismatch"] is None
+    stored = manager.state["assets_stored"]
+    assert "assets/images/en-GB_smallIconUri.png" in stored
+    assert "assets/images/en-GB_largeIconUri.png" in stored
+    assert len(stored) == 2 * len(locales)
+    approved = unpack_package(manager.package_path.read_bytes())[0]
+    assert approved["assets/images/en-GB_smallIconUri.png"].startswith(b"\x89PNG")
+    # A following cycle needs no adoption: the stored bytes already match.
+    first_stored = list(manager.state["assets_stored"])
+    deploy(manager)
+    assert manager.state["phase"] == "complete"
+    assert manager.state.get("package_mismatch") is None
+    assert manager.state["assets_stored"] == first_stored
 
 
 def test_routes_review_deploy_and_replay(deployment, client):

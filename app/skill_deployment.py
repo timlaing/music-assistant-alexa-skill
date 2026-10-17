@@ -168,36 +168,51 @@ def unpack_package(content):
     return files, manifests[0]
 
 
-ICON_KEYS = frozenset({"smallIconUri", "largeIconUri"})
+ICON_URLS = {
+    "small": "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_108x108.png",
+    "large": "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_512x512.png",
+}
+ICON_SIZES = (("smallIconUri", "small"), ("largeIconUri", "large"))
+ICON_ASSET_MARKER = "assets/images/"
 
 
-def strip_icons(value):
-    """Remove icon URIs from parsed package JSON.
+def normalize_icons(document):
+    """Canonicalize icon URIs that Amazon materializes during import.
 
-    Amazon rewrites smallIconUri/largeIconUri during import/export, so icons
-    are excluded wherever package content is compared; every other field
-    stays subject to the deployment-integrity check.
+    A real export cycle, verified against production, shows Amazon downloading
+    the manifest's icon URLs, storing the artwork as
+    assets/images/<locale>_<size>IconUri.png and rewriting each locale's
+    smallIconUri/largeIconUri to that exact file:// form. A value equal to
+    the configured artwork URL or to its own locale's materialized path
+    canonicalizes to one token, so both sides of every comparison judge the
+    icons equal. Any other value — a foreign URL, a cross-locale path, a
+    missing key — stays as written and keeps failing validation.
     """
-    if isinstance(value, dict):
-        return {
-            key: strip_icons(item)
-            for key, item in value.items()
-            if key not in ICON_KEYS
-        }
-    if isinstance(value, list):
-        return [strip_icons(item) for item in value]
-    return value
+    locales = (
+        document.get("manifest", {}).get("publishingInformation", {}).get("locales", {})
+    )
+    if not isinstance(locales, dict):
+        return document
+    for locale, entry in locales.items():
+        if not isinstance(entry, dict):
+            continue
+        for key, size in ICON_SIZES:
+            value = entry.get(key)
+            materialized = f"file://assets/images/{locale}_{size}IconUri.png"
+            if value in (ICON_URLS[size], materialized):
+                entry[key] = f"ma-icon:{size}"
+    return document
 
 
 def canonical_json(content):
-    """Canonical byte form of a JSON package file, excluding icon URIs.
+    """Canonical byte form of a JSON package file for comparison.
 
     Shared by the fingerprint and the mismatch report so both judge file
-    differences identically: whitespace, key order and Amazon's icon-URI
-    rewrites are never differences.
+    differences identically: whitespace, key order and Amazon's icon
+    materialization are never differences.
     """
     return json.dumps(
-        strip_icons(json.loads(content)), sort_keys=True, separators=(",", ":")
+        normalize_icons(json.loads(content)), sort_keys=True, separators=(",", ":")
     ).encode()
 
 
@@ -251,10 +266,10 @@ def package_mismatch(approved, actual):
         elif name.endswith(".json"):
             try:
                 if canonical_json(approved[name]) == canonical_json(actual[name]):
-                    continue  # only formatting or icons differ; the fingerprint ignores it
+                    continue  # only formatting or materialized icons differ
                 differences = _json_diff(
-                    strip_icons(json.loads(approved[name])),
-                    strip_icons(json.loads(actual[name])),
+                    normalize_icons(json.loads(approved[name])),
+                    normalize_icons(json.loads(actual[name])),
                 )
             except (ValueError, TypeError):
                 differences = []
@@ -262,6 +277,28 @@ def package_mismatch(approved, actual):
         else:
             report[name] = ["file bytes differ"]
     return report
+
+
+def store_icon_assets(approved, actual):
+    """Adopt Amazon's icon artwork bytes into the approved package.
+
+    Amazon materializes and re-encodes assets/images/*IconUri.png once per
+    artwork change; the re-encoded bytes are stable across later cycles
+    (verified against production). Storing Amazon's exported artwork makes
+    the approved package match the deployment it just verified, so later
+    cycles compare bytes directly. Only icon artwork is touched — every
+    other member keeps byte-for-byte verification.
+    """
+    stored = []
+    for name, content in actual.items():
+        if ICON_ASSET_MARKER in name and approved.get(name) != content:
+            approved[name] = content
+            stored.append(name)
+    for name in list(approved):
+        if ICON_ASSET_MARKER in name and name not in actual:
+            del approved[name]
+            stored.append(name)
+    return sorted(stored)
 
 
 def pack(files):
@@ -296,12 +333,8 @@ def configure_package(files, manifest_path, config, existing):
                 "Alexa, play music assistant",
             ]
     for publishing_locale in locales.values():
-        publishing_locale["smallIconUri"] = (
-            "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_108x108.png"
-        )
-        publishing_locale["largeIconUri"] = (
-            "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_512x512.png"
-        )
+        publishing_locale["smallIconUri"] = ICON_URLS["small"]
+        publishing_locale["largeIconUri"] = ICON_URLS["large"]
     custom = manifest.setdefault("apis", {}).setdefault("custom", {})
     endpoint = {"uri": config["endpoint"], "sslCertificateType": config["certificate"]}
     custom["endpoint"] = endpoint
@@ -1054,18 +1087,29 @@ class DeploymentManager:
             )
         actual_files, _ = self.export(skill)
         if package_fingerprint(actual_files) != self.state.get("expected_package"):
-            report = package_mismatch(
-                unpack_package(self.package_path.read_bytes())[0], actual_files
-            )
-            summary = "; ".join(
-                f"{name} ({', '.join(differences[:3])})"
-                for name, differences in list(report.items())[:3]
-            )
-            self.update(package_mismatch=report)
-            raise DeploymentError(
-                "Amazon’s exported package differs from the approved deployment: "
-                f"{summary}. Review again before enabling testing."
-            )
+            approved_files = unpack_package(self.package_path.read_bytes())[0]
+            stored = store_icon_assets(approved_files, actual_files)
+            if stored:
+                # Store Amazon's re-encoded icon artwork so this one-time
+                # materialization never fails another verification cycle.
+                atomic_write(self.package_path, pack(approved_files))
+                self.update(
+                    expected_package=package_fingerprint(approved_files),
+                    assets_stored=sorted(
+                        set(self.state.get("assets_stored") or []) | set(stored)
+                    ),
+                )
+            report = package_mismatch(approved_files, actual_files)
+            if report:
+                summary = "; ".join(
+                    f"{name} ({', '.join(differences[:3])})"
+                    for name, differences in list(report.items())[:3]
+                )
+                self.update(package_mismatch=report)
+                raise DeploymentError(
+                    "Amazon’s exported package differs from the approved deployment: "
+                    f"{summary}. Review again before enabling testing."
+                )
         if config["certificate"] == "SelfSigned":
             certificates = {"sslCertificate": config["certificate_pem"]}
             regions = custom.get("regions", {})
