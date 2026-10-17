@@ -106,6 +106,120 @@ def _resolve_doh(hostname):
     return None
 
 
+def _build_payload(intent, override):
+    """Return (payload, error_response); exactly one side is None."""
+    if not override:
+        return {
+            'version': '1.0',
+            'session': {
+                'new': True,
+                'sessionId': 'SessionId.simulator',
+                'application': {'applicationId': ''},
+                'user': {'userId': 'amzn1.ask.account.simulator'}
+            },
+            'context': {},
+            'request': {
+                'type': 'IntentRequest',
+                'requestId': 'EdwRequestId.simulator',
+                'locale': 'en-US',
+                'timestamp': '2020-01-01T00:00:00Z',
+                'intent': {'name': intent, 'slots': {}}
+            }
+        }, None
+    try:
+        payload = json.loads(override) if isinstance(override, str) else override
+        return payload, None
+    except Exception as e:
+        return None, (jsonify({'error': f'invalid override_payload JSON: {e}'}), 400)
+
+
+def _simulator_auth():
+    """Basic-auth credentials for the local app, when configured."""
+    try:
+        from env_secrets import get_env_secret
+        app_user = get_env_secret('APP_USERNAME')
+        app_pass = get_env_secret('APP_PASSWORD')
+        if app_user and app_pass:
+            return (app_user, app_pass)
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_target(use):
+    """Return (target_url, headers, verify, error_response).
+
+    Exactly one of the four values is meaningful: on error the first three
+    are None and error_response is the response to return unchanged.
+    """
+    headers = {'Content-Type': 'application/json'}
+    if use == 'hostname':
+        raw = get_setting('SKILL_HOSTNAME', '').strip()
+        if not raw:
+            return None, None, None, (
+                jsonify({'error': 'SKILL_HOSTNAME not configured'}),
+                400,
+            )
+        if raw.startswith(('http://', 'https://')):
+            parsed = urllib.parse.urlparse(raw)
+            scheme, host, port = parsed.scheme, parsed.hostname, parsed.port
+        else:
+            scheme, host, port = 'https', raw, None
+        ip = _resolve_doh(host)
+        if not ip:
+            return None, None, None, (
+                jsonify({'error': 'DNS resolution failed for host: ' + host}),
+                500,
+            )
+        netloc = f"{ip}:{port}" if port else ip
+        headers['Host'] = host
+        # certificate verification is disabled because the resolved IP will
+        # not match the certificate; the Host header keeps virtual hosts working
+        return f"{scheme}://{netloc}/", headers, False, None
+    # local: post to this server's root
+    return request.host_url.rstrip('/') + '/', headers, True, None
+
+
+def _post_json(target_url, payload, headers, auth, verify):
+    """POST the payload and return the status/body response envelope."""
+    resp = requests.post(
+        target_url, json=payload, headers=headers, auth=auth, timeout=10, verify=verify
+    )
+    try:
+        body = resp.content.decode('utf-8', errors='replace')
+    except Exception:
+        body = str(resp.content)
+    return jsonify({'status_code': resp.status_code, 'body': body})
+
+
+def _retry_with_hostname(use, scheme, host, payload, headers, auth):
+    """Best-effort SNI retry against the original hostname; None on failure."""
+    if use != 'hostname' or not host or not scheme:
+        return None
+    try:
+        resp = requests.post(
+            f"{scheme}://{host}/",
+            json=payload,
+            headers=headers,
+            auth=auth,
+            timeout=10,
+            verify=True,
+        )
+        try:
+            body = resp.content.decode('utf-8', errors='replace')
+        except Exception:
+            body = str(resp.content)
+        return jsonify(
+            {
+                'status_code': resp.status_code,
+                'body': body,
+                'note': 'retried using hostname for SNI',
+            }
+        )
+    except Exception:
+        return None
+
+
 @simulator_bp.route('/simulator/send', methods=['POST'])
 def simulator_send():
     """Send a constructed Alexa IntentRequest to the skill and return response.
@@ -123,79 +237,14 @@ def simulator_send():
         return jsonify({'error': 'missing intent'}), 400
 
     # build minimal Alexa intent request envelope (unless override provided)
-    override = data.get('override_payload')
-    if override:
-        try:
-            if isinstance(override, str):
-                payload = json.loads(override)
-            else:
-                payload = override
-        except Exception as e:
-            return jsonify({'error': f'invalid override_payload JSON: {e}'}), 400
-    else:
-        payload = {
-            'version': '1.0',
-            'session': {
-                'new': True,
-                'sessionId': 'SessionId.simulator',
-                'application': {'applicationId': ''},
-                'user': {'userId': 'amzn1.ask.account.simulator'}
-            },
-            'context': {},
-            'request': {
-                'type': 'IntentRequest',
-                'requestId': 'EdwRequestId.simulator',
-                'locale': 'en-US',
-                'timestamp': '2020-01-01T00:00:00Z',
-                'intent': {'name': intent, 'slots': {}}
-            }
-        }
+    payload, error = _build_payload(intent, data.get('override_payload'))
+    if error:
+        return error
 
-    # Determine target URL
-    target_url = None
-    headers = {'Content-Type': 'application/json'}
-    auth = None
-    try:
-        from env_secrets import get_env_secret
-        app_user = get_env_secret('APP_USERNAME')
-        app_pass = get_env_secret('APP_PASSWORD')
-        if app_user and app_pass:
-            auth = (app_user, app_pass)
-    except Exception:
-        auth = None
-
-    if use == 'hostname':
-        raw = get_setting('SKILL_HOSTNAME', '').strip()
-        if not raw:
-            return jsonify({'error': 'SKILL_HOSTNAME not configured'}), 400
-        # normalize scheme
-        if raw.startswith(('http://', 'https://')):
-            parsed = urllib.parse.urlparse(raw)
-            scheme = parsed.scheme
-            host = parsed.hostname
-            port = parsed.port
-        else:
-            scheme = 'https'
-            host = raw
-            port = None
-
-        ip = _resolve_doh(host)
-        if not ip:
-            return jsonify({'error': 'DNS resolution failed for host: ' + host}), 500
-
-        # build URL using resolved IP; include port if present
-        netloc = ip
-        if port:
-            netloc = f"{ip}:{port}"
-        target_url = f"{scheme}://{netloc}/"
-        # set Host header to original hostname so virtual hosts work
-        headers['Host'] = host
-        # we will disable certificate verification because IP won't match cert
-        verify = False
-    else:
-        # local: post to this server's root
-        target_url = request.host_url.rstrip('/') + '/'
-        verify = True
+    auth = _simulator_auth()
+    target_url, headers, verify, error = _resolve_target(use)
+    if error:
+        return error
 
     # Provide minimal Alexa signature headers so the ask-sdk verifier doesn't
     # immediately raise "Missing Signature/Certificate for the skill request".
@@ -210,31 +259,17 @@ def simulator_send():
     headers.setdefault('X-Simulator-CertUrl', 'https://s3.amazonaws.com/echo.api/echo-api-cert.pem')
 
     try:
-        resp = requests.post(target_url, json=payload, headers=headers, auth=auth, timeout=10, verify=verify)
-        # return response status + body (text)
-        try:
-            body = resp.content.decode('utf-8', errors='replace')
-        except Exception:
-            body = str(resp.content)
-        return jsonify({'status_code': resp.status_code, 'body': body})
+        return _post_json(target_url, payload, headers, auth, verify)
     except requests.exceptions.SSLError as e:
         # SSL handshake failed when connecting to resolved IP. Retry by
         # posting to the original hostname (this sets correct SNI). This
         # is a best-effort fallback for local testing.
-        try:
-            if use == 'hostname' and 'host' in locals():
-                alt_url = f"{scheme}://{host}/"
-                try:
-                    resp = requests.post(alt_url, json=payload, headers=headers, auth=auth, timeout=10, verify=True)
-                    try:
-                        body = resp.content.decode('utf-8', errors='replace')
-                    except Exception:
-                        body = str(resp.content)
-                    return jsonify({'status_code': resp.status_code, 'body': body, 'note': 'retried using hostname for SNI'})
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        scheme = urllib.parse.urlparse(target_url).scheme
+        retried = _retry_with_hostname(
+            use, scheme, headers.get('Host'), payload, headers, auth
+        )
+        if retried is not None:
+            return retried
         return jsonify({'error': str(e)}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500

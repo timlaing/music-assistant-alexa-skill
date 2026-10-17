@@ -55,6 +55,82 @@ def validate_certificate(value):
     return value
 
 
+def _normalize_setting(key, value):
+    """Validate one submitted setting and return its stored form."""
+    if isinstance(DEFAULTS[key], bool):
+        if type(value) is not bool:
+            raise SettingsError("Checkbox settings must be true or false.")
+        return value
+    if key == "skill_certificate_pem":
+        return validate_certificate(value) if value else value
+    if (
+        not isinstance(value, str)
+        or len(value) > 8192
+        or any(ord(c) < 32 for c in value)
+    ):
+        raise SettingsError("Settings must be plain text without control characters.")
+    if key in SECRET_FIELDS:
+        return value
+    return value.strip()
+
+
+def _validated_payload_parts(payload):
+    """Validate the values/clear_secrets parts of a save request."""
+    changes, clear = payload.get("values"), payload.get("clear_secrets", [])
+    if not isinstance(changes, dict) or set(changes) - set(DEFAULTS):
+        raise SettingsError("Unknown setting.")
+    if not isinstance(clear, list) or any(key not in SECRET_FIELDS for key in clear):
+        raise SettingsError("Invalid secret removal request.")
+    return changes, clear
+
+
+def _apply_secret_clears(values, clear):
+    for key in clear:
+        if key == "api_password":
+            raise SettingsError("Replace the API password instead of removing it.")
+        values[key] = ""
+
+
+def _is_valid_host_url(key, value):
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        allowed = ("http", "https") if key == "ma_api_url" else ("https",)
+        valid = (
+            parsed.scheme in allowed
+            and parsed.hostname
+            and not (
+                parsed.username or parsed.password or parsed.query or parsed.fragment
+            )
+        )
+        return valid and (port in (None, 443) if key == "skill_hostname" else True)
+    except ValueError:
+        return False
+
+
+def _validate_host_urls(values):
+    for key in ("ma_hostname", "skill_hostname", "ma_api_url"):
+        value = values[key]
+        if value and not _is_valid_host_url(key, value):
+            hint = "HTTP or HTTPS" if key == "ma_api_url" else "HTTPS"
+            raise SettingsError(
+                f"Invalid URL for {key}; use {hint} without credentials, query or fragment."
+            )
+
+
+def _validate_final_settings(values, locales):
+    if values["locale"] not in locales:
+        raise SettingsError("Choose a locale with a bundled voice model.")
+    if values["skill_certificate_type"] not in ("Trusted", "Wildcard", "SelfSigned"):
+        raise SettingsError(
+            "Choose Trusted, Trusted sub-domain or File certificate type."
+        )
+    if values["skill_certificate_type"] == "SelfSigned":
+        validate_certificate(values["skill_certificate_pem"])
+    if not values["api_username"] or not values["api_password"]:
+        raise SettingsError("Set both API username and password.")
+
+
 def effective_skill_endpoint(values):
     override = values["skill_hostname"].strip()
     audio = values["ma_hostname"].strip()
@@ -183,81 +259,16 @@ class SettingsStore:
                 raise SettingsError(
                     "Settings changed in another window. Reload before saving."
                 )
-            changes, clear = payload.get("values"), payload.get("clear_secrets", [])
-            if not isinstance(changes, dict) or set(changes) - set(DEFAULTS):
-                raise SettingsError("Unknown setting.")
-            if not isinstance(clear, list) or any(
-                key not in SECRET_FIELDS for key in clear
-            ):
-                raise SettingsError("Invalid secret removal request.")
+            changes, clear = _validated_payload_parts(payload)
             values = self.snapshot()
             for key, value in changes.items():
-                if isinstance(DEFAULTS[key], bool):
-                    if type(value) is not bool:
-                        raise SettingsError("Checkbox settings must be true or false.")
-                elif key == "skill_certificate_pem":
-                    if value:
-                        value = validate_certificate(value)
-                elif (
-                    not isinstance(value, str)
-                    or len(value) > 8192
-                    or any(ord(c) < 32 for c in value)
-                ):
-                    raise SettingsError(
-                        "Settings must be plain text without control characters."
-                    )
-                if key not in SECRET_FIELDS or value:
-                    values[key] = (
-                        value
-                        if key in SECRET_FIELDS or isinstance(value, bool)
-                        else value.strip()
-                    )
-            for key in clear:
-                if key == "api_password":
-                    raise SettingsError(
-                        "Replace the API password instead of removing it."
-                    )
-                values[key] = ""
-            for key in ("ma_hostname", "skill_hostname", "ma_api_url"):
-                value = values[key]
-                if not value:
-                    continue
-                try:
-                    parsed = urlsplit(value)
-                    port = parsed.port
-                    allowed = ("http", "https") if key == "ma_api_url" else ("https",)
-                    valid = (
-                        parsed.scheme in allowed
-                        and parsed.hostname
-                        and not (
-                            parsed.username
-                            or parsed.password
-                            or parsed.query
-                            or parsed.fragment
-                        )
-                    )
-                    if key == "skill_hostname":
-                        valid = valid and port in (None, 443)
-                except ValueError:
-                    valid = False
-                if not valid:
-                    raise SettingsError(
-                        f"Invalid URL for {key}; use {'HTTP or HTTPS' if key == 'ma_api_url' else 'HTTPS'} without credentials, query or fragment."
-                    )
-            if values["locale"] not in self.public()["locales"]:
-                raise SettingsError("Choose a locale with a bundled voice model.")
-            if values["skill_certificate_type"] not in (
-                "Trusted",
-                "Wildcard",
-                "SelfSigned",
-            ):
-                raise SettingsError(
-                    "Choose Trusted, Trusted sub-domain or File certificate type."
-                )
-            if values["skill_certificate_type"] == "SelfSigned":
-                validate_certificate(values["skill_certificate_pem"])
-            if not values["api_username"] or not values["api_password"]:
-                raise SettingsError("Set both API username and password.")
+                normalized = _normalize_setting(key, value)
+                if key in SECRET_FIELDS and not normalized:
+                    continue  # an empty secret submission keeps the stored value
+                values[key] = normalized
+            _apply_secret_clears(values, clear)
+            _validate_host_urls(values)
+            _validate_final_settings(values, self.public()["locales"])
             self.write(values)
             return self.public()
 

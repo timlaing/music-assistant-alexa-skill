@@ -27,6 +27,49 @@ def targets():
     return result
 
 
+def _read_health_content(response):
+    """Read at most 4096 bytes of a probe response body."""
+    content = bytearray()
+    for chunk in response.iter_content(1024):
+        content.extend(chunk)
+        if len(content) > 4096:
+            break
+    return content
+
+
+def _classify_response(kind, code, response):
+    """Map a completed probe response to a (status, message) pair.
+
+    Runs inside probe()'s try block, so JSON decoding errors propagate to
+    the same handlers as before.
+    """
+    if kind == "skill":
+        if code != 200:
+            return (
+                "failed",
+                f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
+            )
+        content = _read_health_content(response)
+        payload = json.loads(content) if len(content) <= 4096 else None
+        if isinstance(payload, dict) and payload.get("status") == "ok":
+            return "reachable", "HTTPS reachable; add-on health confirmed"
+        return (
+            "warning",
+            "HTTPS reachable, but response does not identify the add-on",
+        )
+    if 200 <= code < 300:
+        return "reachable", f"HTTPS reachable (HTTP {code})"
+    if kind == "host" and code in (404, 405):
+        return (
+            "warning",
+            f"HTTPS reachable (HTTP {code}); test an actual audio URL to confirm playback access",
+        )
+    return (
+        "failed",
+        f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
+    )
+
+
 def probe(label, value, kind, session):
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
     if not value:
@@ -53,40 +96,8 @@ def probe(label, value, kind, session):
         ) as response:
             code = response.status_code
             result["http_status"] = code
-            if kind == "skill" and code == 200:
-                content = bytearray()
-                for chunk in response.iter_content(1024):
-                    content.extend(chunk)
-                    if len(content) > 4096:
-                        break
-                if (
-                    len(content) <= 4096
-                    and isinstance(json.loads(content), dict)
-                    and json.loads(content).get("status") == "ok"
-                ):
-                    result.update(
-                        status="reachable",
-                        message="HTTPS reachable; add-on health confirmed",
-                    )
-                else:
-                    result.update(
-                        status="warning",
-                        message="HTTPS reachable, but response does not identify the add-on",
-                    )
-            elif kind != "skill" and 200 <= code < 300:
-                result.update(
-                    status="reachable", message=f"HTTPS reachable (HTTP {code})"
-                )
-            elif kind == "host" and code in (404, 405):
-                result.update(
-                    status="warning",
-                    message=f"HTTPS reachable (HTTP {code}); test an actual audio URL to confirm playback access",
-                )
-            else:
-                result.update(
-                    status="failed",
-                    message=f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
-                )
+            status, message = _classify_response(kind, code, response)
+            result.update(status=status, message=message)
     except requests.exceptions.SSLError:
         result.update(status="failed", message="TLS certificate validation failed")
     except requests.exceptions.Timeout:

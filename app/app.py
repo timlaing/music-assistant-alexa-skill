@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import os
 import re
@@ -194,40 +195,54 @@ def _ingress_response(response):
 
 
 # Capture incoming Alexa POST payloads so we can show them on the status page
+def _payload_from_json_body():
+    """Parse the Alexa payload from a JSON request body, if present."""
+    try:
+        return request.get_json(silent=True) or None
+    except Exception:
+        return None
+
+
+def _payload_from_raw_body():
+    """Parse the Alexa payload from the raw request body, if it is JSON."""
+    try:
+        raw = request.get_data(as_text=True)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _payload_from_form():
+    """Build an Alexa payload from a form-encoded request, if present."""
+    try:
+        if not request.form:
+            return None
+        intent = request.form.get('intent')
+        if not intent:
+            return None
+        payload = {
+            "version": "1.0",
+            "request": {"type": "IntentRequest", "intent": {"name": intent}},
+        }
+        raw_slots = request.form.get('slots')
+        if raw_slots:
+            try:
+                payload['request']['intent']['slots'] = json.loads(raw_slots)
+            except Exception:
+                pass
+        return payload
+    except Exception:
+        return None
+
+
 @app.before_request
 def _capture_incoming_intent():
     if request.path == '/' and request.method == 'POST':
-        payload = None
-        try:
-            payload = request.get_json(silent=True)
-        except Exception:
-            payload = None
-        if not payload:
-            try:
-                raw = request.get_data(as_text=True)
-                if raw:
-                    import json as _json
-                    try:
-                        payload = _json.loads(raw)
-                    except Exception:
-                        payload = None
-            except Exception:
-                payload = None
-        if not payload:
-            try:
-                if request.form:
-                    intent = request.form.get('intent')
-                    raw_slots = request.form.get('slots')
-                    if intent:
-                        payload = {"version": "1.0", "request": {"type": "IntentRequest", "intent": {"name": intent}}}
-                        if raw_slots:
-                            try:
-                                payload['request']['intent']['slots'] = _json.loads(raw_slots)
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-
+        payload = (
+            _payload_from_json_body()
+            or _payload_from_raw_body()
+            or _payload_from_form()
+        )
         g._incoming_alexa_payload = payload or {}
         g._incoming_alexa_ts = time.time()
 

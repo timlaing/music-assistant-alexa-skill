@@ -143,6 +143,27 @@ def setup_reader_thread(proc, enqueue_func, prefix=None):
         enqueue_func(f"[reader error] {e}")
 
 
+def _emit(enqueue_func, text, prefix=None):
+    enqueue_func(f"[{prefix}] {text}" if prefix else text)
+
+
+def _consume_lines(buf, enqueue_func, prefix=None):
+    """Emit every complete line in buf; return the trailing partial line."""
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        _emit(enqueue_func, line.decode("utf-8", errors="replace"), prefix)
+    return buf
+
+
+def _emit_urls(chunk, enqueue_func, prefix=None):
+    try:
+        text = chunk.decode("utf-8", errors="replace")
+        for url in re.findall(r"https?://[^\s'\"]+", text):
+            _emit(enqueue_func, url, prefix)
+    except Exception:
+        pass
+
+
 def read_master_loop(master_fd, enqueue_func, prefix=None):
     try:
         buf = b""
@@ -153,27 +174,11 @@ def read_master_loop(master_fd, enqueue_func, prefix=None):
                 break
             if not chunk:
                 break
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                text = line.decode("utf-8", errors="replace")
-                if prefix:
-                    text = f"[{prefix}] {text}"
-                enqueue_func(text)
-            try:
-                s = chunk.decode("utf-8", errors="replace")
-                for m in re.findall(r"https?://[^\s'\"]+", s):
-                    txt = m
-                    if prefix:
-                        txt = f"[{prefix}] {txt}"
-                    enqueue_func(txt)
-            except Exception:
-                pass
+            buf = _consume_lines(buf + chunk, enqueue_func, prefix)
+            _emit_urls(chunk, enqueue_func, prefix)
         if buf:
             text = buf.decode("utf-8", errors="replace")
             if text.strip():
-                if prefix:
-                    text = f"[{prefix}] {text}"
-                enqueue_func(text)
+                _emit(enqueue_func, text, prefix)
     except Exception as e:
         enqueue_func(f"[pty reader error] {e}")
