@@ -180,6 +180,56 @@ def package_fingerprint(files):
     return digest(json.dumps(normalized, sort_keys=True))
 
 
+def _json_diff(approved, actual, limit=6):
+    """List the JSON paths where two parsed documents differ.
+
+    Only paths are reported, never values, so the result is safe to show
+    in the status API and error messages.
+    """
+    differences = []
+
+    def walk(left, right, path):
+        if len(differences) >= limit:
+            return
+        if isinstance(left, dict) and isinstance(right, dict):
+            for key in sorted(set(left) | set(right)):
+                child = f"{path}.{key}" if path else key
+                if key not in left:
+                    differences.append(f"{child} (added by Amazon)")
+                elif key not in right:
+                    differences.append(f"{child} (missing from Amazon's export)")
+                else:
+                    walk(left[key], right[key], child)
+        elif left != right or type(left) is not type(right):
+            differences.append(f"{path}: value differs" if path else "value differs")
+
+    walk(approved, actual, "")
+    return differences
+
+
+def package_mismatch(approved, actual):
+    """Describe per-file differences between two unpacked skill packages."""
+    report = {}
+    for name in sorted(set(approved) | set(actual)):
+        if name not in approved:
+            report[name] = ["file exists only in Amazon's export"]
+        elif name not in actual:
+            report[name] = ["file missing from Amazon's export"]
+        elif approved[name] == actual[name]:
+            continue
+        elif name.endswith(".json"):
+            try:
+                differences = _json_diff(
+                    json.loads(approved[name]), json.loads(actual[name])
+                )
+            except (ValueError, TypeError):
+                differences = []
+            report[name] = differences or ["file bytes differ"]
+        else:
+            report[name] = ["file bytes differ"]
+    return report
+
+
 def pack(files):
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -195,9 +245,13 @@ def configure_package(files, manifest_path, config, existing):
     locale = config["locale"]
     locales = pub.setdefault("locales", {})
     if locale not in locales:
-        locales[locale] = json.loads((APP_DIR / "skill.json").read_text())["manifest"][
+        template = json.loads((APP_DIR / "skill.json").read_text())["manifest"][
             "publishingInformation"
-        ]["locales"][locale]
+        ]["locales"]
+        # A bundled model can outpace the template's publishing entries; fall
+        # back to the en-US entry so deployment still yields a complete
+        # manifest instead of failing on a missing locale.
+        locales[locale] = template.get(locale, template["en-US"])
     if not existing:
         pub["locales"] = {locale: locales[locale]}
         locales[locale]["name"] = "Music Assistant"
@@ -305,6 +359,7 @@ class DeploymentManager:
                     "review",
                     "verified_at",
                     "import_attempt_id",
+                    "package_mismatch",
                 )
             }
             if self.state.get("import_unknown"):
@@ -690,6 +745,7 @@ class DeploymentManager:
             review=review,
             baseline=baseline,
             phase="ready",
+            package_mismatch=None,
             message="Review these settings before deploying. Only the selected locale’s voice model will be replaced.",
         )
 
@@ -740,6 +796,7 @@ class DeploymentManager:
             deployed_settings=review["settings"],
             import_path=None,
             verified_at=None,
+            package_mismatch=None,
             expected_package=package_fingerprint(
                 unpack_package(self.package_path.read_bytes())[0]
             ),
@@ -963,8 +1020,17 @@ class DeploymentManager:
             )
         actual_files, _ = self.export(skill)
         if package_fingerprint(actual_files) != self.state.get("expected_package"):
+            report = package_mismatch(
+                unpack_package(self.package_path.read_bytes())[0], actual_files
+            )
+            summary = "; ".join(
+                f"{name} ({', '.join(differences[:3])})"
+                for name, differences in list(report.items())[:3]
+            )
+            self.update(package_mismatch=report)
             raise DeploymentError(
-                "Amazon’s exported package differs from the approved deployment. Review again before enabling testing."
+                "Amazon’s exported package differs from the approved deployment: "
+                f"{summary}. Review again before enabling testing."
             )
         if config["certificate"] == "SelfSigned":
             certificates = {"sslCertificate": config["certificate_pem"]}
@@ -999,6 +1065,7 @@ class DeploymentManager:
             verified_at=time.time(),
             import_path=None,
             import_unknown=False,
+            package_mismatch=None,
         )
 
 

@@ -203,6 +203,23 @@
           "description": "Höre Mein Radio — hochwertiger Sound rund um die Uhr.\n\nZum Starten sag einfach: \"Alexa, öffne Mein Radio\" oder \"Alexa, bitte Mein Radio spielen\".\n\nDu kannst die Wiedergabe jederzeit mit \"Alexa, stop\" beenden.",
           "smallIconUri": "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_108x108.png",
           "largeIconUri": "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_512x512.png"
+        },
+        "nl-NL": {
+          "summary": "Luister naar je eigen radio, minder gepraat, meer muziek.",
+          "examplePhrases": [
+            "Alexa, open mijn radio",
+            "Alexa, speel mijn radio",
+            "Alexa, vraag mijn radio om te starten"
+          ],
+          "keywords": [
+            "muziek",
+            "streaming",
+            "radio"
+          ],
+          "name": "Mijn Radio",
+          "description": "Luister naar je eigen radio, minder gepraat, meer muziek.\n\nStarten zeg je gewoon: \"Alexa, open mijn radio\" of \"Alexa, speel mijn radio\".\n\nDe radio stop je op elk moment met \"Alexa, stop\".",
+          "smallIconUri": "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_108x108.png",
+          "largeIconUri": "https://raw.githubusercontent.com/timlaing/music-assistant-alexa-skill/main/assets/icons/ma_512x512.png"
         }
       },
       "isAvailableWorldwide": true,

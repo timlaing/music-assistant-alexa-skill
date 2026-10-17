@@ -1,35 +1,227 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "",
+      "invocationName": "mijn radio",
       "intents": [
-        { "intent": "AMAZON.CancelIntent", "utterances": ["annuleren", "laat maar", "vergeet het"] },
-        { "intent": "AMAZON.FallbackIntent", "utterances": ["ik weet het niet", "dat is het niet"] },
-        { "intent": "AMAZON.HelpIntent", "utterances": ["help", "help me", "kun je me helpen"] },
-        { "intent": "AMAZON.LoopOffIntent", "utterances": ["herhalen uit", "stop met herhalen"] },
-        { "intent": "AMAZON.LoopOnIntent", "utterances": ["herhaal", "herhalen aan", "in herhaling afspelen"] },
-        { "intent": "AMAZON.NextIntent", "utterances": ["volgende", "overslaan", "naar de volgende"] },
-        { "intent": "AMAZON.NoIntent", "utterances": ["nee", "nee bedankt"] },
-        { "intent": "AMAZON.PauseIntent", "utterances": ["pauze", "pauzeer"] },
-        { "intent": "AMAZON.PreviousIntent", "utterances": ["vorige", "ga terug"] },
-        { "intent": "AMAZON.RepeatIntent", "utterances": ["herhaal", "zeg nog eens", "herhaal dat"] },
-        { "intent": "AMAZON.ResumeIntent", "utterances": ["hervatten", "doorgaan"] },
-        { "intent": "AMAZON.SelectIntent", "utterances": ["selecteer dit item", "kies deze optie", "toon de eerste optie"] },
-        { "intent": "AMAZON.SendToPhoneIntent", "utterances": ["stuur naar mijn telefoon", "stuur de link naar mijn mobiel"] },
-        { "intent": "AMAZON.ShuffleOffIntent", "utterances": ["willekeurig uit", "stop met shuffelen"] },
-        { "intent": "AMAZON.ShuffleOnIntent", "utterances": ["shuffle", "willekeurig afspelen"] },
-        { "intent": "AMAZON.StartOverIntent", "utterances": ["opnieuw", "opnieuw vanaf het begin"] },
-        { "intent": "AMAZON.StopIntent", "utterances": ["stop", "stoppen", "afsluiten"] },
-        { "intent": "AMAZON.YesIntent", "utterances": ["ja", "oké"] },
-        { "intent": "AMAZON.ScrollUpIntent", "utterances": ["scroll omhoog", "naar boven scrollen"] },
-        { "intent": "AMAZON.ScrollLeftIntent", "utterances": ["scroll naar links"] },
-        { "intent": "AMAZON.ScrollDownIntent", "utterances": ["scroll omlaag", "naar beneden scrollen"] },
-        { "intent": "AMAZON.ScrollRightIntent", "utterances": ["scroll naar rechts"] },
-        { "intent": "AMAZON.PageUpIntent", "utterances": ["vorige pagina", "pagina omhoog"] },
-        { "intent": "AMAZON.PageDownIntent", "utterances": ["volgende pagina", "pagina omlaag"] },
-        { "intent": "AMAZON.MoreIntent", "utterances": ["meer", "toon meer"] },
-        { "intent": "AMAZON.NavigateHomeIntent", "utterances": ["ga naar start", "naar het startscherm"] },
-        { "intent": "AMAZON.NavigateSettingsIntent", "utterances": ["open instellingen", "ga naar instellingen"] }
+        {
+          "name": "PlayAudio",
+          "samples": [
+            "speel",
+            "start",
+            "zet aan",
+            "start de radio",
+            "start de radio alsjeblieft",
+            "start de radio maar",
+            "speel de radio",
+            "speel de radio alsjeblieft",
+            "speel de radio maar",
+            "zet de radio aan",
+            "zet de radio aan alsjeblieft",
+            "speel muziek",
+            "speel muziek alsjeblieft",
+            "start de muziek",
+            "start de muziek alsjeblieft",
+            "speel de muziek",
+            "speel de muziek alsjeblieft",
+            "speel het lied",
+            "speel het liedje",
+            "speel iets"
+          ]
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": [
+            "annuleren",
+            "laat maar",
+            "vergeet het"
+          ]
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": [
+            "ik weet het niet",
+            "dat is het niet"
+          ]
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": [
+            "help",
+            "help me",
+            "kun je me helpen"
+          ]
+        },
+        {
+          "name": "AMAZON.LoopOffIntent",
+          "samples": [
+            "herhalen uit",
+            "stop met herhalen"
+          ]
+        },
+        {
+          "name": "AMAZON.LoopOnIntent",
+          "samples": [
+            "herhaal",
+            "herhalen aan",
+            "in herhaling afspelen"
+          ]
+        },
+        {
+          "name": "AMAZON.NextIntent",
+          "samples": [
+            "volgende",
+            "overslaan",
+            "naar de volgende"
+          ]
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": [
+            "nee",
+            "nee bedankt"
+          ]
+        },
+        {
+          "name": "AMAZON.PauseIntent",
+          "samples": [
+            "pauze",
+            "pauzeer"
+          ]
+        },
+        {
+          "name": "AMAZON.PreviousIntent",
+          "samples": [
+            "vorige",
+            "ga terug"
+          ]
+        },
+        {
+          "name": "AMAZON.RepeatIntent",
+          "samples": [
+            "herhaal",
+            "zeg nog eens",
+            "herhaal dat"
+          ]
+        },
+        {
+          "name": "AMAZON.ResumeIntent",
+          "samples": [
+            "hervatten",
+            "doorgaan"
+          ]
+        },
+        {
+          "name": "AMAZON.SelectIntent",
+          "samples": [
+            "selecteer dit item",
+            "kies deze optie",
+            "toon de eerste optie"
+          ]
+        },
+        {
+          "name": "AMAZON.SendToPhoneIntent",
+          "samples": [
+            "stuur naar mijn telefoon",
+            "stuur de link naar mijn mobiel"
+          ]
+        },
+        {
+          "name": "AMAZON.ShuffleOffIntent",
+          "samples": [
+            "willekeurig uit",
+            "stop met shuffelen"
+          ]
+        },
+        {
+          "name": "AMAZON.ShuffleOnIntent",
+          "samples": [
+            "shuffle",
+            "willekeurig afspelen"
+          ]
+        },
+        {
+          "name": "AMAZON.StartOverIntent",
+          "samples": [
+            "opnieuw",
+            "opnieuw vanaf het begin"
+          ]
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": [
+            "stop",
+            "stoppen",
+            "afsluiten"
+          ]
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": [
+            "ja",
+            "oké"
+          ]
+        },
+        {
+          "name": "AMAZON.ScrollUpIntent",
+          "samples": [
+            "scroll omhoog",
+            "naar boven scrollen"
+          ]
+        },
+        {
+          "name": "AMAZON.ScrollLeftIntent",
+          "samples": [
+            "scroll naar links"
+          ]
+        },
+        {
+          "name": "AMAZON.ScrollDownIntent",
+          "samples": [
+            "scroll omlaag",
+            "naar beneden scrollen"
+          ]
+        },
+        {
+          "name": "AMAZON.ScrollRightIntent",
+          "samples": [
+            "scroll naar rechts"
+          ]
+        },
+        {
+          "name": "AMAZON.PageUpIntent",
+          "samples": [
+            "vorige pagina",
+            "pagina omhoog"
+          ]
+        },
+        {
+          "name": "AMAZON.PageDownIntent",
+          "samples": [
+            "volgende pagina",
+            "pagina omlaag"
+          ]
+        },
+        {
+          "name": "AMAZON.MoreIntent",
+          "samples": [
+            "meer",
+            "toon meer"
+          ]
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": [
+            "ga naar start",
+            "naar het startscherm"
+          ]
+        },
+        {
+          "name": "AMAZON.NavigateSettingsIntent",
+          "samples": [
+            "open instellingen",
+            "ga naar instellingen"
+          ]
+        }
       ],
       "types": []
     }

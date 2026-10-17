@@ -17,6 +17,7 @@ from skill_deployment import (
     configure_package,
     pack,
     package_fingerprint,
+    package_mismatch,
     settings,
     unpack_package,
 )
@@ -580,6 +581,154 @@ def test_corrupt_uploaded_model_cannot_report_success(deployment):
         deploy(manager)
     assert manager.state.get("verified_at") is None
     assert not any(url.endswith("/enablement") for _, url, _ in amazon.calls)
+
+
+def test_package_mismatch_reports_files_and_json_paths():
+    approved = {
+        "skill-package/skill.json": json.dumps(
+            {
+                "manifest": {
+                    "apis": {
+                        "custom": {
+                            "endpoint": {
+                                "uri": "https://alexa.example.com",
+                                "sslCertificateType": "Trusted",
+                            }
+                        }
+                    }
+                }
+            }
+        ).encode(),
+        "skill-package/assets/icon.png": b"\x89PNG-old",
+        "skill-package/only-approved.txt": b"goodbye",
+    }
+    actual = {
+        "skill-package/skill.json": json.dumps(
+            {
+                "manifest": {
+                    "apis": {
+                        "custom": {
+                            "endpoint": {
+                                "uri": "https://other.example.com",
+                                "sslCertificateType": "Trusted",
+                            },
+                            "regions": {"EU": {}},
+                        }
+                    }
+                }
+            }
+        ).encode(),
+        "skill-package/assets/icon.png": b"\x89PNG-new",
+        "skill-package/only-amazon.txt": b"hello",
+    }
+    report = package_mismatch(approved, actual)
+    assert report["skill-package/only-approved.txt"] == [
+        "file missing from Amazon's export"
+    ]
+    assert report["skill-package/only-amazon.txt"] == [
+        "file exists only in Amazon's export"
+    ]
+    assert report["skill-package/assets/icon.png"] == ["file bytes differ"]
+    assert (
+        "manifest.apis.custom.endpoint.uri: value differs"
+        in report["skill-package/skill.json"]
+    )
+    assert (
+        "manifest.apis.custom.regions (added by Amazon)"
+        in report["skill-package/skill.json"]
+    )
+    # Only paths are reported; package values must never leak into the report.
+    assert "example.com" not in json.dumps(report)
+
+
+def test_package_mismatch_is_empty_for_identical_packages():
+    files = {"skill-package/skill.json": b'{"manifest": {}}', "keep.bin": b"\x00"}
+    assert package_mismatch(files, copy.deepcopy(files)) == {}
+
+
+def test_mismatch_names_the_differing_file_and_path_and_clears_on_resume(deployment):
+    manager, amazon = deployment
+    original = amazon.request
+    stolen = {}
+
+    def request(method, url, **kwargs):
+        response = original(method, url, **kwargs)
+        if url.endswith("/imports"):
+            stolen.setdefault("manifest", amazon.files["skill-package/skill.json"])
+            manifest = json.loads(amazon.files["skill-package/skill.json"])
+            locale = manifest["manifest"]["publishingInformation"]["locales"]["en-GB"]
+            locale["summary"] = "changed by Amazon"
+            amazon.files["skill-package/skill.json"] = json.dumps(manifest).encode()
+        return response
+
+    amazon.request = request
+    with pytest.raises(DeploymentError, match="differs from the approved") as failure:
+        deploy(manager)
+    message = str(failure.value)
+    assert "skill-package/skill.json" in message
+    assert "publishingInformation.locales.en-GB.summary" in message
+    report = manager.state["package_mismatch"]
+    assert list(report) == ["skill-package/skill.json"]
+    assert report["skill-package/skill.json"] == [
+        "manifest.publishingInformation.locales.en-GB.summary: value differs"
+    ]
+    assert manager.public_status()["package_mismatch"] == report
+    assert not any(url.endswith("/enablement") for _, url, _ in amazon.calls)
+    # Removing the cause and resuming verifies the package and clears the report.
+    amazon.request = original
+    amazon.files["skill-package/skill.json"] = stolen["manifest"]
+    manager.finish()
+    assert manager.state["phase"] == "complete"
+    assert manager.state["package_mismatch"] is None
+    assert manager.public_status()["package_mismatch"] is None
+
+
+def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
+    deployment, monkeypatch
+):
+    manager, amazon = deployment
+    locales = sorted(path.stem for path in (APP_DIR / "models").glob("*.json"))
+    template_locales = json.loads((APP_DIR / "skill.json").read_text())["manifest"][
+        "publishingInformation"
+    ]["locales"]
+    # Every bundled model needs a publishing entry and vice versa.
+    assert set(locales) == set(template_locales)
+    original = amazon.request
+
+    def request(method, url, **kwargs):
+        response = original(method, url, **kwargs)
+        if url.endswith("/imports"):
+            # Amazon's import build canonicalizes every locale's model to
+            # include the slot type list, exactly as in production.
+            for name, content in amazon.files.items():
+                if "interactionModels" in name:
+                    normalized = json.loads(content)
+                    normalized["interactionModel"]["languageModel"].setdefault(
+                        "types", []
+                    )
+                    amazon.files[name] = json.dumps(normalized).encode()
+        return response
+
+    amazon.request = request
+    for locale in locales:
+        monkeypatch.setenv("LOCALE", locale)
+        deploy(manager)
+        assert manager.state["phase"] == "complete", locale
+        assert manager.state.get("package_mismatch") is None, locale
+        model = json.loads(
+            amazon.files[f"skill-package/interactionModels/custom/{locale}.json"]
+        )["interactionModel"]["languageModel"]
+        assert model["invocationName"], f"{locale} must declare an invocation name"
+        assert "types" in model, f"{locale} must include the slot type list"
+    # Revert to the default locale; the existing skill round-trips back cleanly.
+    monkeypatch.setenv("LOCALE", "en-GB")
+    deploy(manager)
+    assert manager.state["phase"] == "complete"
+    assert manager.state.get("package_mismatch") is None
+    model = json.loads(
+        amazon.files["skill-package/interactionModels/custom/en-GB.json"]
+    )["interactionModel"]["languageModel"]
+    assert model["invocationName"] == "my radio"
 
 
 def test_routes_review_deploy_and_replay(deployment, client):
