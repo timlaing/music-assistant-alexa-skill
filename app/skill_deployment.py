@@ -227,6 +227,17 @@ def package_fingerprint(files):
     return digest(json.dumps(normalized, sort_keys=True))
 
 
+def _diff_key(key, left, right, path, differences, walk):
+    """Record the difference for one key of two dicts, then recurse."""
+    child = f"{path}.{key}" if path else key
+    if key not in left:
+        differences.append(f"{child} (added by Amazon)")
+    elif key not in right:
+        differences.append(f"{child} (missing from Amazon's export)")
+    else:
+        walk(left[key], right[key], child)
+
+
 def _json_diff(approved, actual, limit=6):
     """List the JSON paths where two parsed documents differ.
 
@@ -240,18 +251,26 @@ def _json_diff(approved, actual, limit=6):
             return
         if isinstance(left, dict) and isinstance(right, dict):
             for key in sorted(set(left) | set(right)):
-                child = f"{path}.{key}" if path else key
-                if key not in left:
-                    differences.append(f"{child} (added by Amazon)")
-                elif key not in right:
-                    differences.append(f"{child} (missing from Amazon's export)")
-                else:
-                    walk(left[key], right[key], child)
+                _diff_key(key, left, right, path, differences, walk)
         elif left != right or type(left) is not type(right):
             differences.append(f"{path}: value differs" if path else "value differs")
 
     walk(approved, actual, "")
     return differences
+
+
+def _json_file_differences(name, approved, actual):
+    """Per-file differences for two JSON members; empty when equivalent."""
+    try:
+        if canonical_json(approved[name]) == canonical_json(actual[name]):
+            return []  # only formatting or materialized icons differ
+        left = json.loads(approved[name])
+        right = json.loads(actual[name])
+        normalize_icons(left)
+        normalize_icons(right)
+        return _json_diff(left, right)
+    except (ValueError, TypeError):
+        return []
 
 
 def package_mismatch(approved, actual):
@@ -265,17 +284,9 @@ def package_mismatch(approved, actual):
         elif approved[name] == actual[name]:
             continue
         elif name.endswith(".json"):
-            try:
-                if canonical_json(approved[name]) == canonical_json(actual[name]):
-                    continue  # only formatting or materialized icons differ
-                left = json.loads(approved[name])
-                right = json.loads(actual[name])
-                normalize_icons(left)
-                normalize_icons(right)
-                differences = _json_diff(left, right)
-            except (ValueError, TypeError):
-                differences = []
-            report[name] = differences or ["file bytes differ"]
+            differences = _json_file_differences(name, approved, actual)
+            if differences:
+                report[name] = differences
         else:
             report[name] = ["file bytes differ"]
     return report
@@ -309,6 +320,29 @@ def pack(files):
         for name, content in files.items():
             archive.writestr(name, content)
     return output.getvalue()
+
+
+def _configured_model(model_path, files, locale):
+    """Load the bundled voice model for a locale, honouring a custom invocation."""
+    model = json.loads((APP_DIR / "models" / f"{locale}.json").read_text())
+    # Amazon's import build canonicalizes models to include the custom slot
+    # type list. A bundled model that omits it is re-exported with
+    # "types": [], so the approved-package fingerprint would never match
+    # and deployment would be blocked for that locale.
+    language = model["interactionModel"]["languageModel"]
+    language.setdefault("types", [])
+    if model_path in files:
+        original = json.loads(files[model_path])
+        invocation = (
+            original.get("interactionModel", {})
+            .get("languageModel", {})
+            .get("invocationName")
+        )
+        if invocation:
+            language["invocationName"] = invocation
+    elif locale.startswith("en-"):
+        language["invocationName"] = "music assistant"
+    return model
 
 
 def configure_package(files, manifest_path, config, existing):
@@ -356,27 +390,12 @@ def configure_package(files, manifest_path, config, existing):
     prefix = str(PurePosixPath(manifest_path).parent)
     prefix = "" if prefix == "." else prefix + "/"
     model_path = f"{prefix}interactionModels/custom/{locale}.json"
-    model = json.loads((APP_DIR / "models" / f"{locale}.json").read_text())
-    # Amazon's import build canonicalizes models to include the custom slot
-    # type list. A bundled model that omits it is re-exported with
-    # "types": [], so the approved-package fingerprint would never match
-    # and deployment would be blocked for that locale.
-    model["interactionModel"]["languageModel"].setdefault("types", [])
-    if model_path in files:
-        original = json.loads(files[model_path])
-        invocation = (
-            original.get("interactionModel", {})
-            .get("languageModel", {})
-            .get("invocationName")
-        )
-        if invocation:
-            model["interactionModel"]["languageModel"]["invocationName"] = invocation
-    elif locale.startswith("en-"):
-        model["interactionModel"]["languageModel"]["invocationName"] = "music assistant"
+    model = _configured_model(model_path, files, locale)
     # The bundled model intentionally replaces this locale's intents/slots.
     files[model_path] = json.dumps(model).encode()
     files[manifest_path] = json.dumps({"manifest": manifest}).encode()
-    return files, manifest, model["interactionModel"]["languageModel"]["invocationName"]
+    invocation_name = model["interactionModel"]["languageModel"]["invocationName"]
+    return files, manifest, invocation_name
 
 
 class DeploymentManager:
@@ -521,6 +540,22 @@ class DeploymentManager:
         self.accept_callback(state, code)
         self.complete_authorization(browser_nonce)
 
+    def _store_tokens(self, body):
+        """Persist refreshed credentials, reusing the stored refresh token if absent."""
+        refresh = body.get("refresh_token") or self.state.get("tokens", {}).get(
+            "refresh_token"
+        )
+        if not body.get("access_token") or not refresh:
+            raise DeploymentError(
+                "Amazon did not return the required credentials. Reconnect."
+            )
+        self.state["tokens"] = {
+            "access_token": body["access_token"],
+            "refresh_token": refresh,
+            "expires": time.time() + int(body.get("expires_in", 3600)),
+        }
+        self.save()
+
     def _token(self, payload):
         client, secret, _ = oauth_config()
         try:
@@ -536,24 +571,37 @@ class DeploymentManager:
                 raise DeploymentError(
                     "Amazon sign-in needs reconnection. Check the Login with Amazon registration."
                 )
-            body = response.json()
-            refresh = body.get("refresh_token") or self.state.get("tokens", {}).get(
-                "refresh_token"
-            )
-            if not body.get("access_token") or not refresh:
-                raise DeploymentError(
-                    "Amazon did not return the required credentials. Reconnect."
-                )
-            self.state["tokens"] = {
-                "access_token": body["access_token"],
-                "refresh_token": refresh,
-                "expires": time.time() + int(body.get("expires_in", 3600)),
-            }
-            self.save()
+            self._store_tokens(response.json())
         except (requests.RequestException, ValueError) as exc:
             raise DeploymentError(
                 "Amazon sign-in request failed. Reconnect and try again."
             ) from exc
+
+    def _refresh_access_token(self):
+        """Return a bearer token, refreshing it when it is close to expiring."""
+        with self.lock:
+            if self.state.get("client_key") != config_key() or not self.state.get(
+                "tokens"
+            ):
+                raise DeploymentError("Connect Amazon before deploying.")
+            if self.state["tokens"]["expires"] < time.time() + 60:
+                self._token(
+                    {
+                        "grant_type": "refresh_token",
+                        "refresh_token": self.state["tokens"]["refresh_token"],
+                    }
+                )
+            return self.state["tokens"]["access_token"]
+
+    def _renew_token_after_rejection(self):
+        """Amazon rejected a token explicitly; renew it for the next attempt."""
+        with self.lock:
+            self._token(
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.state["tokens"]["refresh_token"],
+                }
+            )
 
     def api(self, method, path, **kwargs):
         if self.cancel.is_set():
@@ -561,19 +609,7 @@ class DeploymentManager:
         if not path.startswith("/v1/"):
             raise DeploymentError("Unexpected Amazon API path.")
         for attempt in range(3):
-            with self.lock:
-                if self.state.get("client_key") != config_key() or not self.state.get(
-                    "tokens"
-                ):
-                    raise DeploymentError("Connect Amazon before deploying.")
-                if self.state["tokens"]["expires"] < time.time() + 60:
-                    self._token(
-                        {
-                            "grant_type": "refresh_token",
-                            "refresh_token": self.state["tokens"]["refresh_token"],
-                        }
-                    )
-                token = self.state["tokens"]["access_token"]
+            token = self._refresh_access_token()
             try:
                 response = self.http.request(
                     method,
@@ -591,13 +627,7 @@ class DeploymentManager:
                     "Amazon request timed out or could not connect. Check progress before retrying."
                 ) from exc
             if response.status_code == 401 and attempt == 0:
-                with self.lock:
-                    self._token(
-                        {
-                            "grant_type": "refresh_token",
-                            "refresh_token": self.state["tokens"]["refresh_token"],
-                        }
-                    )
+                self._renew_token_after_rejection()
                 continue  # explicit rejection: no operation was accepted
             if (
                 method == "GET"
@@ -832,32 +862,7 @@ class DeploymentManager:
                 )
             self.state.pop("review", None)  # cannot replay this approval
             self.save()
-        skill = review["skill"]
-        if skill:
-            fresh, _ = self.export(skill)
-            if package_fingerprint(fresh) != self.state["baseline"]:
-                raise DeploymentError(
-                    "The skill changed in Amazon since the review. Prepare a new review to preserve those changes."
-                )
-        else:
-            self.update(creation_unknown=True)
-            try:
-                response = self.api(
-                    "POST",
-                    "/v1/skills",
-                    json={"vendorId": review["vendor"], "manifest": review["manifest"]},
-                )
-            except AmazonError as exc:
-                if 400 <= exc.status < 500:
-                    self.update(creation_unknown=False)
-                raise
-            skill = response.json().get("skillId")
-            if not isinstance(skill, str) or not re.fullmatch(
-                r"amzn1\.(?:ask|alexa)\.skill\.[A-Za-z0-9._-]+", skill
-            ):
-                raise DeploymentError(
-                    "Creation result is uncertain. Refresh Amazon’s skill list and select the skill; do not create another."
-                )
+        skill = self._resolve_deploy_skill(review)
         self.update(
             skill_id=skill,
             vendor_id=review["vendor"],
@@ -872,6 +877,45 @@ class DeploymentManager:
         )
         if review["create"]:
             self.wait_manifest(skill)
+        self._submit_import(skill)
+        self.finish()
+
+    def _resolve_deploy_skill(self, review):
+        """Verify the reviewed skill is unchanged, or create it and return its ID."""
+        skill = review["skill"]
+        if skill:
+            fresh, _ = self.export(skill)
+            if package_fingerprint(fresh) != self.state["baseline"]:
+                raise DeploymentError(
+                    "The skill changed in Amazon since the review. Prepare a new review to preserve those changes."
+                )
+            return skill
+        return self._create_skill(review)
+
+    def _create_skill(self, review):
+        """Create the skill in Amazon and return its validated ID."""
+        self.update(creation_unknown=True)
+        try:
+            response = self.api(
+                "POST",
+                "/v1/skills",
+                json={"vendorId": review["vendor"], "manifest": review["manifest"]},
+            )
+        except AmazonError as exc:
+            if 400 <= exc.status < 500:
+                self.update(creation_unknown=False)
+            raise
+        skill = response.json().get("skillId")
+        if not isinstance(skill, str) or not re.fullmatch(
+            r"amzn1\.(?:ask|alexa)\.skill\.[A-Za-z0-9._-]+", skill
+        ):
+            raise DeploymentError(
+                "Creation result is uncertain. Refresh Amazon’s skill list and select the skill; do not create another."
+            )
+        return skill
+
+    def _submit_import(self, skill):
+        """Upload the approved package and start its import, blocking replay on failure."""
         uploaded = self.api("POST", "/v1/skills/uploads").json()["uploadUrl"]
         self.transfer(
             "PUT",
@@ -897,7 +941,57 @@ class DeploymentManager:
             import_unknown=False,
             message="Amazon is importing and building the skill…",
         )
-        self.finish()
+
+    def _validate_reconcile(self, payload):
+        """Validate a reconcile request; return (result, reference)."""
+        if not self.state.get("import_unknown") or self.state.get("import_path"):
+            raise DeploymentError(
+                "There is no import without a recovery ID to reconcile."
+            )
+        if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+            raise DeploymentError(
+                "Confirm the terminal result with Amazon before continuing."
+            )
+        if payload.get("attempt_id") != self.state.get(
+            "import_attempt_id"
+        ) or payload.get("skill_id") != self.state.get("skill_id"):
+            raise DeploymentError(
+                "The pending import changed. Reload and verify the displayed skill."
+            )
+        result, reference = payload.get("result"), payload.get("reference")
+        if result not in ("SUCCEEDED", "FAILED", "NOT_ACCEPTED"):
+            raise DeploymentError(
+                "Record a confirmed success, failure or non-acceptance; a running or unknown operation cannot be cleared."
+            )
+        if (
+            not isinstance(reference, str)
+            or not 1 <= len(reference.strip()) <= 1000
+            or any(ord(c) < 32 for c in reference)
+        ):
+            raise DeploymentError(
+                "Provide Amazon's confirmation reference or an explanation without secrets."
+            )
+        return result, reference
+
+    def _reconcile_snapshot_still_valid(self, snapshot):
+        """Reject a reconcile whose pending import or Amazon connection moved on."""
+        if (
+            self.state.get("phase") in BUSY
+            or (self.thread and self.thread.is_alive())
+            or self.cancel.is_set()
+            or not self.state.get("import_unknown")
+            or self.state.get("import_path")
+            or self.state.get("import_attempt_id") != snapshot["attempt_id"]
+            or self.state.get("skill_id") != snapshot["skill"]
+            or self.state.get("vendor_id") != snapshot["vendor"]
+            or self.state.get("client_key") != snapshot["client_key"]
+            or self.state.get("client_key") != config_key()
+            or (self.state.get("tokens") or {}).get("refresh_token")
+            != snapshot["refresh_token"]
+        ):
+            raise DeploymentError(
+                "The pending import or Amazon connection changed. Reload and verify the displayed skill."
+            )
 
     def reconcile_import(self, payload):
         """Record an owner's Amazon-confirmed terminal result before releasing a block."""
@@ -908,37 +1002,15 @@ class DeploymentManager:
                 raise DeploymentError(
                     "Wait for the current operation before reconciling."
                 )
-            if not self.state.get("import_unknown") or self.state.get("import_path"):
-                raise DeploymentError(
-                    "There is no import without a recovery ID to reconcile."
-                )
-            if not isinstance(payload, dict) or payload.get("confirmed") is not True:
-                raise DeploymentError(
-                    "Confirm the terminal result with Amazon before continuing."
-                )
-            if payload.get("attempt_id") != self.state.get(
-                "import_attempt_id"
-            ) or payload.get("skill_id") != self.state.get("skill_id"):
-                raise DeploymentError(
-                    "The pending import changed. Reload and verify the displayed skill."
-                )
-            result, reference = payload.get("result"), payload.get("reference")
-            if result not in ("SUCCEEDED", "FAILED", "NOT_ACCEPTED"):
-                raise DeploymentError(
-                    "Record a confirmed success, failure or non-acceptance; a running or unknown operation cannot be cleared."
-                )
-            if (
-                not isinstance(reference, str)
-                or not 1 <= len(reference.strip()) <= 1000
-                or any(ord(c) < 32 for c in reference)
-            ):
-                raise DeploymentError(
-                    "Provide Amazon's confirmation reference or an explanation without secrets."
-                )
+            result, reference = self._validate_reconcile(payload)
             vendor, skill = self.state.get("vendor_id"), self.state.get("skill_id")
-            attempt_id = self.state.get("import_attempt_id")
-            client_key = self.state.get("client_key")
-            refresh_token = (self.state.get("tokens") or {}).get("refresh_token")
+            snapshot = {
+                "attempt_id": self.state.get("import_attempt_id"),
+                "skill": skill,
+                "vendor": vendor,
+                "client_key": self.state.get("client_key"),
+                "refresh_token": (self.state.get("tokens") or {}).get("refresh_token"),
+            }
 
         # Ownership listing can involve multiple slow API pages. Keep status and
         # local settings responsive while it runs; validate the snapshot again below.
@@ -948,23 +1020,7 @@ class DeploymentManager:
             )
 
         with self.lock:
-            if (
-                self.state.get("phase") in BUSY
-                or (self.thread and self.thread.is_alive())
-                or self.cancel.is_set()
-                or not self.state.get("import_unknown")
-                or self.state.get("import_path")
-                or self.state.get("import_attempt_id") != attempt_id
-                or self.state.get("skill_id") != skill
-                or self.state.get("vendor_id") != vendor
-                or self.state.get("client_key") != client_key
-                or self.state.get("client_key") != config_key()
-                or (self.state.get("tokens") or {}).get("refresh_token")
-                != refresh_token
-            ):
-                raise DeploymentError(
-                    "The pending import or Amazon connection changed. Reload and verify the displayed skill."
-                )
+            self._reconcile_snapshot_still_valid(snapshot)
             state = copy.deepcopy(self.state)
             state.setdefault("import_reconciliations", []).append(
                 {
@@ -1014,22 +1070,8 @@ class DeploymentManager:
             "Amazon manifest build timed out. Review the saved skill again."
         )
 
-    def finish(self):
-        if not self.state.get("import_path"):
-            raise DeploymentError(
-                "There is no accepted import to resume. Review the saved skill again."
-            )
-        vendor, skill = self.state.get("vendor_id"), self.state.get("skill_id")
-        if not vendor or not any(item["id"] == skill for item in self.skills(vendor)):
-            raise DeploymentError(
-                "The saved import must belong to a development custom skill in its original developer account. Reconnect that account before resuming."
-            )
-        self.poll(self.state["import_path"], "package import")
-        skill, config = self.state["skill_id"], self.state["deployed_settings"]
-        path = f"/v1/skills/{quote(skill, safe='')}"
-        # Package imports are authoritative; the legacy skill-status API can omit
-        # resources. Wait for any explicitly running build and reject failed ones,
-        # then verify the exported approved package below, including its model.
+    def _await_build(self, path, locale):
+        """Wait for Amazon to finish the manifest and voice-model build."""
         deadline = time.monotonic() + 600
         while True:
             status = self.api(
@@ -1040,7 +1082,7 @@ class DeploymentManager:
             statuses = [
                 status.get("manifest", {}).get("lastUpdateRequest", {}).get("status"),
                 status.get("interactionModel", {})
-                .get(config["locale"], {})
+                .get(locale, {})
                 .get("lastUpdateRequest", {})
                 .get("status"),
             ]
@@ -1055,7 +1097,7 @@ class DeploymentManager:
                     "Amazon returned an unexpected manifest or voice-model status. Resume later."
                 )
             if "IN_PROGRESS" not in statuses:
-                break
+                return
             if time.monotonic() >= deadline:
                 raise DeploymentError(
                     "Amazon has not confirmed a successful manifest and voice-model build after ten minutes. Resume later to verify the accepted import."
@@ -1064,6 +1106,9 @@ class DeploymentManager:
                 message="Amazon accepted the import; waiting for the selected locale’s build to finish…"
             )
             self.pause(3)
+
+    def _verify_deployed_manifest(self, path, config):
+        """Confirm Amazon serves the approved endpoint and interfaces."""
         manifest = self.api("GET", path + "/stages/development/manifest").json()[
             "manifest"
         ]
@@ -1087,54 +1132,78 @@ class DeploymentManager:
             raise DeploymentError(
                 "Amazon configuration did not match the approved endpoint/interfaces. Review and retry."
             )
+        return custom
+
+    def _verify_deployed_package(self, skill):
+        """Confirm Amazon's export matches the approved package, adopting re-encoded icons."""
         actual_files, _ = self.export(skill)
-        if package_fingerprint(actual_files) != self.state.get("expected_package"):
-            approved_files = unpack_package(self.package_path.read_bytes())[0]
-            stored = store_icon_assets(approved_files, actual_files)
-            if stored:
-                # Store Amazon's re-encoded icon artwork so this one-time
-                # materialization never fails another verification cycle.
-                atomic_write(self.package_path, pack(approved_files))
-                self.update(
-                    expected_package=package_fingerprint(approved_files),
-                    assets_stored=sorted(
-                        set(self.state.get("assets_stored") or []) | set(stored)
-                    ),
-                )
-            report = package_mismatch(approved_files, actual_files)
-            if report:
-                summary = "; ".join(
-                    f"{name} ({', '.join(differences[:3])})"
-                    for name, differences in list(report.items())[:3]
-                )
-                self.update(package_mismatch=report)
-                raise DeploymentError(
-                    "Amazon’s exported package differs from the approved deployment: "
-                    f"{summary}. Review again before enabling testing."
-                )
+        if package_fingerprint(actual_files) == self.state.get("expected_package"):
+            return
+        approved_files = unpack_package(self.package_path.read_bytes())[0]
+        stored = store_icon_assets(approved_files, actual_files)
+        if stored:
+            # Store Amazon's re-encoded icon artwork so this one-time
+            # materialization never fails another verification cycle.
+            atomic_write(self.package_path, pack(approved_files))
+            self.update(
+                expected_package=package_fingerprint(approved_files),
+                assets_stored=sorted(
+                    set(self.state.get("assets_stored") or []) | set(stored)
+                ),
+            )
+        report = package_mismatch(approved_files, actual_files)
+        if not report:
+            return
+        summary = "; ".join(
+            f"{name} ({', '.join(differences[:3])})"
+            for name, differences in list(report.items())[:3]
+        )
+        self.update(package_mismatch=report)
+        raise DeploymentError(
+            "Amazon’s exported package differs from the approved deployment: "
+            f"{summary}. Review again before enabling testing."
+        )
+
+    def _push_self_signed_certificate(self, path, config, regions):
+        """Upload the approved self-signed certificate and confirm Amazon stored it."""
+        pem = config["certificate_pem"]
+        certificates = {"sslCertificate": pem}
+        if regions:
+            certificates["regions"] = {
+                region: {"sslCertificate": pem} for region in regions
+            }
+        self.api("PUT", path + "/sslCertificateSets/~latest", json=certificates)
+        actual = self.api("GET", path + "/sslCertificateSets/~latest").json()
+        if actual.get("sslCertificate", "").strip() != pem or any(
+            actual.get("regions", {}).get(region, {}).get("sslCertificate", "").strip()
+            != pem
+            for region in regions
+        ):
+            raise DeploymentError(
+                "Amazon did not confirm the uploaded certificate. Resume to retry before enabling testing."
+            )
+
+    def finish(self):
+        if not self.state.get("import_path"):
+            raise DeploymentError(
+                "There is no accepted import to resume. Review the saved skill again."
+            )
+        vendor, skill = self.state.get("vendor_id"), self.state.get("skill_id")
+        if not vendor or not any(item["id"] == skill for item in self.skills(vendor)):
+            raise DeploymentError(
+                "The saved import must belong to a development custom skill in its original developer account. Reconnect that account before resuming."
+            )
+        self.poll(self.state["import_path"], "package import")
+        skill, config = self.state["skill_id"], self.state["deployed_settings"]
+        path = f"/v1/skills/{quote(skill, safe='')}"
+        # Package imports are authoritative; the legacy skill-status API can omit
+        # resources. Wait for any explicitly running build and reject failed ones,
+        # then verify the exported approved package below, including its model.
+        self._await_build(path, config["locale"])
+        custom = self._verify_deployed_manifest(path, config)
+        self._verify_deployed_package(skill)
         if config["certificate"] == "SelfSigned":
-            certificates = {"sslCertificate": config["certificate_pem"]}
-            regions = custom.get("regions", {})
-            if regions:
-                certificates["regions"] = {
-                    region: {"sslCertificate": config["certificate_pem"]}
-                    for region in regions
-                }
-            self.api("PUT", path + "/sslCertificateSets/~latest", json=certificates)
-            actual = self.api("GET", path + "/sslCertificateSets/~latest").json()
-            if actual.get("sslCertificate", "").strip() != config[
-                "certificate_pem"
-            ] or any(
-                actual.get("regions", {})
-                .get(region, {})
-                .get("sslCertificate", "")
-                .strip()
-                != config["certificate_pem"]
-                for region in regions
-            ):
-                raise DeploymentError(
-                    "Amazon did not confirm the uploaded certificate. Resume to retry before enabling testing."
-                )
+            self._push_self_signed_certificate(path, config, custom.get("regions", {}))
         self.api("PUT", path + "/stages/development/enablement")
         enabled = self.api("GET", path + "/stages/development/enablement")
         if enabled.status_code != 204:
