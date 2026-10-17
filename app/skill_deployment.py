@@ -168,14 +168,23 @@ def unpack_package(content):
     return files, manifests[0]
 
 
+def canonical_json(content):
+    """Canonical byte form of a JSON package file.
+
+    Shared by the fingerprint and the mismatch report so both judge file
+    differences identically: whitespace and key order are never differences.
+    """
+    return json.dumps(
+        json.loads(content), sort_keys=True, separators=(",", ":")
+    ).encode()
+
+
 def package_fingerprint(files):
     # ZIP metadata varies between exports; compare canonical member content.
     normalized = {}
     for key, content in files.items():
         if key.endswith(".json"):
-            content = json.dumps(
-                json.loads(content), sort_keys=True, separators=(",", ":")
-            ).encode()
+            content = canonical_json(content)
         normalized[key] = hashlib.sha256(content).hexdigest()
     return digest(json.dumps(normalized, sort_keys=True))
 
@@ -219,6 +228,8 @@ def package_mismatch(approved, actual):
             continue
         elif name.endswith(".json"):
             try:
+                if canonical_json(approved[name]) == canonical_json(actual[name]):
+                    continue  # only formatting differs; the fingerprint ignores it
                 differences = _json_diff(
                     json.loads(approved[name]), json.loads(actual[name])
                 )

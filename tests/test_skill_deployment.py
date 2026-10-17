@@ -646,6 +646,35 @@ def test_package_mismatch_is_empty_for_identical_packages():
     assert package_mismatch(files, copy.deepcopy(files)) == {}
 
 
+def test_package_mismatch_skips_json_that_only_differs_in_formatting():
+    # Amazon may re-serialize JSON without changing it semantically; the
+    # fingerprint ignores that, so the report must too — otherwise a merely
+    # reformatted file that sorts first crowds the real difference out of
+    # the truncated error summary.
+    approved = {
+        "skill-package/interactionModels/custom/de-DE.json": json.dumps(
+            {
+                "interactionModel": {
+                    "languageModel": {"invocationName": "mein radio", "types": []}
+                }
+            },
+            sort_keys=True,
+        ).encode(),
+        "skill-package/skill.json": b'{"manifest": {"version": 1}}',
+    }
+    actual = {
+        "skill-package/interactionModels/custom/de-DE.json": (
+            b'{\n  "interactionModel": {\n    "languageModel": {\n'
+            b'      "types": [],\n      "invocationName": "mein radio"\n'
+            b"    }\n  }\n}"
+        ),
+        "skill-package/skill.json": b'{"manifest": {"version": 2}}',
+    }
+    report = package_mismatch(approved, actual)
+    assert list(report) == ["skill-package/skill.json"]
+    assert report["skill-package/skill.json"] == ["manifest.version: value differs"]
+
+
 def test_mismatch_names_the_differing_file_and_path_and_clears_on_resume(deployment):
     manager, amazon = deployment
     original = amazon.request
