@@ -16,13 +16,13 @@ CREATED_ASSETS_DIR=0
 # Home Assistant builds local addons with the addon directory as Docker context.
 # Stage runtime source files into that context before invoking supervisor_run.
 sync_addon_build_context() {
-    if [ ! -d "${ADDON_APP_DIR}" ]; then
+    if [[ ! -d "${ADDON_APP_DIR}" ]]; then
         CREATED_APP_DIR=1
     fi
-    if [ ! -d "${ADDON_SCRIPTS_DIR}" ]; then
+    if [[ ! -d "${ADDON_SCRIPTS_DIR}" ]]; then
         CREATED_SCRIPTS_DIR=1
     fi
-    if [ ! -d "${ADDON_ASSETS_DIR}" ]; then
+    if [[ ! -d "${ADDON_ASSETS_DIR}" ]]; then
         CREATED_ASSETS_DIR=1
     fi
 
@@ -40,22 +40,22 @@ sync_addon_build_context() {
 }
 
 cleanup_addon_build_context() {
-    [ -f "${STAGED_MARKER}" ] || return 0
+    [[ -f "${STAGED_MARKER}" ]] || return 0
 
     rm -f "${STAGED_MARKER}"
-    if [ "${CREATED_APP_DIR}" -eq 1 ]; then
+    if [[ "${CREATED_APP_DIR}" -eq 1 ]]; then
         rm -rf "${ADDON_APP_DIR}"
     fi
-    if [ "${CREATED_SCRIPTS_DIR}" -eq 1 ]; then
+    if [[ "${CREATED_SCRIPTS_DIR}" -eq 1 ]]; then
         rm -rf "${ADDON_SCRIPTS_DIR}"
     fi
-    if [ "${CREATED_ASSETS_DIR}" -eq 1 ]; then
+    if [[ "${CREATED_ASSETS_DIR}" -eq 1 ]]; then
         rm -rf "${ADDON_ASSETS_DIR}"
     fi
 }
 
 clear_stale_staging() {
-    [ -f "${STAGED_MARKER}" ] || return 0
+    [[ -f "${STAGED_MARKER}" ]] || return 0
     rm -rf "${ADDON_APP_DIR}" "${ADDON_SCRIPTS_DIR}" "${ADDON_ASSETS_DIR}" "${STAGED_MARKER}"
 }
 

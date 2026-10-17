@@ -10,7 +10,7 @@ REQ_FILE="$REPO_ROOT/app/requirements.txt"
 
 # Allow overriding python with env var PYTHON (e.g. PYTHON=python3.11)
 PYTHON_CMD="${PYTHON:-}"
-if [ -z "$PYTHON_CMD" ]; then
+if [[ -z "$PYTHON_CMD" ]]; then
   if command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD=python3
   elif command -v python >/dev/null 2>&1; then
@@ -21,7 +21,7 @@ if [ -z "$PYTHON_CMD" ]; then
   fi
 fi
 
-if [ -d "$VENV_DIR" ]; then
+if [[ -d "$VENV_DIR" ]]; then
   echo "Virtualenv already exists at $VENV_DIR"
 else
   echo "Creating virtualenv at $VENV_DIR using $PYTHON_CMD"
@@ -31,7 +31,7 @@ fi
 echo "Upgrading pip and setuptools in the virtualenv..."
 "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
 
-if [ -f "$REQ_FILE" ]; then
+if [[ -f "$REQ_FILE" ]]; then
   echo "Installing requirements from $REQ_FILE"
   "$VENV_DIR/bin/pip" install -r "$REQ_FILE"
 else

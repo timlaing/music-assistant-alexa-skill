@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Mirror the task wrapper behavior for all child processes by shimming sudo.
-if [ ! -r /usr/bin/devcontainer_bootstrap ]; then
+if [[ ! -r /usr/bin/devcontainer_bootstrap ]]; then
   echo "ERROR: /usr/bin/devcontainer_bootstrap not found in this devcontainer image." >&2
   exit 1
 fi

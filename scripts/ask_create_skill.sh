@@ -48,7 +48,7 @@ while [[ ${#} -gt 0 ]]; do
 done
 
 # Require endpoint: user requested endpoint must be provided to publish a valid manifest
-if [ -z "${ENDPOINT:-}" ]; then
+if [[ -z "${ENDPOINT:-}" ]]; then
   echo "Error: --endpoint is required. Provide --endpoint https://your-host or a Lambda ARN." >&2
   usage
   exit 1
@@ -59,7 +59,7 @@ command -v ask >/dev/null 2>&1 || { echo "ask CLI not found in PATH. Install it 
 # If the container has a mounted persistent credentials dir at /root/.ask, use it.
 # This avoids requiring a user-configurable env var; the Docker Compose named
 # volume `ask_data` is mounted to /root/.ask by the service configuration.
-if [ -d "/root/.ask" ]; then
+if [[ -d "/root/.ask" ]]; then
   export HOME="/root"
   echo "Using persistent ASK credentials at /root/.ask (HOME=${HOME})"
 fi
@@ -123,16 +123,16 @@ print('deleted_nonfunctional')
 PY
 )"
 
-if [ "$ASK_CFG_STATE" = "delete_failed" ]; then
+if [[ "$ASK_CFG_STATE" = "delete_failed" ]]; then
   echo "Error: failed to delete non-functional ASK cli_config at $ASK_CFG_PATH" >&2
   exit 6
 fi
 
-if [ "$ASK_CFG_STATE" != "functional" ]; then
-  if [ "$ASK_CFG_STATE" = "deleted_nonfunctional" ]; then
+if [[ "$ASK_CFG_STATE" != "functional" ]]; then
+  if [[ "$ASK_CFG_STATE" = "deleted_nonfunctional" ]]; then
     echo "Deleted non-functional ASK cli_config at $ASK_CFG_PATH." >&2
   fi
-  if [ "$ASK_CFG_STATE" = "missing" ]; then
+  if [[ "$ASK_CFG_STATE" = "missing" ]]; then
     echo "ASK cli_config is missing for profile '$PROFILE'." >&2
   else
     echo "ASK cli_config is non-functional for profile '$PROFILE'." >&2
@@ -149,12 +149,12 @@ TO_DELETE=$(python3 "$REPO_ROOT/scripts/find_skills_to_delete.py" "$LIST_FILE" 2
 # Default: we will create a new skill unless we find and reuse an existing one
 SKIP_CREATE=0
 SKILL_ID=""
-if [ -n "$TO_DELETE" ]; then
+if [[ -n "$TO_DELETE" ]]; then
   echo "Found existing Music Assistant skill(s): $TO_DELETE"
   # Convert to array
   read -r -a existing_arr <<< "$TO_DELETE"
   # If more than one exists, delete extras (keep the first entry)
-  if [ ${#existing_arr[@]} -gt 1 ]; then
+  if [[ ${#existing_arr[@]} -gt 1 ]]; then
     echo "Multiple existing Music Assistant skills found; deleting extras and keeping first: ${existing_arr[0]}"
     for ((i=1;i<${#existing_arr[@]};i++)); do
       sid=${existing_arr[i]}
@@ -176,7 +176,7 @@ fi
 echo "WROTE $OUT_MANIFEST"
 
 # Create a new skill only if we didn't find an existing one to reuse
-if [ "$SKIP_CREATE" -eq 0 ]; then
+if [[ "$SKIP_CREATE" -eq 0 ]]; then
   echo "Creating skill using ASK CLI (profile=$PROFILE)..."
   CREATE_OUT_FILE="$TMP_DIR/create_skill_out.txt"
   ask smapi create-skill-for-vendor --manifest file://$OUT_MANIFEST --profile $PROFILE > "$CREATE_OUT_FILE" 2>&1 || true
@@ -197,7 +197,7 @@ except Exception:
 PY
 )
 
-  if [ -z "$SKILL_ID" ]; then
+  if [[ -z "$SKILL_ID" ]]; then
     echo "Failed to detect skillId. Check the output above for errors." >&2
     exit 3
   fi
@@ -215,7 +215,7 @@ fi
 # Note: enablement must happen after interaction models are uploaded and built.
 # We'll poll model build status (if we uploaded models) and then attempt enablement.
 
-if [ "$UPLOAD_MODELS" = true ]; then
+if [[ "$UPLOAD_MODELS" = true ]]; then
   echo "Uploading interaction models from models/ for locales (injecting invocationName)..."
   # Determine which locale to upload; default to en-US when not specified
   INV_LOCALE="${LOCALE:-en-US}"
@@ -248,13 +248,13 @@ PY
   echo "WROTE $TMP_DIR/set_interaction_${INV_LOCALE}_min.txt"
 
   # Build list of locales to upload: single `$LOCALE` if provided, else all models
-  if [ -n "$LOCALE" ]; then
+  if [[ -n "$LOCALE" ]]; then
     model_list=("$REPO_ROOT/app/models/${LOCALE}.json")
   else
     model_list=("$REPO_ROOT"/app/models/*.json)
   fi
   for model in "${model_list[@]}"; do
-    [ -f "$model" ] || continue
+    [[ -f "$model" ]] || continue
     # derive locale from filename (models/en-US.json -> en-US)
     locale=$(basename "$model" .json)
     echo "Preparing $model -> locale $locale"
@@ -286,19 +286,19 @@ fi
 # If we uploaded models, poll until model builds are reported as SUCCEEDED,
 # then attempt to enable the skill for testing. If --upload-models wasn't used
 # we skip automatic enablement (it requires models to be built first).
-if [ "$UPLOAD_MODELS" = true ]; then
+if [[ "$UPLOAD_MODELS" = true ]]; then
     echo "Waiting for interaction model builds to complete (polling skill status)..."
     # Cap total polling time to roughly 60s: MAX_RETRIES * SLEEP_SECONDS <= 60
     # Poll every 5s so builds are detected within ~5s of completion
     MAX_RETRIES=12
     SLEEP_SECONDS=5
     # Only poll for the locale(s) we will upload; LOCALE defaults to en-US.
-    if [ -n "$LOCALE" ]; then
+    if [[ -n "$LOCALE" ]]; then
       LOCALES="$LOCALE"
     else
       LOCALES=""
       for model in "$REPO_ROOT"/app/models/*.json; do
-        [ -f "$model" ] || continue
+        [[ -f "$model" ]] || continue
         LOCALES="$LOCALES $(basename "$model" .json)"
       done
     fi
@@ -314,7 +314,7 @@ if [ "$UPLOAD_MODELS" = true ]; then
               cur_status="SUCCEEDED"
             fi
             # Try jq if available to read lastUpdateRequest.status (only if we don't already have cur_status)
-            if [ -z "${cur_status:-}" ]; then
+            if [[ -z "${cur_status:-}" ]]; then
               if command -v jq >/dev/null 2>&1; then
                 cur_status=$(printf '%s' "$STATUS_JSON" | jq -r --arg loc "$locale" '.interactionModel[$loc].lastUpdateRequest.status // ""' 2>/dev/null || echo "")
               else
@@ -331,7 +331,7 @@ PY
               fi
             fi
             # If we still don't have a status, try a more robust inspection (check buildDetails.steps)
-            if [ -z "$cur_status" ]; then
+            if [[ -z "$cur_status" ]]; then
               cur_status=$(printf '%s' "$STATUS_JSON" | python3 - "$locale" <<'PY'
 import sys,json
 loc=sys.argv[1]
@@ -354,7 +354,7 @@ except Exception:
 PY
 )
             fi
-          if [ "$cur_status" = "SUCCEEDED" ]; then
+          if [[ "$cur_status" = "SUCCEEDED" ]]; then
             echo " - build SUCCEEDED"
             success=1
             break
@@ -363,7 +363,7 @@ PY
           echo -n "."
           sleep $SLEEP_SECONDS
         done
-        if [ $success -eq 0 ]; then
+        if [[ $success -eq 0 ]]; then
           echo " - WARNING: model build for $locale did not reach SUCCEEDED after $((MAX_RETRIES*SLEEP_SECONDS))s"
           # Dump last get-skill-status JSON to TMP_DIR for debugging in containers
           STATUS_DUMP="$TMP_DIR/get_skill_status_${SKILL_ID}_${locale}.json"
@@ -373,11 +373,10 @@ PY
       done
       # Additional fallback: if the STATUS_JSON contains a top-level "status": "SUCCEEDED"
       # somewhere (some ASK CLI outputs differ), treat as SUCCEEDED.
-      if [ $success -eq 0 ]; then
-        if printf '%s' "$STATUS_JSON" | grep -q '"status"[[:space:]]*:[[:space:]]*"SUCCEEDED"'; then
-          echo " - build SUCCEEDED (fallback via grep)"
-          success=1
-        fi
+      if [[ $success -eq 0 ]] &&
+        printf '%s' "$STATUS_JSON" | grep -q '"status"[[:space:]]*:[[:space:]]*"SUCCEEDED"'; then
+        echo " - build SUCCEEDED (fallback via grep)"
+        success=1
       fi
 
   # Now attempt enablement (best-effort). Store outputs in tmp/.
@@ -393,7 +392,7 @@ PY
   # Fallback for older/other CLIs (non-fatal)
   FALLBACK_OUT="${ENABLE_OUT}.fallback"
   ask smapi update-skill-testing --skill-id "$SKILL_ID" --profile "$PROFILE" > "$FALLBACK_OUT" 2>&1 || true
-  if [ -s "$FALLBACK_OUT" ]; then
+  if [[ -s "$FALLBACK_OUT" ]]; then
     echo "WROTE $FALLBACK_OUT"
   fi
 else

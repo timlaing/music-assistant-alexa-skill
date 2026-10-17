@@ -2,28 +2,49 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python and system dependencies
+# Install Python, Node.js and system dependencies.
 # Python 3.12 via deadsnakes: Ubuntu 22.04 only ships 3.10 by default, but
 # music-assistant-client (used for MA voice-control commands) requires >=3.11.
+# Node.js 18 via the official NodeSource apt repository (ASK CLI requires a
+# modern Node version). The repository is added with a signed-by keyring
+# instead of executing the upstream setup script, so no downloaded artifact
+# is ever executed unverified.
 RUN apt-get update && \
-    apt-get install -y software-properties-common && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        software-properties-common && \
     add-apt-repository -y ppa:deadsnakes/ppa && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --batch --yes --dearmor -o /usr/share/keyrings/nodesource.gpg && \
+    printf '%s\n' \
+        'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main' \
+        > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && \
-    apt-get install -y python3.12 python3.12-venv python3-pip libssl-dev curl gnupg ca-certificates && \
-    # Install Node.js 18 from NodeSource (ASK CLI requires a modern Node version)
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y --no-install-recommends \
+        libssl-dev \
+        nodejs \
+        python3-pip \
+        python3.12 \
+        python3.12-venv && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy only requirements first, then install dependencies
 COPY app/requirements.txt /app/requirements.txt
-RUN python3.12 -m venv venv && \
+
+# Install ASK CLI (v2) globally so the container can run `ask configure`.
+# Best-effort (--ignore-scripts keeps third-party lifecycle code from running;
+# the || true keeps a registry hiccup from failing the image build).
+# Then create the app venv with pinned, wheel-only pip tooling.
+RUN npm install -g --ignore-scripts ask-cli@2.30.7 || true && \
+    python3.12 -m venv venv && \
     . venv/bin/activate && \
-    pip install --upgrade pip && \
+    pip install --upgrade --only-binary :all: pip==26.2.1 && \
     pip install -r requirements.txt && \
-    pip install debugpy
+    pip install --only-binary :all: debugpy==1.8.22
 
 # Apply verifier.py patch inside the venv so the container runtime has the fix
 RUN /app/venv/bin/python - <<'PY'
@@ -52,8 +73,10 @@ patch = (
     '        from datetime import timezone\n'
     '        now = datetime.now(timezone.utc)\n'
     '        # Use timezone-aware UTC datetimes and updated cryptography properties\n'
-    "        not_valid_before = getattr(x509_cert, 'not_valid_before_utc', None) or x509_cert.not_valid_before.replace(tzinfo=timezone.utc)\n"
-    "        not_valid_after = getattr(x509_cert, 'not_valid_after_utc', None) or x509_cert.not_valid_after.replace(tzinfo=timezone.utc)\n"
+    "        not_valid_before = getattr(x509_cert, 'not_valid_before_utc', None) or "
+    "x509_cert.not_valid_before.replace(tzinfo=timezone.utc)\n"
+    "        not_valid_after = getattr(x509_cert, 'not_valid_after_utc', None) or "
+    "x509_cert.not_valid_after.replace(tzinfo=timezone.utc)\n"
     '        if not (not_valid_before <= now <= not_valid_after):\n'
     '            raise VerificationException("Signing Certificate expired")'
 )
@@ -137,8 +160,6 @@ if needle in src:
 else:
     print('No patch needed for registry.py (needle not found)')
 PY
-# Install ASK CLI (v2) globally so container can run `ask configure`
-RUN npm install -g ask-cli || true
 
 # Now copy the rest of your source code (commented out for dynamic development)
 COPY app /app/src
