@@ -3,6 +3,7 @@
 import gettext
 import logging
 import os
+import re
 
 from ask_sdk.standard import StandardSkillBuilder
 from ask_sdk_core.dispatch_components import (
@@ -16,10 +17,20 @@ from ask_sdk_core.utils import is_intent_name, is_request_type
 from . import data, device_mapping, ma_control, util
 
 sb = StandardSkillBuilder()
-# sb = StandardSkillBuilder(
-#     table_name=data.jingle["db_table"], auto_create_table=True)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Repeated log-record component label, kept as a constant.
+COMPONENT_UI_WEB = "UI/Web"
+
+
+def _sanitize_log_value(value, limit=128):
+    """Strip control characters (incl. CR/LF) from user-derived log values.
+
+    Keeps request-supplied strings (device ids, command names) from forging
+    or breaking log lines (log injection).
+    """
+    return re.sub(r"[\x00-\x1f\x7f]+", "", str(value))[:limit]
 
 
 class _ComponentFilter(logging.Filter):
@@ -28,25 +39,29 @@ class _ComponentFilter(logging.Filter):
     This makes it easy to tell whether a message came from the
     API, the Alexa Skill code (Skill), or the UI/Web app.
     """
+
     def filter(self, record):
-        name = (record.name or "")
-        path = (getattr(record, 'pathname', '') or '')
-        norm_path = path.replace(os.sep, '/') if path else ''
-        if name.startswith('music_assistant_api') or name.startswith('ma_routes'):
-            record.component = 'API'
-        elif name.startswith('alexa') or name == 'lambda_function' or name.startswith('ask_sdk'):
-            record.component = 'Skill'
+        name = record.name or ""
+        path = getattr(record, "pathname", "") or ""
+        norm_path = path.replace(os.sep, "/") if path else ""
+        if name.startswith(("music_assistant_api", "ma_routes")):
+            record.component = "API"
+        elif name == "lambda_function" or name.startswith(("alexa", "ask_sdk")):
+            record.component = "Skill"
         elif norm_path:
             if "/app/skill/" in norm_path:
-                record.component = 'Skill'
-            elif "/app/music_assistant_api/" in norm_path or "/app/alexa_api/" in norm_path:
-                record.component = 'API'
+                record.component = "Skill"
+            elif (
+                "/app/music_assistant_api/" in norm_path
+                or "/app/alexa_api/" in norm_path
+            ):
+                record.component = "API"
             elif "/app/endpoints/" in norm_path or norm_path.endswith("/app.py"):
-                record.component = 'UI/Web'
+                record.component = COMPONENT_UI_WEB
             else:
-                record.component = 'UI/Web'
+                record.component = COMPONENT_UI_WEB
         else:
-            record.component = 'UI/Web'
+            record.component = COMPONENT_UI_WEB
         return True
 
 
@@ -59,39 +74,47 @@ root_logger.addFilter(_filter)
 # (e.g. werkzeug) which may emit records before filters run.
 _orig_log_record_factory = logging.getLogRecordFactory()
 
+
 def _log_record_factory(*args, **kwargs):
     record = _orig_log_record_factory(*args, **kwargs)
-    if not hasattr(record, 'component'):
-        name = (getattr(record, 'name', '') or '')
-        path = (getattr(record, 'pathname', '') or '')
-        norm_path = path.replace(os.sep, '/') if path else ''
-        if name.startswith('music_assistant_api') or name.startswith('ma_routes'):
-            record.component = 'API'
-        elif name.startswith('alexa') or name == 'lambda_function' or name.startswith('ask_sdk'):
-            record.component = 'Skill'
+    if not hasattr(record, "component"):
+        name = getattr(record, "name", "") or ""
+        path = getattr(record, "pathname", "") or ""
+        norm_path = path.replace(os.sep, "/") if path else ""
+        if name.startswith(("music_assistant_api", "ma_routes")):
+            record.component = "API"
+        elif name == "lambda_function" or name.startswith(("alexa", "ask_sdk")):
+            record.component = "Skill"
         elif norm_path:
             if "/app/skill/" in norm_path:
-                record.component = 'Skill'
-            elif "/app/music_assistant_api/" in norm_path or "/app/alexa_api/" in norm_path:
-                record.component = 'API'
+                record.component = "Skill"
+            elif (
+                "/app/music_assistant_api/" in norm_path
+                or "/app/alexa_api/" in norm_path
+            ):
+                record.component = "API"
             elif "/app/endpoints/" in norm_path or norm_path.endswith("/app.py"):
-                record.component = 'UI/Web'
+                record.component = COMPONENT_UI_WEB
             else:
-                record.component = 'UI/Web'
+                record.component = COMPONENT_UI_WEB
         else:
-            record.component = 'UI/Web'
+            record.component = COMPONENT_UI_WEB
     return record
+
 
 logging.setLogRecordFactory(_log_record_factory)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(component)s] %(name)s %(message)s",
-    datefmt="%H:%M:%S %Y-%m-%d %z"
+    datefmt="%H:%M:%S %Y-%m-%d %z",
 )
 
+
 def _supports_apl(handler_input):
-    return handler_input.attributes_manager.request_attributes.get('supports_apl', False)
+    return handler_input.attributes_manager.request_attributes.get(
+        "supports_apl", False
+    )
 
 
 def _get_stream_url(request):
@@ -100,24 +123,31 @@ def _get_stream_url(request):
     Handles multiple shapes returned by util.audio_data and never raises.
     """
     try:
-        audio = util.audio_data(request)
+        audio = util.audio_data()
     except Exception:
         audio = None
 
     url = None
     if isinstance(audio, dict):
-        url = (audio.get('url') or audio.get('audioSources') or
-               audio.get('audio_sources') or audio.get('stream') or '')
+        url = (
+            audio.get("url")
+            or audio.get("audioSources")
+            or audio.get("audio_sources")
+            or audio.get("stream")
+            or ""
+        )
     elif isinstance(audio, str):
         url = audio
 
-    if url == '':
+    if url == "":
         url = None
     return url, audio
+
 
 # ######################### INTENT HANDLERS #########################
 # This section contains handlers for the built-in intents and generic
 # request handlers like launch, session end, skill events etc.
+
 
 class CheckAudioInterfaceHandler(AbstractRequestHandler):
     """Check if device supports audio play.
@@ -126,14 +156,20 @@ class CheckAudioInterfaceHandler(AbstractRequestHandler):
     other handlers, thus making the skill respond to unsupported devices
     without doing much processing.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        if (handler_input.request_envelope.context and 
-            handler_input.request_envelope.context.system and 
-            handler_input.request_envelope.context.system.device and
-            handler_input.request_envelope.context.system.device.supported_interfaces):
+        if (
+            handler_input.request_envelope.context
+            and handler_input.request_envelope.context.system
+            and handler_input.request_envelope.context.system.device
+            and handler_input.request_envelope.context.system.device.supported_interfaces
+        ):
             # Since skill events won't have device information
-            return handler_input.request_envelope.context.system.device.supported_interfaces.audio_player is None
+            return (
+                handler_input.request_envelope.context.system.device.supported_interfaces.audio_player
+                is None
+            )
         else:
             return False
 
@@ -142,7 +178,8 @@ class CheckAudioInterfaceHandler(AbstractRequestHandler):
         logger.info("In CheckAudioInterfaceHandler")
         _ = handler_input.attributes_manager.request_attributes["_"]
         handler_input.response_builder.speak(
-            _(data.DEVICE_NOT_SUPPORTED)).set_should_end_session(True)
+            _(data.DEVICE_NOT_SUPPORTED)
+        ).set_should_end_session(True)
         return handler_input.response_builder.response
 
 
@@ -152,11 +189,12 @@ class SkillEventHandler(AbstractRequestHandler):
     Handler to handle session end or skill events (SkillEnabled,
     SkillDisabled etc.)
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (handler_input.request_envelope.request.object_type.startswith(
-            "AlexaSkillEvent") or
-                is_request_type("SessionEndedRequest")(handler_input))
+        return handler_input.request_envelope.request.object_type.startswith(
+            "AlexaSkillEvent"
+        ) or is_request_type("SessionEndedRequest")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
@@ -166,10 +204,12 @@ class SkillEventHandler(AbstractRequestHandler):
 
 class LaunchRequestOrPlayAudioHandler(AbstractRequestHandler):
     """Launch radio for skill launch or PlayAudio intent."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (is_request_type("LaunchRequest")(handler_input) or
-                is_intent_name("PlayAudio")(handler_input))
+        return is_request_type("LaunchRequest")(handler_input) or is_intent_name(
+            "PlayAudio"
+        )(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
@@ -183,7 +223,8 @@ class LaunchRequestOrPlayAudioHandler(AbstractRequestHandler):
         if not url:
             logger.warning("No streamUrl available for Launch/Play request")
             handler_input.response_builder.speak(
-                "Sorry, I could not retrieve the latest music stream from the API. Please check your setup.").set_should_end_session(True)
+                "Sorry, I could not retrieve the latest music stream from the API. Please check your setup."
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         logger.info("Playing URL: %s", url)
@@ -192,12 +233,13 @@ class LaunchRequestOrPlayAudioHandler(AbstractRequestHandler):
             offset=0,
             text=data.WELCOME_MSG,
             response_builder=handler_input.response_builder,
-            supports_apl=_supports_apl(handler_input)
+            supports_apl=_supports_apl(handler_input),
         )
 
 
 class HelpIntentHandler(AbstractRequestHandler):
     """Handler for providing help information to user."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.HelpIntent")(handler_input)
@@ -208,8 +250,8 @@ class HelpIntentHandler(AbstractRequestHandler):
         _ = handler_input.attributes_manager.request_attributes["_"]
         handler_input.response_builder.speak(
             _(data.HELP_MSG).format(
-                util.audio_data(
-                    handler_input.request_envelope.request))
+                util.audio_data()
+            )
         ).set_should_end_session(False)
         return handler_input.response_builder.response
 
@@ -223,6 +265,7 @@ class UnhandledIntentHandler(AbstractRequestHandler):
     on the fallback intent can be found here:
     https://developer.amazon.com/docs/custom-skills/standard-built-in-intents.html#fallback
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.FallbackIntent")(handler_input)
@@ -232,7 +275,8 @@ class UnhandledIntentHandler(AbstractRequestHandler):
         logger.info("In UnhandledIntentHandler")
         _ = handler_input.attributes_manager.request_attributes["_"]
         handler_input.response_builder.speak(
-            _(data.UNHANDLED_MSG)).set_should_end_session(True)
+            _(data.UNHANDLED_MSG)
+        ).set_should_end_session(True)
         return handler_input.response_builder.response
 
 
@@ -254,7 +298,11 @@ def _sync_to_ma_unless_echo(handler_input, command):
     device_id = _device_id_from(handler_input)
 
     if ma_control.is_echo_of_ma_command(device_id, command):
-        logger.info("Suppressing MA %s: echo of our own MA-triggered command for device_id=%s", command, device_id)
+        logger.info(
+            "Suppressing MA %s: echo of our own MA-triggered command for device_id=%s",
+            _sanitize_log_value(command),
+            _sanitize_log_value(device_id),
+        )
         return
 
     player_id = device_mapping.get_player_for_device(device_id)
@@ -263,7 +311,7 @@ def _sync_to_ma_unless_echo(handler_input, command):
 
     ma_control.mark_ma_triggered(device_id, command)
     if not ma_control.send_player_command(player_id, command):
-        logger.warning("Failed to sync %s to MA player %s", command, player_id)
+        logger.warning("Failed to sync %s to MA player %s", _sanitize_log_value(command), _sanitize_log_value(player_id))
 
 
 class NextOrPreviousIntentHandler(AbstractRequestHandler):
@@ -273,10 +321,12 @@ class NextOrPreviousIntentHandler(AbstractRequestHandler):
     the source of truth for what plays next in flow/radio mode. Requires
     the requesting device to be paired with an MA player_id via /devices.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (is_intent_name("AMAZON.NextIntent")(handler_input) or
-                is_intent_name("AMAZON.PreviousIntent")(handler_input))
+        return is_intent_name("AMAZON.NextIntent")(handler_input) or is_intent_name(
+            "AMAZON.PreviousIntent"
+        )(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
@@ -291,12 +341,14 @@ class NextOrPreviousIntentHandler(AbstractRequestHandler):
         if not player_id:
             logger.warning("No MA player mapped for device_id=%s", device_id)
             handler_input.response_builder.speak(
-                _(data.DEVICE_NOT_MAPPED_MSG)).set_should_end_session(True)
+                _(data.DEVICE_NOT_MAPPED_MSG)
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         if not ma_control.send_player_command(player_id, command):
             handler_input.response_builder.speak(
-                _(data.MA_COMMAND_FAILED_MSG)).set_should_end_session(True)
+                _(data.MA_COMMAND_FAILED_MSG)
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         handler_input.response_builder.set_should_end_session(True)
@@ -305,21 +357,24 @@ class NextOrPreviousIntentHandler(AbstractRequestHandler):
 
 class CancelOrStopIntentHandler(AbstractRequestHandler):
     """Handler for cancel and stop intents."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (is_intent_name("AMAZON.CancelIntent")(handler_input) or
-                is_intent_name("AMAZON.StopIntent")(handler_input))
+        return is_intent_name("AMAZON.CancelIntent")(handler_input) or is_intent_name(
+            "AMAZON.StopIntent"
+        )(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In CancelOrStopIntentHandler")
         _ = handler_input.attributes_manager.request_attributes["_"]
         _sync_to_ma_unless_echo(handler_input, "stop")
-        return util.stop(_(data.STOP_MSG), handler_input.response_builder, supports_apl=_supports_apl(handler_input))
+        return util.stop(_(data.STOP_MSG), handler_input.response_builder)
 
 
 class PauseIntentHandler(AbstractRequestHandler):
     """Handler for AMAZON.PauseIntent."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.PauseIntent")(handler_input)
@@ -329,19 +384,22 @@ class PauseIntentHandler(AbstractRequestHandler):
         logger.info("In PauseIntentHandler")
         _ = handler_input.attributes_manager.request_attributes["_"]
         session_new = False
-        if getattr(handler_input.request_envelope, 'session', None):
+        if getattr(handler_input.request_envelope, "session", None):
             session_new = bool(handler_input.request_envelope.session.new)
 
         _sync_to_ma_unless_echo(handler_input, "pause")
 
-        return util.pause(text=None,
-                  response_builder=handler_input.response_builder,
-                  supports_apl=_supports_apl(handler_input),
-                  session_new=session_new)
+        return util.pause(
+            text=None,
+            response_builder=handler_input.response_builder,
+            supports_apl=_supports_apl(handler_input),
+            session_new=session_new,
+        )
 
 
 class ResumeIntentHandler(AbstractRequestHandler):
     """Handler for resume intent."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.ResumeIntent")(handler_input)
@@ -358,7 +416,8 @@ class ResumeIntentHandler(AbstractRequestHandler):
         if not url:
             logger.warning("No stream url available for Resume request")
             handler_input.response_builder.speak(
-                "Sorry, I couldn't reach the stream right now.").set_should_end_session(True)
+                "Sorry, I couldn't reach the stream right now."
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         offset = util.get_resume_offset(_device_id_from(handler_input), url)
@@ -368,7 +427,7 @@ class ResumeIntentHandler(AbstractRequestHandler):
             offset=offset,
             text=data.WELCOME_MSG,
             response_builder=handler_input.response_builder,
-            supports_apl=_supports_apl(handler_input)
+            supports_apl=_supports_apl(handler_input),
         )
 
 
@@ -378,6 +437,7 @@ class StartOverIntentHandler(AbstractRequestHandler):
     Routed to Music Assistant, same as Next/Previous. Distinct from
     Previous, which skips to the prior track.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.StartOverIntent")(handler_input)
@@ -392,12 +452,14 @@ class StartOverIntentHandler(AbstractRequestHandler):
         if not player_id:
             logger.warning("No MA player mapped for device_id=%s", device_id)
             handler_input.response_builder.speak(
-                _(data.DEVICE_NOT_MAPPED_MSG)).set_should_end_session(True)
+                _(data.DEVICE_NOT_MAPPED_MSG)
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         if not ma_control.send_player_command(player_id, "start_over"):
             handler_input.response_builder.speak(
-                _(data.MA_COMMAND_FAILED_MSG)).set_should_end_session(True)
+                _(data.MA_COMMAND_FAILED_MSG)
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         handler_input.response_builder.set_should_end_session(True)
@@ -406,12 +468,15 @@ class StartOverIntentHandler(AbstractRequestHandler):
 
 class LoopOrShuffleIntentHandler(AbstractRequestHandler):
     """Handler for loop on/off, shuffle on/off intent."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (is_intent_name("AMAZON.LoopOnIntent")(handler_input) or
-                is_intent_name("AMAZON.LoopOffIntent")(handler_input) or
-                is_intent_name("AMAZON.ShuffleOnIntent")(handler_input) or
-                is_intent_name("AMAZON.ShuffleOffIntent")(handler_input))
+        return (
+            is_intent_name("AMAZON.LoopOnIntent")(handler_input)
+            or is_intent_name("AMAZON.LoopOffIntent")(handler_input)
+            or is_intent_name("AMAZON.ShuffleOnIntent")(handler_input)
+            or is_intent_name("AMAZON.ShuffleOffIntent")(handler_input)
+        )
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
@@ -421,10 +486,12 @@ class LoopOrShuffleIntentHandler(AbstractRequestHandler):
         speech = _(data.NOT_POSSIBLE_MSG)
         return handler_input.response_builder.speak(speech).response
 
+
 # ###################################################################
 
 # ########## AUDIOPLAYER INTERFACE HANDLERS #########################
 # This section contains handlers related to Audioplayer interface
+
 
 class PlaybackStartedHandler(AbstractRequestHandler):
     """AudioPlayer.PlaybackStarted Directive received.
@@ -432,6 +499,7 @@ class PlaybackStartedHandler(AbstractRequestHandler):
     Confirming that the requested audio file began playing.
     Do not send any specific response.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_request_type("AudioPlayer.PlaybackStarted")(handler_input)
@@ -442,12 +510,14 @@ class PlaybackStartedHandler(AbstractRequestHandler):
         logger.info("Playback started")
         return handler_input.response_builder.response
 
+
 class PlaybackFinishedHandler(AbstractRequestHandler):
     """AudioPlayer.PlaybackFinished Directive received.
 
     Confirming that the requested audio file completed playing.
     Do not send any specific response.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_request_type("AudioPlayer.PlaybackFinished")(handler_input)
@@ -465,6 +535,7 @@ class PlaybackStoppedHandler(AbstractRequestHandler):
     Confirming that the requested audio file stopped playing.
     Do not send any specific response.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_request_type("AudioPlayer.PlaybackStopped")(handler_input)
@@ -477,8 +548,9 @@ class PlaybackStoppedHandler(AbstractRequestHandler):
             request = handler_input.request_envelope.request
             util.record_stopped_position(
                 _device_id_from(handler_input),
-                getattr(request, 'token', None),
-                getattr(request, 'offset_in_milliseconds', None))
+                getattr(request, "token", None),
+                getattr(request, "offset_in_milliseconds", None),
+            )
         except Exception:
             logger.exception("Failed to record stopped playback position")
         return handler_input.response_builder.response
@@ -489,6 +561,7 @@ class PlaybackNearlyFinishedHandler(AbstractRequestHandler):
 
     Replacing queue with the URL again. This should not happen on live streams.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_request_type("AudioPlayer.PlaybackNearlyFinished")(handler_input)
@@ -507,6 +580,7 @@ class PlaybackFailedHandler(AbstractRequestHandler):
 
     Logging the error and restarting playing with no output speech and card.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_request_type("AudioPlayer.PlaybackFailed")(handler_input)
@@ -524,6 +598,7 @@ class ExceptionEncounteredHandler(AbstractRequestHandler):
     """Handler to handle exceptions from responses sent by AudioPlayer
     request.
     """
+
     def can_handle(self, handler_input):
         # type; (HandlerInput) -> bool
         return is_request_type("System.ExceptionEncountered")(handler_input)
@@ -534,10 +609,12 @@ class ExceptionEncounteredHandler(AbstractRequestHandler):
         logger.info(handler_input.request_envelope)
         return handler_input.response_builder.response
 
+
 # ###################################################################
 
 # ########## APL INTERFACE HANDLERS #################################
 # This section contains handlers related to APL interface
+
 
 class APLUserEventHandler(AbstractRequestHandler):
     """Handler for APL UserEvent requests.
@@ -547,6 +624,7 @@ class APLUserEventHandler(AbstractRequestHandler):
     this handler fetches the latest metadata from Music Assistant and sends
     an updated APL document to refresh the display.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         if not is_request_type("Alexa.Presentation.APL.UserEvent")(handler_input):
@@ -555,10 +633,10 @@ class APLUserEventHandler(AbstractRequestHandler):
         # Check if this is a metadata refresh event
         request = handler_input.request_envelope.request
         try:
-            arguments = getattr(request, 'arguments', [])
+            arguments = getattr(request, "arguments", [])
             if arguments and len(arguments) > 0:
                 event_type = arguments[0]
-                return event_type == 'MetadataRefresh'
+                return event_type == "MetadataRefresh"
         except Exception:
             pass
         return False
@@ -570,7 +648,7 @@ class APLUserEventHandler(AbstractRequestHandler):
         changed = False
         try:
             result = data.get_latest()
-            changed = bool(result and result.get('changed'))
+            changed = bool(result and result.get("changed"))
             if changed:
                 logger.info("Metadata changed")
             else:
@@ -579,7 +657,7 @@ class APLUserEventHandler(AbstractRequestHandler):
             logger.exception("Failed to fetch latest metadata")
 
         # Check if we have valid metadata
-        if not data.get_info().get('audioSources'):
+        if not data.get_info().get("audioSources"):
             logger.warning("No audio sources available for metadata refresh")
         else:
             # Send updated APL document with new metadata
@@ -599,11 +677,13 @@ class APLUserEventHandler(AbstractRequestHandler):
         # Explicitly keep session open to allow continued UserEvents
         return handler_input.response_builder.set_should_end_session(False).response
 
+
 # ###################################################################
 
 # ########## PLAYBACK CONTROLLER INTERFACE HANDLERS #################
 # This section contains handlers related to Playback Controller interface
 # https://developer.amazon.com/docs/custom-skills/playback-controller-interface-reference.html#requests
+
 
 class PlayCommandHandler(AbstractRequestHandler):
     """Handler for Play command from hardware buttons or touch control.
@@ -611,10 +691,10 @@ class PlayCommandHandler(AbstractRequestHandler):
     This handler handles the play command sent through hardware buttons such
     as remote control or the play control from Alexa-devices with a screen.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return is_request_type(
-            "PlaybackController.PlayCommandIssued")(handler_input)
+        return is_request_type("PlaybackController.PlayCommandIssued")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
@@ -625,7 +705,8 @@ class PlayCommandHandler(AbstractRequestHandler):
         if not url:
             logger.warning("No stream url available for PlayCommand; notifying user")
             handler_input.response_builder.speak(
-                "Sorry, I couldn't reach the stream right now.").set_should_end_session(True)
+                "Sorry, I couldn't reach the stream right now."
+            ).set_should_end_session(True)
             return handler_input.response_builder.response
 
         return util.play(
@@ -633,7 +714,7 @@ class PlayCommandHandler(AbstractRequestHandler):
             offset=0,
             text=None,
             response_builder=handler_input.response_builder,
-            supports_apl=_supports_apl(handler_input)
+            supports_apl=_supports_apl(handler_input),
         )
 
 
@@ -645,12 +726,12 @@ class NextOrPreviousCommandHandler(AbstractRequestHandler):
     buttons such as remote control or the next/previous control from
     Alexa-devices with a screen.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (is_request_type(
-            "PlaybackController.NextCommandIssued")(handler_input) or
-                is_request_type(
-                    "PlaybackController.PreviousCommandIssued")(handler_input))
+        return is_request_type("PlaybackController.NextCommandIssued")(
+            handler_input
+        ) or is_request_type("PlaybackController.PreviousCommandIssued")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
@@ -663,7 +744,9 @@ class NextOrPreviousCommandHandler(AbstractRequestHandler):
         if player_id:
             ma_control.send_player_command(player_id, command)
         else:
-            logger.warning("No MA player mapped for device_id=%s (hardware command)", device_id)
+            logger.warning(
+                "No MA player mapped for device_id=%s (hardware command)", device_id
+            )
 
         return handler_input.response_builder.response
 
@@ -675,25 +758,26 @@ class PauseCommandHandler(AbstractRequestHandler):
     buttons such as remote control or the pause control from
     Alexa-devices with a screen.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return is_request_type("PlaybackController.PauseCommandIssued")(
-            handler_input)
+        return is_request_type("PlaybackController.PauseCommandIssued")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In PauseCommandHandler")
-        return util.stop(text=None,
-                         response_builder=handler_input.response_builder,
-                         supports_apl=_supports_apl(handler_input))
+        return util.stop(text=None, response_builder=handler_input.response_builder)
+
 
 # ###################################################################
+
 
 # ################## EXCEPTION HANDLERS #############################
 class CatchAllExceptionHandler(AbstractExceptionHandler):
     """Catch all exception handler, log exception and
     respond with custom message.
     """
+
     def can_handle(self, handler_input, exception):
         # type: (HandlerInput, Exception) -> bool
         return True
@@ -705,45 +789,52 @@ class CatchAllExceptionHandler(AbstractExceptionHandler):
         _ = handler_input.attributes_manager.request_attributes["_"]
         handler_input.response_builder.speak(_(data.UNHANDLED_MSG)).ask(
             _(data.HELP_MSG).format(
-                util.audio_data(handler_input.request_envelope.request)))
+                util.audio_data()
+            )
+        )
 
         return handler_input.response_builder.response
+
 
 # ###################################################################
 
 # ############# REQUEST / RESPONSE INTERCEPTORS #####################
 
+
 class APLSupportRequestInterceptor(AbstractRequestInterceptor):
     """Capture metadata and device capabilities independently for each request."""
+
     def process(self, handler_input):
         data.begin_request()
-        context = getattr(handler_input.request_envelope, 'context', None)
-        system = getattr(context, 'system', None)
-        device = getattr(system, 'device', None)
-        interfaces = getattr(device, 'supported_interfaces', None)
-        handler_input.attributes_manager.request_attributes['supports_apl'] = (
-            getattr(interfaces, 'alexa_presentation_apl', None) is not None)
+        context = getattr(handler_input.request_envelope, "context", None)
+        system = getattr(context, "system", None)
+        device = getattr(system, "device", None)
+        interfaces = getattr(device, "supported_interfaces", None)
+        handler_input.attributes_manager.request_attributes["supports_apl"] = (
+            getattr(interfaces, "alexa_presentation_apl", None) is not None
+        )
 
 
 class RequestLogger(AbstractRequestInterceptor):
     """Log the alexa requests."""
+
     def process(self, handler_input):
         # type: (HandlerInput) -> None
         request = handler_input.request_envelope.request
         try:
-            req_type = getattr(request, 'object_type', type(request).__name__)
+            req_type = getattr(request, "object_type", type(request).__name__)
             # Skip noisy APL UserEvent logs.
             if req_type == "Alexa.Presentation.APL.UserEvent":
                 return
 
             # If this is an IntentRequest, log intent name and slots
-            if hasattr(request, 'intent') and request.intent:
-                intent_name = getattr(request.intent, 'name', None)
+            if hasattr(request, "intent") and request.intent:
+                intent_name = getattr(request.intent, "name", None)
                 slots = {}
-                intent_slots = getattr(request.intent, 'slots', None)
+                intent_slots = getattr(request.intent, "slots", None)
                 if intent_slots:
                     for slot_key, slot_obj in intent_slots.items():
-                        slots[slot_key] = getattr(slot_obj, 'value', None)
+                        slots[slot_key] = getattr(slot_obj, "value", None)
 
                 logger.info("Incoming Intent: %s - Slots: %s", intent_name, slots)
             else:
@@ -762,9 +853,10 @@ class LocalizationInterceptor(AbstractRequestInterceptor):
     specific localization strings for the function `_`, that is used during
     responses.
     """
+
     def process(self, handler_input):
         # type: (HandlerInput) -> None
-        locale = getattr(handler_input.request_envelope.request, 'locale', None)
+        locale = getattr(handler_input.request_envelope.request, "locale", None)
         if locale:
             parts = locale.split("-")
             lang = parts[0]
@@ -781,20 +873,20 @@ class LocalizationInterceptor(AbstractRequestInterceptor):
             locale_file_name = mapping.get(lang, locale)
 
             i18n = gettext.translation(
-                'data', localedir='locales', languages=[locale_file_name],
-                fallback=True)
-            handler_input.attributes_manager.request_attributes[
-                "_"] = i18n.gettext
+                "data", localedir="locales", languages=[locale_file_name], fallback=True
+            )
+            handler_input.attributes_manager.request_attributes["_"] = i18n.gettext
         else:
-            handler_input.attributes_manager.request_attributes[
-                "_"] = gettext.gettext
+            handler_input.attributes_manager.request_attributes["_"] = gettext.gettext
 
 
 class ResponseLogger(AbstractResponseInterceptor):
     """Log the alexa responses."""
+
     def process(self, handler_input, response):
         # type: (HandlerInput, Response) -> None
         logger.debug("Alexa Response: {}".format(response))
+
 
 # ###################################################################
 

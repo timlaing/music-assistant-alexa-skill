@@ -52,8 +52,9 @@ def test_signature_valid_and_tampered_body(monkeypatch):
 
 def test_expired_certificate_rejected():
     _, cert = certificate(expired=True)
+    verifier = RequestVerifier()
     with pytest.raises(VerificationException):
-        RequestVerifier()._validate_end_certificate(cert)
+        verifier._validate_end_certificate(cert)
 
 
 @pytest.mark.parametrize(
@@ -65,5 +66,6 @@ def test_expired_certificate_rejected():
     ],
 )
 def test_untrusted_certificate_url_rejected(url):
+    verifier = RequestVerifier()
     with pytest.raises(VerificationException):
-        RequestVerifier()._validate_certificate_url(url)
+        verifier._validate_certificate_url(url)

@@ -52,7 +52,8 @@ def test_skill_probe_checks_service_health_and_proxy_prefix():
 )
 def test_network_errors_reported_without_exception_text(error, message):
     result = probe("Skill", "https://example.com/", "skill", Session(error))
-    assert result["status"] == "failed" and message in result["message"]
+    assert result["status"] == "failed"
+    assert message in result["message"]
 
 
 def test_wrong_route_and_audio_failure_are_not_green():
@@ -114,7 +115,8 @@ def test_checks_cached_and_status_does_not_block(monkeypatch):
     checker.snapshot()
     checker.thread.join(2)
     result = checker.snapshot()
-    assert result["checked_at"] and len(result["checks"]) == 2
+    assert result["checked_at"]
+    assert len(result["checks"]) == 2
     old_thread = checker.thread
     checker.snapshot()
     assert checker.thread is old_thread
@@ -131,7 +133,8 @@ def test_status_html_preserves_markup_and_escapes_values():
         }
     )
     assert '<div class="muted">' in rendered
-    assert "&lt;script&gt;" in rendered and "&lt;img" in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "&lt;img" in rendered
     assert "&lt;div" not in rendered
 
 

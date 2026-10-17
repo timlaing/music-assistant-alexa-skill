@@ -169,7 +169,7 @@ def simulator_send():
         if not raw:
             return jsonify({'error': 'SKILL_HOSTNAME not configured'}), 400
         # normalize scheme
-        if raw.startswith('http://') or raw.startswith('https://'):
+        if raw.startswith(('http://', 'https://')):
             parsed = urllib.parse.urlparse(raw)
             scheme = parsed.scheme
             host = parsed.hostname

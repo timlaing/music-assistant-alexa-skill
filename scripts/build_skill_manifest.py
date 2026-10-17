@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 import sys,json,os
+from pathlib import Path
 
 if len(sys.argv) < 3:
     print('usage: build_skill_manifest.py <infile> <outfile> [endpoint] [locale]')
     sys.exit(2)
 
-infile = sys.argv[1]
-outfile = sys.argv[2]
+# Only read an existing .json template and write to a .json output path, so a
+# stray argument can never redirect either side of the copy (path traversal).
+infile_path = Path(sys.argv[1]).resolve()
+if infile_path.suffix != '.json' or not infile_path.is_file():
+    print(f'ERROR: input manifest not found: {infile_path}', file=sys.stderr)
+    sys.exit(2)
+outfile_path = Path(sys.argv[2]).resolve()
+if outfile_path.suffix != '.json' or not outfile_path.parent.is_dir():
+    print(f'ERROR: output manifest path is not a .json file in an existing directory: {outfile_path}', file=sys.stderr)
+    sys.exit(2)
+infile = str(infile_path)
+outfile = str(outfile_path)
 endpoint = sys.argv[3] if len(sys.argv) > 3 else ''
 target_locale = sys.argv[4] if len(sys.argv) > 4 else ''
 

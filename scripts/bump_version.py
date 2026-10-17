@@ -35,7 +35,7 @@ def write_version(v: str):
 
 def bump_version_string(v: str) -> str:
     # Match numeric semver start: major.minor.patch and optional suffix
-    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", v)
+    m = re.match(r"^(\d{1,10})\.(\d{1,10})\.(\d{1,10})(.*)$", v)
     if not m:
         raise SystemExit(f"Unrecognized VERSION format: '{v}'")
     major, minor, patch, suffix = m.groups()

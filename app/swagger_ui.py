@@ -1,6 +1,8 @@
 from flask import Response, request, jsonify, render_template_string
 from typing import Dict, Any
 
+JSON_MIME = "application/json"
+
 
 OPENAPI_SPEC: Dict[str, Any] = {
     "openapi": "3.0.0",
@@ -12,7 +14,7 @@ OPENAPI_SPEC: Dict[str, Any] = {
                 "requestBody": {
                     "required": True,
                     "content": {
-                        "application/json": {
+                        JSON_MIME: {
                             "schema": {
                                 "type": "object",
                                 "properties": {
@@ -47,7 +49,7 @@ OPENAPI_SPEC: Dict[str, Any] = {
                     "200": {
                         "description": "ok",
                         "content": {
-                            "application/json": {
+                            JSON_MIME: {
                                 "schema": {"type": "object"},
                                 "example": {
                                     "streamUrl": "https://example.com/stream.mp3",
@@ -70,7 +72,7 @@ OPENAPI_SPEC: Dict[str, Any] = {
                 "requestBody": {
                     "required": True,
                     "content": {
-                        "application/json": {
+                        JSON_MIME: {
                             "schema": {"type": "object"},
                             "example": {
                                 "version": "1.0",
@@ -95,7 +97,7 @@ OPENAPI_SPEC: Dict[str, Any] = {
                     "200": {
                         "description": "Skill response",
                         "content": {
-                            "application/json": {
+                            JSON_MIME: {
                                 "schema": {"type": "object"},
                                 "example": {
                                     "version": "1.0",

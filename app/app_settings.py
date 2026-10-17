@@ -50,7 +50,7 @@ def validate_certificate(value):
         raise SettingsError("Upload one public PEM certificate, without a private key.")
     try:
         x509.load_pem_x509_certificate(value.encode("ascii"))
-    except (ValueError, UnicodeError) as exc:
+    except ValueError as exc:
         raise SettingsError("The file is not a valid public PEM certificate.") from exc
     return value
 

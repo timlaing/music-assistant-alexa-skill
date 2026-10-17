@@ -162,7 +162,7 @@ def unpack_package(content):
                 files[member.filename] = archive.read(member)
     except (zipfile.BadZipFile, RuntimeError) as exc:
         raise DeploymentError("Amazon returned an unreadable skill package.") from exc
-    manifests = [key for key in files if PurePosixPath(key).name == "skill.json"]
+    manifests = [key for key in files if PurePosixPath(key).name == SKILL_JSON_NAME]
     if len(manifests) != 1:
         raise DeploymentError("The skill package must contain exactly one skill.json.")
     return files, manifests[0]
@@ -174,10 +174,12 @@ ICON_URLS = {
 }
 ICON_SIZES = (("smallIconUri", "small"), ("largeIconUri", "large"))
 ICON_ASSET_MARKER = "assets/images/"
+SKILL_JSON_NAME = "skill.json"
+SETUP_PATH = "/setup"
 
 
 def normalize_icons(document):
-    """Canonicalize icon URIs that Amazon materializes during import.
+    """Canonicalize icon URIs that Amazon materializes during import, in place.
 
     A real export cycle, verified against production, shows Amazon downloading
     the manifest's icon URLs, storing the artwork as
@@ -192,7 +194,7 @@ def normalize_icons(document):
         document.get("manifest", {}).get("publishingInformation", {}).get("locales", {})
     )
     if not isinstance(locales, dict):
-        return document
+        return
     for locale, entry in locales.items():
         if not isinstance(entry, dict):
             continue
@@ -201,7 +203,6 @@ def normalize_icons(document):
             materialized = f"file://assets/images/{locale}_{size}IconUri.png"
             if value in (ICON_URLS[size], materialized):
                 entry[key] = f"ma-icon:{size}"
-    return document
 
 
 def canonical_json(content):
@@ -211,9 +212,9 @@ def canonical_json(content):
     differences identically: whitespace, key order and Amazon's icon
     materialization are never differences.
     """
-    return json.dumps(
-        normalize_icons(json.loads(content)), sort_keys=True, separators=(",", ":")
-    ).encode()
+    document = json.loads(content)
+    normalize_icons(document)
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
 
 
 def package_fingerprint(files):
@@ -267,10 +268,11 @@ def package_mismatch(approved, actual):
             try:
                 if canonical_json(approved[name]) == canonical_json(actual[name]):
                     continue  # only formatting or materialized icons differ
-                differences = _json_diff(
-                    normalize_icons(json.loads(approved[name])),
-                    normalize_icons(json.loads(actual[name])),
-                )
+                left = json.loads(approved[name])
+                right = json.loads(actual[name])
+                normalize_icons(left)
+                normalize_icons(right)
+                differences = _json_diff(left, right)
             except (ValueError, TypeError):
                 differences = []
             report[name] = differences or ["file bytes differ"]
@@ -294,7 +296,7 @@ def store_icon_assets(approved, actual):
         if ICON_ASSET_MARKER in name and approved.get(name) != content:
             approved[name] = content
             stored.append(name)
-    for name in list(approved):
+    for name in sorted(approved):
         if ICON_ASSET_MARKER in name and name not in actual:
             del approved[name]
             stored.append(name)
@@ -316,7 +318,7 @@ def configure_package(files, manifest_path, config, existing):
     locale = config["locale"]
     locales = pub.setdefault("locales", {})
     if locale not in locales:
-        template = json.loads((APP_DIR / "skill.json").read_text())["manifest"][
+        template = json.loads((APP_DIR / SKILL_JSON_NAME).read_text())["manifest"][
             "publishingInformation"
         ]["locales"]
         # A bundled model can outpace the template's publishing entries; fall
@@ -781,7 +783,7 @@ class DeploymentManager:
                 raise DeploymentError(
                     "A skill is already saved or creation is uncertain. Select the existing skill by ID; automatic creation is blocked to prevent duplicates."
                 )
-            files = {"skill-package/skill.json": (APP_DIR / "skill.json").read_bytes()}
+            files = {f"skill-package/{SKILL_JSON_NAME}": (APP_DIR / SKILL_JSON_NAME).read_bytes()}
             manifest_path, baseline = "skill-package/skill.json", None
         else:
             if not any(item["id"] == skill for item in available):
@@ -1195,11 +1197,11 @@ def register_setup(app):
     def error(exc):
         return jsonify(error=str(exc)), 400
 
-    @blueprint.route("/setup")
+    @blueprint.route("/setup", methods=["GET"])
     def page():
         return render_template("setup.html")
 
-    @blueprint.route("/setup/status")
+    @blueprint.route("/setup/status", methods=["GET"])
     def status():
         response = jsonify(
             **manager().public_status(),
@@ -1217,7 +1219,7 @@ def register_setup(app):
             httponly=True,
             secure=request.is_secure,
             samesite="Strict",
-            path=request.script_root + "/setup",
+            path=request.script_root + SETUP_PATH,
         )
         return response
 
@@ -1267,12 +1269,12 @@ def register_setup(app):
             secure=request.is_secure,
             httponly=True,
             samesite="Lax",
-            path=request.script_root + "/setup",
+            path=request.script_root + SETUP_PATH,
         )
         return response
 
-    @blueprint.route("/ma-alexa-skill/setup/oauth/callback")
-    @blueprint.route("/setup/oauth/callback")
+    @blueprint.route("/ma-alexa-skill/setup/oauth/callback", methods=["GET"])
+    @blueprint.route("/setup/oauth/callback", methods=["GET"])
     def callback():
         manager().accept_callback(
             request.args.get("state", ""), request.args.get("code", "")
@@ -1286,14 +1288,14 @@ def register_setup(app):
     def finish_authorization():
         manager().complete_authorization(request.cookies.get("setup_oauth", ""))
         response = jsonify(status="connected")
-        response.delete_cookie("setup_oauth", path=request.script_root + "/setup")
+        response.delete_cookie("setup_oauth", path=request.script_root + SETUP_PATH)
         return response
 
-    @blueprint.route("/setup/accounts")
+    @blueprint.route("/setup/accounts", methods=["GET"])
     def accounts():
         return jsonify(vendors=manager().accounts())
 
-    @blueprint.route("/setup/skills")
+    @blueprint.route("/setup/skills", methods=["GET"])
     def skills():
         return jsonify(skills=manager().skills(request.args.get("vendor", "")))
 

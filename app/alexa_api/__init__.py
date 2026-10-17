@@ -20,9 +20,9 @@ def _ensure_logging_configured():
     class _ComponentFilter(logging.Filter):
         def filter(self, record):
             name = (record.name or "")
-            if name.startswith('music_assistant_api') or name.startswith('ma_routes'):
+            if name.startswith(('music_assistant_api', 'ma_routes')):
                 record.component = 'API'
-            elif name.startswith('skill') or name == 'lambda_function' or name.startswith('ask_sdk'):
+            elif name == 'lambda_function' or name.startswith(('skill', 'ask_sdk')):
                 record.component = 'Skill'
             else:
                 record.component = 'UI/Web'

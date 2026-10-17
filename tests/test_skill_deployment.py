@@ -493,8 +493,9 @@ def test_setup_requires_credentials_outside_ingress(deployment, client, monkeypa
 
 def test_zip_path_traversal_and_storage_redirects_rejected(deployment):
     manager, _ = deployment
+    traversal_package = pack({"../skill.json": b"{}"})
     with pytest.raises(DeploymentError, match="unsafe"):
-        unpack_package(pack({"../skill.json": b"{}"}))
+        unpack_package(traversal_package)
     for url in [
         "http://bucket.s3.amazonaws.com/file",
         "https://localhost/file",
@@ -1192,14 +1193,18 @@ def test_owner_reconciliation_records_terminal_result_before_clearing(
     saved = json.loads(manager.path.read_text())
     assert saved["import_unknown"] is False
     record = saved["import_reconciliations"][-1]
-    assert (
-        record["result"] == result and record["source"] == "owner_confirmed_with_amazon"
-    )
-    assert record["attempt_id"] == "pending-attempt" and record["skill_id"] == SKILL
-    assert record["vendor_id"] == "vendor" and record["recorded_at"] > 0
+    assert record["result"] == result
+    assert record["source"] == "owner_confirmed_with_amazon"
+    assert record["attempt_id"] == "pending-attempt"
+    assert record["skill_id"] == SKILL
+    assert record["vendor_id"] == "vendor"
+    assert record["recorded_at"] > 0
     assert record["reference"] == payload["reference"]
-    assert saved["phase"] == "reconciled" and saved["verified_at"] is None
-    assert saved["review"] is None and amazon.created == 0 and not amazon.imported
+    assert saved["phase"] == "reconciled"
+    assert saved["verified_at"] is None
+    assert saved["review"] is None
+    assert amazon.created == 0
+    assert not amazon.imported
     manager.prepare("vendor", SKILL, False)
     assert manager.state["phase"] == "ready"
 

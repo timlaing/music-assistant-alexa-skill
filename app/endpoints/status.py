@@ -12,6 +12,11 @@ from skill_deployment import DeploymentError, manager, settings
 
 status_bp = Blueprint('status_bp', __name__)
 
+# Repeated display fragments kept as constants.
+TESTING_ENABLED = 'testing enabled'
+TESTING_DISABLED = 'testing not enabled'
+NO_RECENT_INVOCATIONS_HTML = '<span class="muted">No recent invocations</span>'
+
 
 def _build_status_json():
     skill_html = '<span class="led green"></span> Skill running'
@@ -52,7 +57,7 @@ def _build_status_json():
                     mf_out = mf.stdout or mf.stderr or ''
                     mm = re.search(r'https?://[^"\s\)\]]+', mf_out)
                     try:
-                        if skill_host.startswith('http://') or skill_host.startswith('https://'):
+                        if skill_host.startswith(('http://', 'https://')):
                             cfg_host = urllib.parse.urlparse(skill_host).netloc
                         else:
                             cfg_host = skill_host
@@ -75,7 +80,7 @@ def _build_status_json():
 
                     is_green = False
                     if not mm:
-                        testing_msg = 'testing enabled' if testing_enabled else 'testing not enabled'
+                        testing_msg = TESTING_ENABLED if testing_enabled else TESTING_DISABLED
                         skill_ask_html = f'<span class="led yellow"></span> Music Assistant Skill interaction model {escape(sid)} found; endpoint not set ({testing_msg})'
                     else:
                         uri = mm.group(0)
@@ -110,10 +115,10 @@ def _build_status_json():
                                 else:
                                     skill_ask_html = f'<span class="led yellow"></span> Music Assistant Skill interaction model found and endpoint matches ({escape(manifest_host)}); testing NOT enabled'
                             else:
-                                testing_note = 'testing enabled' if testing_enabled else 'testing not enabled'
+                                testing_note = TESTING_ENABLED if testing_enabled else TESTING_DISABLED
                                 skill_ask_html = f'<span class="led red"></span> Music Assistant Skill interaction model endpoint mismatch (manifest: {escape(manifest_host)} vs configured: {escape(cfg_host)}); {testing_note}'
                         except Exception:
-                            testing_msg = 'testing enabled' if testing_enabled else 'testing not enabled'
+                            testing_msg = TESTING_ENABLED if testing_enabled else TESTING_DISABLED
                             skill_ask_html = f'<span class="led yellow"></span> Music Assistant Skill interaction model found; endpoint parse failed ({testing_msg})'
 
                     try:
@@ -160,7 +165,7 @@ def _build_status_json():
     if count:
         invocations_html = f'<a href="/invocations" target="_blank" rel="noopener noreferrer">View {count} invocations</a>'
     else:
-        invocations_html = '<span class="muted">No recent invocations</span>'
+        invocations_html = NO_RECENT_INVOCATIONS_HTML
 
     return {'skill_html': skill_html, 'skill_ask_html': skill_ask_html, 'ma_api_html': ma_api_html, 'alexa_api_html': alexa_api_html, 'metadata_html': metadata_html, 'invocations_html': invocations_html, 'created': False}
 
@@ -172,12 +177,12 @@ def _store_html(payload, label):
     return f'<span class="led green"></span> {label} ready<pre>{preview}</pre>'
 
 
-def _compute_ma_api_html(api_user=None, api_pass=None):
+def _compute_ma_api_html():
     import shared_store
     return _store_html(shared_store.get_ma(), 'Music Assistant API')
 
 
-def _compute_alexa_api_html(api_user=None, api_pass=None):
+def _compute_alexa_api_html():
     import shared_store
     return _store_html(shared_store.get_alexa(), 'Alexa API')
 
@@ -255,7 +260,7 @@ def status():
         if count:
             invocations_html = f'<a href="/invocations" target="_blank" rel="noopener noreferrer">View {count} invocations</a>'
         else:
-            invocations_html = '<span class="muted">No recent invocations</span>'
+            invocations_html = NO_RECENT_INVOCATIONS_HTML
         tpl = tpl.replace('__INVOCATIONS_HTML__', invocations_html)
         return Response(tpl, status=200, mimetype='text/html')
     except Exception:
@@ -293,7 +298,7 @@ def status_invocations():
     if count:
         invocations_html = f'<a href="/invocations" target="_blank" rel="noopener noreferrer">View {count} invocations</a>'
     else:
-        invocations_html = '<span class="muted">No recent invocations</span>'
+        invocations_html = NO_RECENT_INVOCATIONS_HTML
     return jsonify({'count': count, 'invocations_html': invocations_html})
 
 

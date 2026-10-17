@@ -16,7 +16,7 @@ def _forward_signal_to_proc(proc, sig):
         pass
 
 
-def _shutdown_children(get_procs, signum, frame):
+def _shutdown_children(get_procs, signum, _frame):
     try:
         procs_info = get_procs() or {}
         for name in ('_setup_auth_proc', '_setup_proc'):

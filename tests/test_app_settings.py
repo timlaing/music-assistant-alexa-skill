@@ -145,10 +145,8 @@ def test_ingress_save_changes_runtime_auth_deployment_and_callback(client, monke
         response.json["callback_url"]
         == "https://new.example.com/ma-alexa-skill/setup/oauth/callback"
     )
-    assert (
-        "new-password" not in response.text
-        and "lwa_client_secret" not in response.json["values"]
-    )
+    assert "new-password" not in response.text
+    assert "lwa_client_secret" not in response.json["values"]
     assert (
         client.get("/alexa/intents", auth=("test-user", "test-password")).status_code
         == 401

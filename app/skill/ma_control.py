@@ -83,8 +83,10 @@ async def _play_relative_index(client, player_id, offset):
 
 
 async def _send_command(server_url, token, player_id, command):
-    async with aiohttp.ClientSession() as session:
-        async with MusicAssistantClient(server_url, session, token=token) as client:
+    async with (
+        aiohttp.ClientSession() as session,
+        MusicAssistantClient(server_url, session, token=token) as client,
+    ):
             if command == "next":
                 await client.players.next_track(player_id)
             elif command == "previous":
@@ -124,10 +126,10 @@ def send_player_command(player_id, command):
         asyncio.run(_send_command(server_url, token, player_id, command))
         return True
     except (CannotConnect, ConnectionFailed, InvalidServerVersion) as e:
-        logger.error("Could not connect to Music Assistant at %s: %s", server_url, e)
+        logger.exception("Could not connect to Music Assistant at %s: %s", server_url, e)
         return False
     except MusicAssistantError as e:
-        logger.error("Music Assistant rejected %s command for player %s: %s", command, player_id, e)
+        logger.exception("Music Assistant rejected %s command for player %s: %s", command, player_id, e)
         return False
     except Exception:
         logger.exception("Unexpected error sending %s command to MA player %s", command, player_id)

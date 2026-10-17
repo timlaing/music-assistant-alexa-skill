@@ -67,7 +67,7 @@ def replace_ip_in_url(url, hostname):
     from public_urls import rewrite_url
     return rewrite_url(url, hostname)
 
-def audio_data(request):
+def audio_data():
     try:
         return data.get_info()
     except Exception:
@@ -157,7 +157,7 @@ def play(url, offset, text, response_builder, supports_apl=False):
     return response_builder.response
 
 
-def stop(text, response_builder, supports_apl=False):
+def stop(text, response_builder):
     response_builder.add_directive(StopDirective())
 
     if text:

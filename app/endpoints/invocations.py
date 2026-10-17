@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 
 invocations_bp = Blueprint('invocations_bp', __name__)
 
+# Repeated empty-value placeholders kept as constants.
+NO_PAYLOAD = '(no payload)'
+NO_RESPONSE = '(no response)'
+
 
 @invocations_bp.route('/invocations', methods=['GET'])
 def invocations():
@@ -15,8 +19,18 @@ def invocations():
         entry_id = len(intent_logs) - idx
 
         # Support multiple entry shapes: modern entries use 'incoming'/'response_body'/'ts'
-        incoming = entry.get('incoming') if 'incoming' in entry else entry.get('payload') if 'payload' in entry else None
-        raw_response = entry.get('response') if 'response' in entry else entry.get('response_body') if 'response_body' in entry else None
+        if 'incoming' in entry:
+            incoming = entry.get('incoming')
+        elif 'payload' in entry:
+            incoming = entry.get('payload')
+        else:
+            incoming = None
+        if 'response' in entry:
+            raw_response = entry.get('response')
+        elif 'response_body' in entry:
+            raw_response = entry.get('response_body')
+        else:
+            raw_response = None
 
         # Prefer explicit time fields, otherwise try incoming.request.timestamp
         t = entry.get('time') or entry.get('ts')
@@ -74,16 +88,16 @@ def invocations():
         def _format_payload(obj):
             # Treat None, empty string, or literal 'null' as no payload
             if obj is None:
-                return '(no payload)'
+                return NO_PAYLOAD
             if isinstance(obj, str):
                 s = obj.strip()
                 if s == '' or s.lower() == 'null':
-                    return '(no payload)'
+                    return NO_PAYLOAD
                 # try to parse JSON string
                 try:
                     parsed = json.loads(s)
                     if parsed is None:
-                        return '(no payload)'
+                        return NO_PAYLOAD
                     return json.dumps(parsed, indent=2, ensure_ascii=False)
                 except Exception:
                     return s
@@ -95,16 +109,16 @@ def invocations():
 
         def _format_response(obj):
             if obj is None:
-                return '(no response)'
+                return NO_RESPONSE
             if isinstance(obj, str):
                 s = obj.strip()
                 if s == '' or s.lower() == 'null':
-                    return '(no response)'
+                    return NO_RESPONSE
                 # attempt to parse JSON body
                 try:
                     parsed = json.loads(s)
                     if parsed is None:
-                        return '(no response)'
+                        return NO_RESPONSE
                     return json.dumps(parsed, indent=2, ensure_ascii=False)
                 except Exception:
                     return s

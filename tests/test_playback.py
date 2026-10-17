@@ -394,4 +394,5 @@ def test_apl_preserves_provider_artwork_on_render_and_refresh(client, monkeypatc
     commands = builder.response.directives[0].commands
     images = [command["value"] for command in commands
               if command["property"] in ("coverImageSource", "imageSource", "backgroundImageSource")]
-    assert images and all(value == artwork for value in images)
+    assert images
+    assert all(value == artwork for value in images)

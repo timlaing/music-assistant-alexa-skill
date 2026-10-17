@@ -260,7 +260,7 @@ for blueprint in (status_bp, invocations_bp, simulator_bp, devices_bp):
     app.register_blueprint(blueprint)
 
 
-def shutdown_setup_children(signum):
+def shutdown_setup_children(_signum):
     """Called by Gunicorn before the worker exits."""
     manager = app.extensions.get('skill_deployment')
     if manager:
@@ -294,7 +294,6 @@ def invoke_skill():
             except Exception:
                 app.logger.exception('Simulator dispatch without verification failed')
                 # fallthrough to normal dispatch
-                pass
     except Exception:
         pass
     return skill_adapter.dispatch_request()
