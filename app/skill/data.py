@@ -5,14 +5,16 @@ import re
 import sys
 from contextvars import ContextVar
 
-import shared_store
-
-_ = gettext.gettext
-
 # Fuege /app/src/ zum Python-Pfad hinzu
 _app_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _app_src not in sys.path:
     sys.path.insert(0, _app_src)
+
+# shared_store lives beside this package, so the sys.path insert above must
+# run first (E402 is deliberate here).
+import shared_store  # noqa: E402
+
+_ = gettext.gettext
 
 WELCOME_MSG = _("")
 HELP_MSG = _(

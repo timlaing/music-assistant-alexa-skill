@@ -27,15 +27,15 @@ repos:
     hooks:
       - id: prettier
         name: prettier
-        entry: npx prettier --write --ignore-unknown
-        language: node
+        # language: system so the hook uses exactly the prettier locked in
+        # package-lock.json (installed by `npm ci`), not a separately
+        # managed node environment.
+        entry: npx --no-install prettier --write --ignore-unknown
+        language: system
         types_or:
           - json
           - yaml
           - markdown
-        additional_dependencies:
-          - prettier-plugin-sort-json
-          - "@prettier/plugin-xml"
         pass_filenames: true
       - id: check-sensitive
         name: check sensitive data

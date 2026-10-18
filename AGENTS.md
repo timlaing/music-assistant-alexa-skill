@@ -33,7 +33,9 @@
 - `ruff format .` — Python formatting is **mandated**: the Lint workflow
   fails on unformatted files.
 - `npx prettier --write .` — Markdown/YAML/JSON formatting is **mandated**
-  the same way (prettier and its plugins pinned in `package.json`).
+  the same way (prettier and its plugins pinned in `package.json`; run
+  `npm ci` once so the locked install is available to prettier and to the
+  pre-commit hook).
 - `prek run --all-files` runs everything (hygiene hooks, ruff, prettier,
   the sensitive-data check); `prek install` wires the suite up as a git
   hook. The repo-local `.githooks/pre-commit` (via
