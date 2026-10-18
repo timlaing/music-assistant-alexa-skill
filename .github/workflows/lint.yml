@@ -34,7 +34,7 @@ jobs:
           .venv/bin/pip install -r requirements-dev.txt
 
       - name: Install Prettier dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run prek
         run: .venv/bin/prek run --all-files
