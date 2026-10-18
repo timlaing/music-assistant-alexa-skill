@@ -33,8 +33,9 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Copy only requirements first, then install dependencies
-COPY app/requirements.txt /app/requirements.txt
+# Copy the hash-locked requirements first, then install them with
+# --require-hashes so every wheel is integrity-checked (docker:S8544)
+COPY app/requirements.lock.txt /app/requirements.lock.txt
 
 # Install ASK CLI (v2) globally so the container can run `ask configure`.
 # Best-effort (--ignore-scripts keeps third-party lifecycle code from running;
@@ -45,7 +46,7 @@ RUN npm install -g --ignore-scripts ask-cli@2.30.7 || true && \
     python3.12 -m venv venv && \
     . venv/bin/activate && \
     pip install --upgrade --only-binary :all: pip==26.2.1 && \
-    pip install --only-binary :all: -r requirements.txt && \
+    pip install --require-hashes --only-binary :all: -r requirements.lock.txt && \
     pip install --only-binary :all: debugpy==1.8.22 && \
     /app/venv/bin/python - <<'PY'
 import sysconfig, os, sys

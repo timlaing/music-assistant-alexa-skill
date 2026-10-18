@@ -146,8 +146,9 @@
 
     // Parse a response body that may be JSON, double-encoded JSON, or escaped JSON.
     function tryParseJson(s){
+      let parsed = null;
       try{
-        let parsed = JSON.parse(s);
+        parsed = JSON.parse(s);
         if(typeof parsed === 'string'){
           try{ parsed = JSON.parse(parsed); }catch(e){
             // best-effort: value is plain text rather than double-encoded JSON; keep it
@@ -156,21 +157,19 @@
         return parsed;
       }catch(e){
         // outer parse failed — retry once with common escape sequences unescaped
-        let recovered = null;
-        try{
-          const unescaped = s.replaceAll(String.raw`\"`, '"').replaceAll(String.raw`\n`, '\n');
-          let parsed = JSON.parse(unescaped);
-          if(typeof parsed === 'string'){
-            try{ parsed = JSON.parse(parsed); }catch(e){
-              // best-effort: value is plain text rather than double-encoded JSON; keep it
-            }
-          }
-          recovered = parsed;
-        }catch(error_){
-          // not JSON even after unescaping; caller falls back to raw rendering
-        }
-        return recovered;
       }
+      try{
+        const unescaped = s.replaceAll(String.raw`\"`, '"').replaceAll(String.raw`\n`, '\n');
+        parsed = JSON.parse(unescaped);
+        if(typeof parsed === 'string'){
+          try{ parsed = JSON.parse(parsed); }catch(e){
+            // best-effort: value is plain text rather than double-encoded JSON; keep it
+          }
+        }
+      }catch(error_){
+        // not JSON even after unescaping; caller falls back to raw rendering
+      }
+      return parsed;
     }
 
     // Escape HTML metacharacters before inserting text via innerHTML.
@@ -314,14 +313,18 @@
         respBox.addEventListener('keydown', (e)=>{
           if((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')){
             e.preventDefault();
+            let selected = false;
             try{
               const range = document.createRange();
               range.selectNodeContents(respBox);
               const sel = window.getSelection();
               sel.removeAllRanges();
               sel.addRange(range);
+              selected = true;
             }catch(_){
               // best-effort: the selection API may be unavailable; fall back to the textarea trick below
+            }
+            if(!selected){
               // fallback: select entire text by creating a temporary textarea
               const txt = respBox.textContent || '';
               const ta = document.createElement('textarea');
