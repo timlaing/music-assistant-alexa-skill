@@ -44,7 +44,7 @@ jobs:
           import pathlib
           for path in pathlib.Path('.venv/lib').glob('python*/site-packages/oscrypto/_openssl/_libcrypto_*.py'):
               text = path.read_text()
-              patched = text.replace(r'\d\.\d\.\d[a-z]*', r'\d+\.\d+\.\d+[a-z]*')
+              patched = text.replace(r'\\d\\.\\d\\.\\d[a-z]*', r'\\d+\\.\\d+\\.\\d+[a-z]*')
               assert patched != text, path
               path.write_text(patched)
               print('patched', path)
