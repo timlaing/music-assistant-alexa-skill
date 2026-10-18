@@ -1,4 +1,22 @@
 # Music Assistant Alexa Skill
+
+[![Test](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/test.yml/badge.svg)](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/test.yml)
+[![Docker](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/docker-ghcr.yml/badge.svg)](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/docker-ghcr.yml)
+[![License](https://img.shields.io/badge/license-Amazon%20Software%20License%201.0-blue.svg)](LICENSE)
+
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=coverage)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=bugs)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
+
 This project provides the Alexa skill service for Music Assistant, with a Flask API and a personal-skill deployment wizard.
 
 For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api). This skill repository contains the application; the companion repository packages and configures it for Home Assistant.
@@ -9,7 +27,7 @@ For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add
 
 - An Amazon developer account: https://developer.amazon.com/en-US/docs/alexa/ask-overviews/create-developer-account.html
 - Skill Access Management enabled for your developer account: [https://developer.amazon.com/alexa/console/ask/settings/access-management](https://developer.amazon.com/alexa/console/ask/settings/access-management)
-    ![Skill Access Management](assets/screenshots/skill-access-management.png)
+  ![Skill Access Management](assets/screenshots/skill-access-management.png)
 - Home Assistant Supervisor for add-on deployment, or Docker and Docker Compose for standalone deployment
 - Public HTTPS endpoints for the skill and audio streams; Nginx Proxy Manager can provide both
 
@@ -24,9 +42,9 @@ For a standalone host, run the project with Docker Compose. This will build and 
 3. Persist `./deployment_data:/data` for private deployment credentials/progress. Register Login with Amazon and configure the client ID and secret, then register the generated callback as described in the [Skill Setup](#skill-setup).
 4. Start the service:
 
-    ```sh
-    docker compose up -d
-    ```
+   ```sh
+   docker compose up -d
+   ```
 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured).
 6. For standalone Docker, open `/setup` and authenticate with app credentials; for the maintained add-on use Home Assistant ingress with no second login. Connect Amazon, explicitly select your existing personal skill (or request creation), review the configuration and deploy. Amazon returns through `/ma-alexa-skill/setup/oauth/callback`, and the original wizard completes the connection automatically. See the [Skill Setup](#skill-setup).
@@ -46,25 +64,25 @@ The maintained add-on is a separate implementation from the development wrapper 
 
 #### Public HTTPS and Nginx Proxy Manager
 
-| Address | Proxy upstream | Add-on option |
-| --- | --- | --- |
-| `https://alexa.example.com` | `http://<HA-LAN-IP>:5000` | `skill_hostname` |
-| `https://streams.example.com` | `http://<MA-LAN-IP>:8097` | `ma_hostname` |
+| Address                       | Proxy upstream            | Add-on option    |
+| ----------------------------- | ------------------------- | ---------------- |
+| `https://alexa.example.com`   | `http://<HA-LAN-IP>:5000` | `skill_hostname` |
+| `https://streams.example.com` | `http://<MA-LAN-IP>:8097` | `ma_hostname`    |
 
 Expose NPM's HTTPS port **443** to the internet; keep add-on **5000** and Music Assistant stream **8097** internal. Alexa needs public HTTPS access to both the skill and the audio, including on APL devices. Direct internet forwarding of the application ports is unnecessary. Use publicly trusted TLS certificates, and allow signed Alexa POST requests through the public skill proxy without an additional NPM login or access list.
 
 For a shared public hostname, configure these NPM custom locations. Stream routes preserve their full paths; the skill route strips its prefix.
 
-| NPM location | Forward to | Path handling | When needed |
-| --- | --- | --- | --- |
-| `/ma-alexa-skill/` | `http://<HA-LAN-IP>:5000` | Strip `/ma-alexa-skill/`; forward to the add-on root. | Skill requests and Amazon setup callback. |
-| `/flow/` | `http://<MA-LAN-IP>:8097` | Preserve the full path. | Music Assistant queue streams. |
-| `/pluginsource/` | `http://<MA-LAN-IP>:8097` | Preserve the full path. | Plugin audio streams using this route. |
-| `/source/` | `http://<MA-LAN-IP>:8097` | Preserve the full path. | Live sources, including iPhone audio via AirPlay Receiver. |
-| `/announcement/` | `http://<MA-LAN-IP>:8097` | Preserve the full path. | Announcement audio using this route. |
-| `/imageproxy/` | `http://<MA-LAN-IP>:8097` | Preserve the full path. | Music Assistant artwork. |
-| `/alexa/` | `http://<HA-LAN-IP>:5000` | Preserve the full path, including `/alexa/intents`. | Only if Music Assistant's Alexa provider API URL uses this public hostname. |
-| `/ma/` | `http://<HA-LAN-IP>:5000` | Preserve the full path, including `/ma/push-url`. | Only if Music Assistant's Alexa provider API URL uses this public hostname. |
+| NPM location       | Forward to                | Path handling                                         | When needed                                                                 |
+| ------------------ | ------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| `/ma-alexa-skill/` | `http://<HA-LAN-IP>:5000` | Strip `/ma-alexa-skill/`; forward to the add-on root. | Skill requests and Amazon setup callback.                                   |
+| `/flow/`           | `http://<MA-LAN-IP>:8097` | Preserve the full path.                               | Music Assistant queue streams.                                              |
+| `/pluginsource/`   | `http://<MA-LAN-IP>:8097` | Preserve the full path.                               | Plugin audio streams using this route.                                      |
+| `/source/`         | `http://<MA-LAN-IP>:8097` | Preserve the full path.                               | Live sources, including iPhone audio via AirPlay Receiver.                  |
+| `/announcement/`   | `http://<MA-LAN-IP>:8097` | Preserve the full path.                               | Announcement audio using this route.                                        |
+| `/imageproxy/`     | `http://<MA-LAN-IP>:8097` | Preserve the full path.                               | Music Assistant artwork.                                                    |
+| `/alexa/`          | `http://<HA-LAN-IP>:5000` | Preserve the full path, including `/alexa/intents`.   | Only if Music Assistant's Alexa provider API URL uses this public hostname. |
+| `/ma/`             | `http://<HA-LAN-IP>:5000` | Preserve the full path, including `/ma/push-url`.     | Only if Music Assistant's Alexa provider API URL uses this public hostname. |
 
 A dedicated stream hostname forwarding all paths to **8097** already covers the stream locations and needs no extra custom locations. A dedicated add-on hostname forwarding all paths to **5000** already covers `/alexa/` and `/ma/`; keep the core `/ma-alexa-skill/` route for the Amazon setup callback. `/status` and `/setup` are provided through Home Assistant ingress and need no public NPM locations.
 
@@ -112,6 +130,7 @@ docker run --rm \
 ```
 
 Notes:
+
 - Adjust `SKILL_HOSTNAME` to the public HTTPS host you'll use in the skill manifest.
 - The `ask_data` volume preserves legacy CLI credentials. The new wizard uses its own OAuth client and requires a persistent `/data` volume.
 - Mounting files into `/run/secrets` is a simple way to provide secrets for local testing; for production use Docker secrets or your platform's secret manager.
@@ -134,20 +153,20 @@ The callback and audio must be publicly reachable; Home Assistant's Setup and St
 
 For stable **1.3.0**, edit application settings on `/setup`; standalone environment variables are bootstrap defaults until the first web save. Persist `/data/app-settings.json` (or set `APP_SETTINGS_PATH`). Home Assistant add-on users use ingress Setup instead of the add-on Configuration tab. Existing available legacy values migrate once; saved web settings take precedence after restarts. Secrets stay masked, blank inputs retain them, and Credentials provides an explicit API-password reveal for connecting Music Assistant. The callback is derived from the skill endpoint origin; saving does not deploy to Amazon. The unused AWS region setting has been removed.
 
-| Variable | Required | Default | Description |
-|---|:---:|:---:|---|
-| `SKILL_HOSTNAME` | No | `MA_HOSTNAME` + `/ma-alexa-skill/` | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default).  Public hostname used in the Alexa skill manifest and to validate the skill endpoint. |
-| `MA_HOSTNAME` | Yes for LAN stream URLs | — | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its setup-page `ma_hostname` setting. |
-| `APP_USERNAME` | Yes for setup | — | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets. |
-| `APP_PASSWORD` | Yes for setup | — | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var. |
-| `PORT` | No | `5000` | Port the app lives at. Ensure the `ports` mapping in [docker-compose.yml](docker-compose.yml) matches this value. |
-| `DEBUG_PORT` | No | `5678` | Remote debug port (if you enable remote debugging). |
-| `LOCALE` | *No | `en-US` | ***REQUIRED** if your device is not configured for en-US. Skill locale used by the setup and interaction model operations (examples: `en-US`, `en-GB`, `de-DE`). |
-| `TZ` | No | `UTC` | Container timezone (example: `America/Chicago`) to make logs/timestamps match your locale. |
-| `SKIP_URL_VALIDATION` | No | `false` | Skip server-side HEAD/GET validation of the rewritten stream URL before sending it to the Echo. Useful when the skill container cannot reach the external stream URL due to Docker network routing (e.g., macvlan isolation, custom outbound firewall rules). |
-| `ENABLE_APL` | No | `false` | Enable rich APL rendering (cover art, title, on-screen playback controls) on Echo Show and other APL-capable devices, instead of the plain AudioPlayer-only flow. Disabled by default for playback stability; set to `true` to opt back into screen rendering and live metadata refresh on supported devices. |
-| `MA_API_URL` | *No | — | Needed for mapped MA voice controls. Base URL of the Music Assistant control API (normally `http://<MA-LAN-IP>:8095`), used to send commands to the MA player paired with the requesting Echo (see [Device Mapping](#device-mapping) below). |
-| `MA_API_TOKEN` | *No | — | ***REQUIRED** alongside `MA_API_URL` if your MA server enforces authentication. A long-lived token created via MA's own auth flow (`auth/token/create`). Can be provided as a Docker secret the same way as `APP_PASSWORD`. |
+| Variable              |        Required         |              Default               | Description                                                                                                                                                                                                                                                                                                   |
+| --------------------- | :---------------------: | :--------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SKILL_HOSTNAME`      |           No            | `MA_HOSTNAME` + `/ma-alexa-skill/` | Must be a full publicly reachable HTTPS URL (example: `https://alexa.example.com/`). Should proxy to your open port on this container (port **5000** by default). Public hostname used in the Alexa skill manifest and to validate the skill endpoint.                                                        |
+| `MA_HOSTNAME`         | Yes for LAN stream URLs |                 —                  | Public HTTPS hostname for streams (example: `streams.example.com`, without a scheme), proxied to Music Assistant stream port **8097**. Alexa needs public streams on both screenless and APL devices. The maintained add-on also accepts a full HTTPS base URL in its setup-page `ma_hostname` setting.       |
+| `APP_USERNAME`        |      Yes for setup      |                 —                  | Username for the web UI and API basic authentication. In Docker Compose this is provided via a Docker secret (`/run/secrets/APP_USERNAME`) pointing to `./secrets/app_username.txt`, or as a plain env var when not using secrets.                                                                            |
+| `APP_PASSWORD`        |      Yes for setup      |                 —                  | Password for the web UI and API basic authentication. Can be supplied as a Docker secret file or plain env var.                                                                                                                                                                                               |
+| `PORT`                |           No            |               `5000`               | Port the app lives at. Ensure the `ports` mapping in [docker-compose.yml](docker-compose.yml) matches this value.                                                                                                                                                                                             |
+| `DEBUG_PORT`          |           No            |               `5678`               | Remote debug port (if you enable remote debugging).                                                                                                                                                                                                                                                           |
+| `LOCALE`              |           *No           |              `en-US`               | ***REQUIRED** if your device is not configured for en-US. Skill locale used by the setup and interaction model operations (examples: `en-US`, `en-GB`, `de-DE`).                                                                                                                                              |
+| `TZ`                  |           No            |               `UTC`                | Container timezone (example: `America/Chicago`) to make logs/timestamps match your locale.                                                                                                                                                                                                                    |
+| `SKIP_URL_VALIDATION` |           No            |              `false`               | Skip server-side HEAD/GET validation of the rewritten stream URL before sending it to the Echo. Useful when the skill container cannot reach the external stream URL due to Docker network routing (e.g., macvlan isolation, custom outbound firewall rules).                                                 |
+| `ENABLE_APL`          |           No            |              `false`               | Enable rich APL rendering (cover art, title, on-screen playback controls) on Echo Show and other APL-capable devices, instead of the plain AudioPlayer-only flow. Disabled by default for playback stability; set to `true` to opt back into screen rendering and live metadata refresh on supported devices. |
+| `MA_API_URL`          |           *No           |                 —                  | Needed for mapped MA voice controls. Base URL of the Music Assistant control API (normally `http://<MA-LAN-IP>:8095`), used to send commands to the MA player paired with the requesting Echo (see [Device Mapping](#device-mapping) below).                                                                  |
+| `MA_API_TOKEN`        |           *No           |                 —                  | ***REQUIRED** alongside `MA_API_URL` if your MA server enforces authentication. A long-lived token created via MA's own auth flow (`auth/token/create`). Can be provided as a Docker secret the same way as `APP_PASSWORD`.                                                                                   |
 
 **Secrets and persistence**
 
@@ -160,12 +179,15 @@ For stable **1.3.0**, edit application settings on `/setup`; standalone environm
 - If you override `PORT` or `DEBUG_PORT`, update the `ports` mapping in [docker-compose.yml](docker-compose.yml) accordingly (host:container).
 
 ## Basic Troubleshooting
+
 ### Status Page
+
 `/status`
 
 Returns local API health and the saved personal-skill deployment result, including verification time and selected ID. With no direct API connection, a legacy ASK CLI check is still available. The saved result is not a live Amazon status check. Open `/setup` to review and deploy again.
 
 ### Device Mapping
+
 `/devices`
 
 Alexa's Custom Skill API only exposes an opaque, per-skill device id in each request — there is no way to resolve it to a friendly device name or to a Music Assistant player. This page lets you pair each Echo's device id with the corresponding MA `player_id` so voice controls can be routed to the right player. To pair a new device: trigger any voice command from it (e.g. "next"), reload this page (it lists every device id seen in the current session), then enter the matching MA player_id.
