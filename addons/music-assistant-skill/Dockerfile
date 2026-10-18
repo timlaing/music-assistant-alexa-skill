@@ -16,7 +16,8 @@ RUN apt-get update && \
         gnupg \
         software-properties-common && \
     add-apt-repository -y ppa:deadsnakes/ppa && \
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    curl --proto '=https' --proto-redir '=https' -fsSL \
+        https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --batch --yes --dearmor -o /usr/share/keyrings/nodesource.gpg && \
     printf '%s\n' \
         'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main' \
@@ -38,16 +39,15 @@ COPY app/requirements.txt /app/requirements.txt
 # Install ASK CLI (v2) globally so the container can run `ask configure`.
 # Best-effort (--ignore-scripts keeps third-party lifecycle code from running;
 # the || true keeps a registry hiccup from failing the image build).
-# Then create the app venv with pinned, wheel-only pip tooling.
+# Then create the app venv with pinned, wheel-only pip tooling and apply the
+# verifier.py patch in the same layer (the patch only depends on the venv).
 RUN npm install -g --ignore-scripts ask-cli@2.30.7 || true && \
     python3.12 -m venv venv && \
     . venv/bin/activate && \
     pip install --upgrade --only-binary :all: pip==26.2.1 && \
     pip install -r requirements.txt && \
-    pip install --only-binary :all: debugpy==1.8.22
-
-# Apply verifier.py patch inside the venv so the container runtime has the fix
-RUN /app/venv/bin/python - <<'PY'
+    pip install --only-binary :all: debugpy==1.8.22 && \
+    /app/venv/bin/python - <<'PY'
 import sysconfig, os, sys
 try:
         site = sysconfig.get_paths()['purelib']

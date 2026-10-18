@@ -1,0 +1,12 @@
+# Coverage for the SonarQube-scanned sources: the app plus the security
+# hook scripts. The release/build helpers are omitted until they gain tests;
+# add them here as coverage is written.
+[run]
+source =
+    app
+    scripts
+omit =
+    scripts/bump_version.py
+    scripts/sync_version.py
+    scripts/build_skill_manifest.py
+    scripts/find_skills_to_delete.py

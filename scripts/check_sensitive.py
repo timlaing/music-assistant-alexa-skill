@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import os
 import re
 import subprocess
@@ -22,9 +23,6 @@ IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".githoo
 # Files to never scan (relative paths)
 IGNORED_FILES = {"scripts/check_sensitive.py"}
 
-# File extensions that are usually code. For these, only flag domains inside string
-# literals to avoid matching code tokens like `os.path.join` or `re.compile`.
-CODE_EXTS = {".py", ".js", ".ts", ".go", ".java", ".c", ".cpp", ".rs"}
 IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
 # Common non-domain file extensions to ignore when matched (e.g., openapi.json)
 IGNORE_EXTS = {
@@ -74,20 +72,6 @@ TLD_WHITELIST = {
 }
 
 
-def _is_within_quotes(line, start_idx, end_idx):
-    # Find nearest quote char before start_idx
-    left_single = line.rfind("'", 0, start_idx)
-    left_double = line.rfind('"', 0, start_idx)
-    # choose the nearest (max)
-    left = max(left_single, left_double)
-    if left == -1:
-        return False
-    quote_char = line[left]
-    # find matching closing quote after end_idx
-    right = line.find(quote_char, end_idx)
-    return right != -1
-
-
 def repo_root():
     # Find repository root by walking up until we find .git or stop at filesystem root
     cur = os.getcwd()
@@ -130,41 +114,137 @@ def get_staged_files():
     return files
 
 
-def _is_safe_path(path):
-    """Reject paths that could be option-injection or traversal (S8705/S8707)."""
-    if not path or path.startswith("-") or ".." in path.split(os.sep):
-        return False
-    return True
+def _resolve_in_repo(path, root=None):
+    """Canonical in-repo location for a caller-supplied relative path.
+
+    Rejects empty values, option-style arguments (``-x``), absolute paths and
+    ``..`` traversal, and re-checks the resolved location so symlinks cannot
+    escape the repository (S8705/S8707: argv-derived values must not reach
+    file sinks unvalidated). Returns None for anything unsafe.
+    """
+    if not path or path.startswith("-") or os.path.isabs(path):
+        return None
+    if ".." in path.split(os.sep):
+        return None
+    root_real = os.path.realpath(root or repo_root())
+    resolved = os.path.realpath(os.path.join(root_real, path))
+    if resolved != root_real and not resolved.startswith(root_real + os.sep):
+        return None
+    return resolved
 
 
-def get_staged_content(path):
-    if not _is_safe_path(path):
+def get_staged_content(path, root=None):
+    root_real = os.path.realpath(root or repo_root())
+    resolved = _resolve_in_repo(path, root_real)
+    if resolved is None:
         return ""
     git = get_git_executable()
     if git:
         try:
-            # Get raw bytes from git to avoid UnicodeDecodeError when blobs contain binary
+            # Get raw bytes from git to avoid UnicodeDecodeError when blobs
+            # contain binary. The ":<path>" revspec form cannot be mistaken
+            # for an option regardless of the path contents.
             out = subprocess.check_output(
-                [git, "show", f":{path}"], stderr=subprocess.DEVNULL
+                [git, "show", f":{path}"], cwd=root_real, stderr=subprocess.DEVNULL
             )
-            if isinstance(out, bytes):
-                return out.decode("utf-8", errors="ignore")
-            return str(out)
-        except subprocess.CalledProcessError:
-            pass
-        except UnicodeDecodeError:
-            # fall back to reading from working tree
+            return out.decode("utf-8", errors="ignore")
+        except (subprocess.CalledProcessError, OSError):
             pass
 
-    # Fallback: read file from working tree
+    # Fallback: read file from working tree (already confined to the repo)
     try:
-        resolved = os.path.realpath(path)
         if not os.path.isfile(resolved):
             return ""
         with open(resolved, "r", encoding="utf-8", errors="ignore") as fh:
             return fh.read()
-    except Exception:
+    except OSError:
         return ""
+
+
+def _python_strings(content):
+    """Extract string literals from Python source; fall back to the raw text."""
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return content
+    strings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            strings.append(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            for val in getattr(node, "values", []):
+                if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                    strings.append(val.value)
+    return "\n".join(strings)
+
+
+def _shell_strings(content):
+    """Extract heredoc bodies (parsed as Python when possible) and quoted strings."""
+    strings = []
+    for _, body in re.findall(r"<<['\"]?(\w+)['\"]?\n(.*?)\n\1", content, re.S):
+        try:
+            tree = ast.parse(body)
+        except (SyntaxError, ValueError):
+            # fallback: extract quoted strings from the heredoc body
+            found = re.findall(r"'([^']*)'|\"([^\"]*)\"", body)
+            strings.extend([a or b for a, b in found])
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                strings.append(node.value)
+            elif isinstance(node, ast.JoinedStr):
+                for val in getattr(node, "values", []):
+                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                        strings.append(val.value)
+
+    # also capture top-level quoted strings in the shell script
+    found_top = re.findall(r"'([^']*)'|\"([^\"]*)\"", content)
+    strings.extend([a or b for a, b in found_top])
+    return "\n".join(strings)
+
+
+def _scan_text_for(path, content, ext):
+    """Choose the string extractor for a file's extension."""
+    if ext == ".py":
+        return _python_strings(content)
+    if ext == ".sh":
+        return _shell_strings(content)
+    return content
+
+
+def _line_for(text, start, end):
+    line_start = text.rfind("\n", 0, start)
+    line_start = 0 if line_start == -1 else line_start + 1
+    line_end = text.find("\n", end)
+    if line_end == -1:
+        return text[line_start:]
+    return text[line_start:line_end]
+
+
+def _ignored_domain(domain):
+    """Skip image/file extensions and labels that are not plausible TLDs."""
+    parts = domain.rsplit(".", 1)
+    if len(parts) != 2:
+        return False
+    ext = parts[1].lower()
+    # ignore image/file extensions and other ignored file-like endings
+    if ext in IMAGE_EXTS or ext in IGNORE_EXTS:
+        return True
+    # require last label look like a real TLD to avoid matching code identifiers
+    return ext not in TLD_WHITELIST
+
+
+def _context_allows(path, line):
+    """Skip GitHub Actions expressions and non-URL workflow lines."""
+    # skip GitHub Actions expression tokens like ${{ github.actor }}
+    if "${{" in line or "}}" in line:
+        return True
+    # for workflow files, be conservative: only flag if the line contains a URL
+    if path.startswith(".github/workflows") and (
+        "http" not in line and "://" not in line
+    ):
+        return True
+    return False
 
 
 def scan_files(paths, allowlist):
@@ -182,103 +262,11 @@ def scan_files(paths, allowlist):
         content = get_staged_content(p)
         if not content:
             continue
-        _, ext = os.path.splitext(p)
-        scan_text = content
-        # For Python files, extract string literals using the AST to avoid matching code tokens
-        if ext == ".py":
-            try:
-                import ast
-
-                tree = ast.parse(content)
-                strings = []
-                for node in ast.walk(tree):
-                    # new-style string nodes
-                    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                        strings.append(node.value)
-                    # f-strings: JoinedStr contains Constant parts
-                    elif isinstance(node, ast.JoinedStr):
-                        for val in getattr(node, "values", []):
-                            if isinstance(val, ast.Constant) and isinstance(
-                                val.value, str
-                            ):
-                                strings.append(val.value)
-                if strings:
-                    scan_text = "\n".join(strings)
-                else:
-                    # no string literals, nothing to scan
-                    scan_text = ""
-            except Exception:
-                # fallback to scanning content with quote heuristic
-                scan_text = content
-        # For shell scripts, only scan quoted strings to avoid matching function names
-        elif ext == ".sh":
-            try:
-                strings = []
-                # capture heredoc blocks: <<'DELIM' ... DELIM
-                heredocs = re.findall(r"<<['\"]?(\w+)['\"]?\n(.*?)\n\1", content, re.S)
-                for delim, body in heredocs:
-                    # attempt to parse heredoc body as Python and extract string literals
-                    try:
-                        import ast
-
-                        tree = ast.parse(body)
-                        for node in ast.walk(tree):
-                            if isinstance(node, ast.Constant) and isinstance(
-                                node.value, str
-                            ):
-                                strings.append(node.value)
-                            elif isinstance(node, ast.JoinedStr):
-                                for val in getattr(node, "values", []):
-                                    if isinstance(val, ast.Constant) and isinstance(
-                                        val.value, str
-                                    ):
-                                        strings.append(val.value)
-                        continue
-                    except Exception:
-                        # fallback: extract quoted strings from the heredoc body
-                        found = re.findall(r"'([^']*)'|\"([^\"]*)\"", body)
-                        strings.extend([a or b for a, b in found])
-
-                # also capture top-level quoted strings in the shell script
-                found_top = re.findall(r"'([^']*)'|\"([^\"]*)\"", content)
-                strings.extend([a or b for a, b in found_top])
-
-                scan_text = "\n".join(strings) if strings else ""
-            except Exception:
-                scan_text = ""
-
+        scan_text = _scan_text_for(p, content, ext)
         for m in DOMAIN_RE.finditer(scan_text):
             domain = m.group(0)
-            # compute surrounding line for contextual checks
-            line_start = scan_text.rfind("\n", 0, m.start())
-            if line_start == -1:
-                line_start = 0
-            else:
-                line_start = line_start + 1
-            line_end = scan_text.find("\n", m.end())
-            if line_end == -1:
-                line = scan_text[line_start:]
-            else:
-                line = scan_text[line_start:line_end]
-            # ignore matches that are image filenames (e.g. background-rose.png)
-            parts = domain.rsplit(".", 1)
-            if len(parts) == 2:
-                ext = parts[1].lower()
-                # ignore image/file extensions and other ignored file-like endings
-                if ext in IMAGE_EXTS or ext in IGNORE_EXTS:
-                    continue
-                # require last label look like a real TLD to avoid matching code identifiers
-                if ext not in TLD_WHITELIST:
-                    continue
-
-            # skip GitHub Actions expression tokens like ${{ github.actor }}
-            if "${{" in line or "}}" in line:
-                continue
-
-            # for workflow files, be conservative: only flag if the line contains a URL
-            if p.startswith(".github/workflows") and (
-                "http" not in line and "://" not in line
-            ):
+            line = _line_for(scan_text, m.start(), m.end())
+            if _ignored_domain(domain) or _context_allows(p, line):
                 continue
             if is_allowed(domain, allowlist):
                 continue
