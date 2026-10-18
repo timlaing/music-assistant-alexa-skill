@@ -137,7 +137,7 @@
     function decodeEscapedBody(rawBody){
       if(typeof rawBody !== 'string') return rawBody;
       try{
-        return rawBody.replaceAll('\\n', '\n');
+        return rawBody.replaceAll(String.raw`\n`, '\n');
       }catch(e){
         // best-effort: unescaping only affects presentation; keep the original body on failure
         return rawBody;
@@ -156,19 +156,20 @@
         return parsed;
       }catch(e){
         // outer parse failed — retry once with common escape sequences unescaped
+        let recovered = null;
         try{
-          const unescaped = s.replaceAll('\\"', '"').replaceAll('\\n', '\n');
+          const unescaped = s.replaceAll(String.raw`\"`, '"').replaceAll(String.raw`\n`, '\n');
           let parsed = JSON.parse(unescaped);
           if(typeof parsed === 'string'){
             try{ parsed = JSON.parse(parsed); }catch(e){
               // best-effort: value is plain text rather than double-encoded JSON; keep it
             }
           }
-          return parsed;
+          recovered = parsed;
         }catch(error_){
           // not JSON even after unescaping; caller falls back to raw rendering
-          return null;
         }
+        return recovered;
       }
     }
 
@@ -182,7 +183,7 @@
     // scan so no regex backtracking is possible.
     function looksLikeHtml(s){
       for(let i = s.indexOf('<'); i !== -1; i = s.indexOf('<', i + 1)){
-        if(s[i + 1] !== '>' && s.indexOf('>', i + 1) !== -1) return true;
+        if(s[i + 1] !== '>' && s.includes('>', i + 1)) return true;
       }
       return false;
     }
@@ -402,13 +403,14 @@
 
     // Validate an audio URL: it must parse with an http(s) scheme.
     function isValidAudioUrl(u){
+      let valid = false;
       try{
         const parsed = new URL(u);
-        return (parsed.protocol === 'http:' || parsed.protocol === 'https:');
+        valid = (parsed.protocol === 'http:' || parsed.protocol === 'https:');
       }catch(e){
         // best-effort: an unparseable URL is simply not a valid audio URL
-        return false;
       }
+      return valid;
     }
 
     // Helper to enqueue audio URLs and start playback
