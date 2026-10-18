@@ -27,10 +27,10 @@
 
 <label><input id="skip_url_validation" type="checkbox"> Skip stream URL validation</label>
 <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
-</details><button id="saveSettings" type="submit">Save settings</button><span id="saved" role="status"></span>
+</details><button id="saveSettings" type="submit">Save settings</button><output id="saved"></output>
 </form></section>
 <section id="amazonConnection"><h2>Connect to Amazon</h2>
-<p id="error" role="alert" hidden></p><p id="message" role="status" aria-live="polite">Loading setup status…</p>
+<p id="error" role="alert" hidden></p><output id="message" aria-live="polite">Loading setup status…</output>
 <p>Create a Login with Amazon (LWA) security profile once, using the Amazon developer account that owns your personal skill.</p>
 <ol>
 <li>Save your public audio URL above so the callback URL below is correct.</li>
@@ -44,7 +44,7 @@
 <label>Amazon client ID<input id="lwa_client_id" form="settingsForm" autocomplete="off"></label>
 <label>Amazon client secret<input id="lwa_client_secret" form="settingsForm" type="password" autocomplete="new-password"><small id="lwa_client_secret_hint"></small></label>
 <label><input id="clear_lwa_client_secret" form="settingsForm" type="checkbox"> Remove saved Amazon client secret</label>
-<button id="saveAmazon" type="submit" form="settingsForm">Save Amazon settings</button><button id="connect" disabled>Connect</button><span id="connected"></span><p id="connectMessage" class="notice" role="status" aria-live="polite"></p><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
+<button id="saveAmazon" type="submit" form="settingsForm">Save Amazon settings</button><button id="connect" disabled>Connect</button><span id="connected"></span><output id="connectMessage" class="notice" aria-live="polite"></output><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a></section>
 <section id="reconciliation" hidden><h2>Recover an uncertain import</h2>
 <p>Amazon may have accepted an import without returning its recovery ID. Check the saved skill’s import with Amazon before continuing. Do not clear this block while the operation is running or its result remains unknown.</p>
 <p>Saved skill: <strong id="reconcileSkill"></strong></p>
@@ -61,7 +61,7 @@
 <details><summary>Advanced skill settings</summary>
 <label>Public skill endpoint override<input form="settingsForm" id="skill_hostname" type="url"><small>Optional. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override only when your skill uses another public endpoint.</small></label>
 <label>HTTPS certificate type<select form="settingsForm" id="skill_certificate_type"><option value="Trusted">Trusted</option><option value="Wildcard">Trusted sub-domain</option><option value="SelfSigned">File</option></select><small>Choose Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate, Trusted sub-domain for a CA-issued wildcard certificate, or File for a self-signed development certificate.</small></label>
-<div id="certificateFile" hidden><label>Public certificate file<input id="certificateUpload" type="file" accept=".pem,.crt,.cer"><small>One PEM-encoded public certificate, up to 16 KB. Never upload a private key. A file certificate applies to skill development testing; Amazon sign-in still needs publicly trusted HTTPS.</small></label><p id="certificateSaved" role="status"></p><button id="clearCertificate" type="button">Remove saved certificate</button></div>
+<div id="certificateFile" hidden><label>Public certificate file<input id="certificateUpload" type="file" accept=".pem,.crt,.cer"><small>One PEM-encoded public certificate, up to 16 KB. Never upload a private key. A file certificate applies to skill development testing; Amazon sign-in still needs publicly trusted HTTPS.</small></label><output id="certificateSaved"></output><button id="clearCertificate" type="button">Remove saved certificate</button></div>
 </details><button id="saveSkill" type="submit" form="settingsForm">Save skill settings</button>
 <div id="selection" hidden><h3>Choose your personal skill</h3>
 <label>Developer account<select id="vendors"><option value="">Choose account…</option></select></label>

@@ -37,28 +37,36 @@
                 // Fetch MA and Alexa checks independently so each row updates when ready
                 (function pollMa(){
                     fetch('/status/ma').then(r=>r.json()).then(j=>{
-                        try{ const maEl = document.getElementById('api-row'); if(maEl && j.ma_api_html){ maEl.innerHTML = j.ma_api_html; } }catch(e){}
+                        try{ const maEl = document.getElementById('api-row'); if(maEl && j.ma_api_html){ maEl.innerHTML = j.ma_api_html; } }catch(e){
+                            // best-effort: row refresh is optional; keep polling if this update fails
+                        }
                         setTimeout(pollMa, 3000);
                     }).catch(()=>{ setTimeout(pollMa, 5000); });
                 })();
 
                 (function pollAlexa(){
                     fetch('/status/alexa').then(r=>r.json()).then(j=>{
-                        try{ const alexaEl = document.getElementById('alexa-row'); if(alexaEl && j.alexa_api_html){ alexaEl.innerHTML = j.alexa_api_html; } }catch(e){}
+                        try{ const alexaEl = document.getElementById('alexa-row'); if(alexaEl && j.alexa_api_html){ alexaEl.innerHTML = j.alexa_api_html; } }catch(e){
+                            // best-effort: row refresh is optional; keep polling if this update fails
+                        }
                         setTimeout(pollAlexa, 3000);
                     }).catch(()=>{ setTimeout(pollAlexa, 5000); });
                 })();
 
                 (function pollMetadata(){
                     fetch('/status/metadata').then(r=>r.json()).then(j=>{
-                        try{ const metadataEl = document.getElementById('metadata-row'); if(metadataEl && j.metadata_html){ metadataEl.innerHTML = j.metadata_html; } }catch(e){}
+                        try{ const metadataEl = document.getElementById('metadata-row'); if(metadataEl && j.metadata_html){ metadataEl.innerHTML = j.metadata_html; } }catch(e){
+                            // best-effort: row refresh is optional; keep polling if this update fails
+                        }
                         setTimeout(pollMetadata, 3000);
                     }).catch(()=>{ setTimeout(pollMetadata, 5000); });
                 })();
 
                 (function pollAsk(){
                     fetch('/status/ask').then(r=>r.json()).then(j=>{
-                        try{ const askEl = document.getElementById('skill-ask-row'); if(askEl && j.skill_ask_html){ askEl.innerHTML = j.skill_ask_html; } }catch(e){}
+                        try{ const askEl = document.getElementById('skill-ask-row'); if(askEl && j.skill_ask_html){ askEl.innerHTML = j.skill_ask_html; } }catch(e){
+                            // best-effort: Ask checks are slower and optional; keep polling if this update fails
+                        }
                         // Ask checks are slower; poll less frequently
                         setTimeout(pollAsk, 5000);
                     }).catch(()=>{ setTimeout(pollAsk, 10000); });
@@ -67,7 +75,9 @@
                 // Poll invocations count so the invocation row updates live
                 (function pollInvocations(){
                     fetch('/status/invocations').then(r=>r.json()).then(j=>{
-                        try{ const invEl = document.getElementById('invocations-row'); if(invEl && j.invocations_html){ invEl.innerHTML = j.invocations_html; } }catch(e){}
+                        try{ const invEl = document.getElementById('invocations-row'); if(invEl && j.invocations_html){ invEl.innerHTML = j.invocations_html; } }catch(e){
+                            // best-effort: invocation count refresh is optional; keep polling if this update fails
+                        }
                         setTimeout(pollInvocations, 3000);
                     }).catch(()=>{ setTimeout(pollInvocations, 5000); });
                 })();
@@ -88,7 +98,9 @@
                                 pair.style.display = (pair.style.display === 'none' || pair.style.display === '') ? 'block' : 'none';
                             }
                         }
-                    }catch(err){}
+                    }catch(err){
+                        // best-effort: click handling is optional; ignore malformed event targets
+                    }
                 });
 
                 // Limit Ctrl/Cmd+A selection to the focused status box.
@@ -116,7 +128,9 @@
                             sel.removeAllRanges();
                             sel.addRange(range);
                         }
-                    }catch(err){}
+                    }catch(err){
+                        // best-effort: select-all handling is optional; ignore failures so the default still works
+                    }
                 });
                 </script>
             </main></body>

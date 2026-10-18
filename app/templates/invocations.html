@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Invocations</title>
@@ -21,6 +21,23 @@
 <script>
 var lastClickedIntentPair = null;
 var lastClickedPre = null;
+
+// Remember the <pre> (and its intent pair) the user clicked inside, by walking
+// up from the click target to the body.
+function rememberPreContext(t){
+    var p = t;
+    while(p && p !== document.body){
+        if(p.tagName && p.tagName.toLowerCase() === 'pre'){
+            lastClickedPre = p;
+            var pair = p.closest('.intent-pair');
+            if(pair) lastClickedIntentPair = pair;
+            break;
+        }
+        if(p.classList && p.classList.contains('intent-pair')){ lastClickedIntentPair = p; break; }
+        p = p.parentNode;
+    }
+}
+
 document.addEventListener('click', function(e){
     var t = e.target;
     if(t.classList && t.classList.contains('intent-toggle')){
@@ -32,41 +49,32 @@ document.addEventListener('click', function(e){
         return;
     }
     // If user clicks inside a payload/response area, remember that pair and the specific <pre>
-    var p = t;
     lastClickedPre = null;
-    while(p && p !== document.body){
-        if(p.tagName && p.tagName.toLowerCase() === 'pre'){
-            lastClickedPre = p;
-            var pair = p.closest('.intent-pair');
-            if(pair) lastClickedIntentPair = pair;
-            break;
-        }
-        if(p.classList && p.classList.contains('intent-pair')){ lastClickedIntentPair = p; break; }
-        p = p.parentNode;
-    }
+    rememberPreContext(t);
 });
 
 // Ctrl/Cmd+A behavior: if user last clicked inside an intent pair, select only
 // the payload/response pre block instead of selecting the whole document.
 document.addEventListener('keydown', function(e){
-    var isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    var isMac = navigator.platform.toUpperCase().includes('MAC');
     var aPressed = (e.key && (e.key === 'a' || e.key === 'A'));
+    var range, sel;
     if(!aPressed) return;
     if((isMac && e.metaKey) || (!isMac && e.ctrlKey)){
         if(lastClickedPre){
             e.preventDefault();
-            var range = document.createRange();
+            range = document.createRange();
             range.selectNodeContents(lastClickedPre);
-            var sel = window.getSelection();
+            sel = window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
             return;
         }
         if(lastClickedIntentPair){
             e.preventDefault();
-            var range = document.createRange();
+            range = document.createRange();
             range.selectNodeContents(lastClickedIntentPair);
-            var sel = window.getSelection();
+            sel = window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
             return;

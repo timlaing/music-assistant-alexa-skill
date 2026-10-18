@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Simulator</title>
@@ -20,8 +20,8 @@
     <strong>Selected intent:</strong> <span id="selected-intent" class="muted">(none)</span>
   </div>
   <div style="margin-top:8px">
-    <label>Target:</label>
-    <label><input type="radio" name="target" value="local" checked>local</label>
+    <label for="target-local">Target:</label>
+    <label><input type="radio" name="target" value="local" id="target-local" checked>local</label>
     <label style="margin-left:12px"><input type="radio" name="target" value="hostname"> <span id="hostname-label">SKILL_HOSTNAME</span></label>
   </div>
   <div style="margin-top:8px">
@@ -29,7 +29,7 @@
   </div>
 
   <h3>Payload</h3>
-  <p class="muted">Editable payload that will be sent to the skill (JSON).</p>
+  <p class="muted"><label for="payload">Editable payload that will be sent to the skill (JSON).</label></p>
   <textarea id="payload" style="width:100%;height:260px;background:#fff;border:1px solid #ddd;padding:8px;font-family:monospace;font-size:13px;">{
   "version": "1.0",
   "request": {
@@ -46,13 +46,15 @@
   </div>
   <audio id="sim-audio" style="display:none"></audio>
 
-  <script>
+  <script type="module">
     const skillHostname = __SKILL_HOSTNAME__ || '';
     // Show configured hostname in the toggle label (or fallback text)
     try{
       const hl = document.getElementById('hostname-label');
       if(hl) hl.textContent = (skillHostname || 'SKILL_HOSTNAME') + ' (SKILL_HOSTNAME)';
-    }catch(e){}
+    }catch(e){
+      // best-effort: the toggle label is cosmetic; leave the fallback text if the DOM lookup fails
+    }
     async function loadIntents(){
       const res = await fetch('/simulator/api');
       const j = await res.json();
@@ -123,119 +125,184 @@
       respEl.textContent = 'Sending...';
       try{
         const r = await fetch('/simulator/send', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-          const j = await r.json();
-          // Render response into the single response box. Do not clear it after rendering.
-          function renderResponse(obj){
-            const respBox = document.getElementById('response');
-            if(obj && typeof obj === 'object' && ('body' in obj) && ('status_code' in obj)){
-              let body = obj.body || '';
-              let rawBody = body;
-              if(typeof rawBody === 'string'){
-                try{ rawBody = rawBody.replace(/\\n/g,'\n'); }catch(e){}
-              }
-              if(respBox){
-                // First, attempt to parse as JSON (handles double-encoded JSON and common escapes)
-                function tryParseJson(s){
-                  try{
-                    let parsed = JSON.parse(s);
-                    if(typeof parsed === 'string'){
-                      try{ parsed = JSON.parse(parsed); }catch(e){}
-                    }
-                    return parsed;
-                  }catch(e){
-                    try{
-                      const unescaped = s.replace(/\\\"/g, '"').replace(/\\n/g, '\n');
-                      let parsed = JSON.parse(unescaped);
-                      if(typeof parsed === 'string'){
-                        try{ parsed = JSON.parse(parsed); }catch(e){}
-                      }
-                      return parsed;
-                    }catch(e2){
-                      return null;
-                    }
-                  }
-                }
-                const parsedJson = (typeof rawBody === 'string') ? tryParseJson(rawBody) : null;
-                if(parsedJson !== null){
-                  // pretty-print JSON inside a <pre>
-                  const pretty = JSON.stringify(parsedJson, null, 2);
-                  const escapeHtml = (s)=> s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                  respBox.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Status: ' + (obj.status_code || '') + '</div>' + '<pre style="white-space:pre-wrap;margin:0;">' + escapeHtml(pretty) + '</pre>';
-                  // If the skill response contains SSML, play it using the browser TTS
-                  try{
-                    const ssml = parsedJson && parsedJson.response && parsedJson.response.outputSpeech && parsedJson.response.outputSpeech.ssml;
-                    if(ssml && window.speechSynthesis){
-                      const tmp = document.createElement('div');
-                      tmp.innerHTML = ssml;
-                      const ttsText = tmp.textContent || tmp.innerText || '';
-                      if(ttsText && ttsText.trim()){
-                        try{ speechSynthesis.cancel(); }catch(_e){}
-                        const utter = new SpeechSynthesisUtterance(ttsText);
-                        // optional: set lang if available on payload
-                        if(parsedJson.request && parsedJson.request.locale) utter.lang = parsedJson.request.locale;
-                        speechSynthesis.speak(utter);
-                      }
-                    }
-                  }catch(e){}
-                  // Check for AudioPlayer directives and enqueue any stream URLs
-                  try{
-                    const dirs = parsedJson && parsedJson.response && parsedJson.response.directives;
-                    if(Array.isArray(dirs)){
-                      const urls = [];
-                    dirs.forEach(d=>{
-                      try{
-                        if(d && d.type === 'AudioPlayer.Play'){
-                          const stream = d.audioItem && d.audioItem.stream;
-                          if(stream){
-                            // prefer explicit url, fall back to token if it looks like a URL
-                            if(stream.url) urls.push(stream.url);
-                            else if(stream.token && typeof stream.token === 'string' && stream.token.startsWith('http')) urls.push(stream.token);
-                          }
-                        }
-                      }catch(_){}
-                    });
-                    if(urls.length) enqueueAndPlayUrls(urls);
-                    }
-                  }catch(e){}
-                }else{
-                  // Not JSON — if it looks like HTML, render it; otherwise show raw text
-                  const maybeHtml = typeof rawBody === 'string' && /<[^>]+>/.test(rawBody);
-                  if(maybeHtml){
-                    respBox.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Status: ' + (obj.status_code || '') + '</div>' + rawBody;
-                    // also attempt to play SSML if the raw HTML includes a <speak> element
-                    try{
-                      const speakMatch = typeof rawBody === 'string' && rawBody.match(/<speak[\s\S]*?>[\s\S]*?<\/speak>/i);
-                      if(speakMatch && window.speechSynthesis){
-                        const tmp = document.createElement('div'); tmp.innerHTML = speakMatch[0];
-                        const tts = tmp.textContent || tmp.innerText || '';
-                        if(tts && tts.trim()){
-                          try{ speechSynthesis.cancel(); }catch(_e){}
-                          speechSynthesis.speak(new SpeechSynthesisUtterance(tts));
-                        }
-                      }
-                    }catch(e){}
-                  }else{
-                    respBox.textContent = 'Status: ' + (obj.status_code || '') + '\n\n' + rawBody;
-                  }
-                }
-              }
-              return;
-            }
-            // fallback: display JSON/stringified body
-            try{
-              if(respBox) respBox.textContent = JSON.stringify(obj, null, 2);
-            }catch(e){
-              if(respBox) respBox.textContent = String(obj);
-            }
-          }
-          // render into the response box (do not overwrite with an empty string)
-          renderResponse(j);
+        const j = await r.json();
+        // Render response into the single response box. Do not clear it after rendering.
+        renderResponse(j);
       }catch(e){
         respEl.textContent = String(e);
       }
     });
 
-    loadIntents().catch(()=>{});
+    // Replace literal "\n" escape sequences in a JSON-encoded body with real newlines.
+    function decodeEscapedBody(rawBody){
+      if(typeof rawBody !== 'string') return rawBody;
+      try{
+        return rawBody.replaceAll('\\n', '\n');
+      }catch(e){
+        // best-effort: unescaping only affects presentation; keep the original body on failure
+        return rawBody;
+      }
+    }
+
+    // Parse a response body that may be JSON, double-encoded JSON, or escaped JSON.
+    function tryParseJson(s){
+      try{
+        let parsed = JSON.parse(s);
+        if(typeof parsed === 'string'){
+          try{ parsed = JSON.parse(parsed); }catch(e){
+            // best-effort: value is plain text rather than double-encoded JSON; keep it
+          }
+        }
+        return parsed;
+      }catch(e){
+        // outer parse failed — retry once with common escape sequences unescaped
+        try{
+          const unescaped = s.replaceAll('\\"', '"').replaceAll('\\n', '\n');
+          let parsed = JSON.parse(unescaped);
+          if(typeof parsed === 'string'){
+            try{ parsed = JSON.parse(parsed); }catch(e){
+              // best-effort: value is plain text rather than double-encoded JSON; keep it
+            }
+          }
+          return parsed;
+        }catch(error_){
+          // not JSON even after unescaping; caller falls back to raw rendering
+          return null;
+        }
+      }
+    }
+
+    // Escape HTML metacharacters before inserting text via innerHTML.
+    function escapeHtml(s){
+      return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    }
+
+    // True when the body contains a "<...>" style tag: "<" + at least one
+    // non-">" character + ">". Equivalent to /<[^>]+>/, implemented as a linear
+    // scan so no regex backtracking is possible.
+    function looksLikeHtml(s){
+      for(let i = s.indexOf('<'); i !== -1; i = s.indexOf('<', i + 1)){
+        if(s[i + 1] !== '>' && s.indexOf('>', i + 1) !== -1) return true;
+      }
+      return false;
+    }
+
+    // Speak the SSML embedded in a raw HTML body, if any.
+    function speakSsmlFromHtml(rawBody){
+      try{
+        const speakMatch = (typeof rawBody === 'string') ? rawBody.match(/<speak[^>]*>[\s\S]*?<\/speak>/i) : null;
+        if(speakMatch && window.speechSynthesis){
+          const tmp = document.createElement('div'); tmp.innerHTML = speakMatch[0];
+          const tts = tmp.textContent || tmp.innerText || '';
+          if(tts && tts.trim()){
+            try{ speechSynthesis.cancel(); }catch(_e){
+              // best-effort: cancelling any current utterance is optional
+            }
+            speechSynthesis.speak(new SpeechSynthesisUtterance(tts));
+          }
+        }
+      }catch(e){
+        // best-effort: TTS of SSML found in raw HTML is optional; ignore failures
+      }
+    }
+
+    // If the skill response contains SSML, play it using the browser TTS
+    function playSsmlFromJson(parsedJson){
+      try{
+        const ssml = parsedJson && parsedJson.response && parsedJson.response.outputSpeech && parsedJson.response.outputSpeech.ssml;
+        if(ssml && window.speechSynthesis){
+          const tmp = document.createElement('div');
+          tmp.innerHTML = ssml;
+          const ttsText = tmp.textContent || tmp.innerText || '';
+          if(ttsText && ttsText.trim()){
+            try{ speechSynthesis.cancel(); }catch(_e){
+              // best-effort: cancelling any current utterance is optional
+            }
+            const utter = new SpeechSynthesisUtterance(ttsText);
+            // optional: set lang if available on payload
+            if(parsedJson.request && parsedJson.request.locale) utter.lang = parsedJson.request.locale;
+            speechSynthesis.speak(utter);
+          }
+        }
+      }catch(e){
+        // best-effort: SSML playback is optional; ignore synthesis failures
+      }
+    }
+
+    // Collect AudioPlayer stream URLs from a directives array.
+    function collectDirectiveUrls(dirs){
+      const urls = [];
+      dirs.forEach(d=>{
+        try{
+          if(d && d.type === 'AudioPlayer.Play'){
+            const stream = d.audioItem && d.audioItem.stream;
+            if(stream){
+              // prefer explicit url, fall back to token if it looks like a URL
+              if(stream.url) urls.push(stream.url);
+              else if(stream.token && typeof stream.token === 'string' && stream.token.startsWith('http')) urls.push(stream.token);
+            }
+          }
+        }catch(_){
+          // best-effort: skip a malformed directive without failing the whole response
+        }
+      });
+      return urls;
+    }
+
+    // Check for AudioPlayer directives and enqueue any stream URLs
+    function playAudioDirectives(parsedJson){
+      try{
+        const dirs = parsedJson && parsedJson.response && parsedJson.response.directives;
+        if(Array.isArray(dirs)){
+          const urls = collectDirectiveUrls(dirs);
+          if(urls.length) enqueueAndPlayUrls(urls);
+        }
+      }catch(e){
+        // best-effort: audio playback from directives is optional; ignore failures
+      }
+    }
+
+    // Render a parsed JSON skill response into the response box.
+    function renderPrettyJson(respBox, obj, parsedJson){
+      // pretty-print JSON inside a <pre>
+      const pretty = JSON.stringify(parsedJson, null, 2);
+      respBox.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Status: ' + (obj.status_code || '') + '</div>' + '<pre style="white-space:pre-wrap;margin:0;">' + escapeHtml(pretty) + '</pre>';
+      playSsmlFromJson(parsedJson);
+      playAudioDirectives(parsedJson);
+    }
+
+    // Render a full skill response ({body, status_code}) into the response box.
+    function renderSkillResponse(respBox, obj){
+      const body = obj.body || '';
+      const rawBody = decodeEscapedBody(body);
+      if(!respBox) return;
+      const parsedJson = (typeof rawBody === 'string') ? tryParseJson(rawBody) : null;
+      if(parsedJson !== null){
+        renderPrettyJson(respBox, obj, parsedJson);
+      }else if(typeof rawBody === 'string' && looksLikeHtml(rawBody)){
+        respBox.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Status: ' + (obj.status_code || '') + '</div>' + rawBody;
+        // also attempt to play SSML if the raw HTML includes a <speak> element
+        speakSsmlFromHtml(rawBody);
+      }else{
+        respBox.textContent = 'Status: ' + (obj.status_code || '') + '\n\n' + rawBody;
+      }
+    }
+
+    // Render a response from the skill send API into the single response box.
+    function renderResponse(obj){
+      const respBox = document.getElementById('response');
+      if(obj && typeof obj === 'object' && ('body' in obj) && ('status_code' in obj)){
+        renderSkillResponse(respBox, obj);
+        return;
+      }
+      // fallback: display JSON/stringified body
+      try{
+        if(respBox) respBox.textContent = JSON.stringify(obj, null, 2);
+      }catch(e){
+        // best-effort: fall back to string coercion when the body is not serializable
+        if(respBox) respBox.textContent = String(obj);
+      }
+    }
 
     // Make the response pre selectable via Ctrl/Cmd+A when focused
     try{
@@ -253,13 +320,14 @@
               sel.removeAllRanges();
               sel.addRange(range);
             }catch(_){
+              // best-effort: the selection API may be unavailable; fall back to the textarea trick below
               // fallback: select entire text by creating a temporary textarea
               const txt = respBox.textContent || '';
               const ta = document.createElement('textarea');
               document.body.appendChild(ta);
               ta.value = txt;
               ta.select();
-              setTimeout(()=>{ document.body.removeChild(ta); }, 50);
+              setTimeout(()=>{ ta.remove(); }, 50);
             }
           }
         });
@@ -267,7 +335,9 @@
       // ensure rendered response div is visible (we always render HTML)
       const renderDiv = document.getElementById('response-render');
       if(renderDiv) renderDiv.style.display = 'block';
-    }catch(e){}
+    }catch(e){
+      // best-effort: response-box enhancements are optional; the page still works without them
+    }
 
     // Audio playback queue/state
     const audioEl = document.getElementById('sim-audio');
@@ -289,7 +359,9 @@
       if(i < 0 || i >= audioQueue.length) return;
       audioIndex = i;
       // Ensure we don't request CORS for playback (some hosts don't set CORS headers)
-      try{ audioEl.removeAttribute('crossorigin'); audioEl.crossOrigin = null; }catch(_e){}
+      try{ audioEl.removeAttribute('crossorigin'); audioEl.crossOrigin = null; }catch(_e){
+        // best-effort: clearing the CORS attribute is a defensive tweak; playback continues without it
+      }
       audioEl.preload = 'metadata';
       audioEl.src = audioQueue[audioIndex];
       audioEl.style.display = '';
@@ -328,13 +400,21 @@
     audioEl.addEventListener('play', ()=>{ btnPlay.textContent = '⏸'; });
     audioEl.addEventListener('pause', ()=>{ btnPlay.textContent = '▶'; });
 
+    // Validate an audio URL: it must parse with an http(s) scheme.
+    function isValidAudioUrl(u){
+      try{
+        const parsed = new URL(u);
+        return (parsed.protocol === 'http:' || parsed.protocol === 'https:');
+      }catch(e){
+        // best-effort: an unparseable URL is simply not a valid audio URL
+        return false;
+      }
+    }
+
     // Helper to enqueue audio URLs and start playback
     function enqueueAndPlayUrls(urls){
       if(!urls || !urls.length) return;
       // validate URLs and only keep http(s) URLs
-      function isValidAudioUrl(u){
-        try{ const parsed = new URL(u); return (parsed.protocol === 'http:' || parsed.protocol === 'https:'); }catch(e){ return false; }
-      }
       const valid = urls.filter(u => !!u && isValidAudioUrl(u));
       if(!valid.length) return;
       // ensure controls are visible
@@ -345,6 +425,14 @@
         playAtIndex(startIndex);
       }
       updateNowPlaying();
+    }
+
+    // Initial intent load (top-level await, equivalent to the previous fire-and-forget
+    // promise chain: every statement above still runs synchronously first).
+    try{
+      await loadIntents();
+    }catch(e){
+      // best-effort: the page stays usable with an empty intent list
     }
   </script>
 </body>
