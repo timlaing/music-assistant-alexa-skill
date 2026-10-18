@@ -130,10 +130,12 @@ def test_main_errors_when_version_file_missing(bump, monkeypatch):
         bump.main()
 
 
-def test_run_sync_noop_when_script_missing(bump, capsys):
+def test_run_sync_noop_when_script_missing(monkeypatch, tmp_path, capsys):
     module = _load("bump_version")
-    # SYNC_SCRIPT points at a missing file: no subprocess, no warning.
-    module.run_sync()
+    monkeypatch.setattr(module, "SYNC_SCRIPT", tmp_path / "missing_sync.py")
+    with mock.patch.object(module.subprocess, "run") as run:
+        module.run_sync()
+    run.assert_not_called()
     assert "failed to run" not in capsys.readouterr().err
 
 
@@ -436,7 +438,8 @@ def test_find_skills_invalid_json_prints_empty(tmp_path, monkeypatch, capsys):
 def test_find_skills_matches_by_name_fields(tmp_path, monkeypatch, capsys, entry):
     path = _write_skills(tmp_path, {"skills": [entry]})
     out = _run_top_level("find_skills_to_delete.py", [path], monkeypatch, capsys)
-    assert entry.get("skillId") or entry.get("id") in out.out.split()
+    expected_id = entry.get("skillId") or entry.get("id")
+    assert expected_id in out.out.split()
 
 
 def test_find_skills_ignores_other_names(tmp_path, monkeypatch, capsys):
