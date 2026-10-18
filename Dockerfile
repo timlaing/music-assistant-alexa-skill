@@ -40,8 +40,11 @@ COPY app/requirements.lock.txt /app/requirements.lock.txt
 # --ignore-scripts keeps third-party lifecycle code from running; the build
 # verifies the CLI actually loads on this Node runtime (`ask --version`)
 # instead of swallowing failures with `|| true`.
-# Then create the app venv with pinned, wheel-only pip tooling and apply the
-# verifier.py patch in the same layer (the patch only depends on the venv).
+# Then create the app venv with pinned, wheel-only pip tooling and apply two
+# site-packages patches in the same layer (they only depend on the venv):
+# ask_sdk_webservice_support/verifier.py (timezone-aware certificate
+# validation) and certvalidator/registry.py (skip trust roots whose subject
+# cannot be hashed by asn1crypto >= 1.5.1 instead of aborting every request).
 RUN npm install -g --ignore-scripts ask-cli@2.30.7 && \
     ask --version && \
     python3.14 -m venv venv && \
@@ -49,7 +52,8 @@ RUN npm install -g --ignore-scripts ask-cli@2.30.7 && \
     pip install --upgrade --only-binary :all: pip==26.2.1 && \
     pip install --require-hashes --only-binary :all: -r requirements.lock.txt && \
     pip install --only-binary :all: debugpy==1.8.22 && \
-    /app/venv/bin/python - <<'PY'
+    /app/venv/bin/python - <<'PY1' && \
+    /app/venv/bin/python - <<'PY2'
 import sysconfig, os, sys
 try:
         site = sysconfig.get_paths()['purelib']
@@ -97,15 +101,7 @@ if needle in src:
         print('Failed to write patch:', e)
 else:
     print('No patch needed for verifier.py')
-PY
-
-# Apply certvalidator registry.py patch so OS trust-root iteration does not crash
-# with asn1crypto >= 1.5.1. certvalidator 0.11.1 (2016) calls
-# trust_root.subject.hashable for every OS CA cert; asn1crypto 1.5.1 changed
-# NameTypeAndValue internals so that call raises KeyError for certain cert
-# structures present in modern CA stores. Wrap the call in try/except so
-# incompatible trust roots are skipped rather than aborting every Alexa request.
-RUN /app/venv/bin/python - <<'PY'
+PY1
 import sysconfig, os, sys
 try:
         site = sysconfig.get_paths()['purelib']
@@ -161,7 +157,7 @@ if needle in src:
         print('Failed to write patch:', e)
 else:
     print('No patch needed for registry.py (needle not found)')
-PY
+PY2
 
 # Now copy the rest of your source code (commented out for dynamic development)
 COPY app /app/src
