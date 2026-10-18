@@ -37,3 +37,5 @@ notamazon.com
 *.example.io
 *.example.net
 *.example.org
+registry.npmjs.org
+pre-commit.com
