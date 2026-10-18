@@ -90,8 +90,13 @@ def push_alexa_metadata(url):
     shared_store.set_alexa(payload)
 
 
-def _stream_url_reachable(url):
-    """HEAD the stream URL (streaming GET fallback); True when HTTP < 400."""
+def validate_stream_url(url):
+    """HEAD the stream URL (streaming GET fallback); True when HTTP < 400.
+
+    Used by play() before sending the Play directive, and by the launch/play
+    handler to detect a stale flow URL (issue #40): Music Assistant answers
+    404 for it once the queue's flow session has streamed to the end.
+    """
     try:
         head_resp = requests.head(url, allow_redirects=True, timeout=5)
         resp = head_resp
@@ -110,8 +115,22 @@ def _stream_url_reachable(url):
         return False
 
 
-def _validated_stream_url(url, response_builder):
-    """Return (url, None) to keep playing, or (None, response) after speaking an error."""
+def skip_url_validation():
+    """True when SKIP_URL_VALIDATION turns off stream URL reachability checks."""
+    return get_setting("SKIP_URL_VALIDATION", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+
+def _validated_stream_url(url, response_builder, validate=True):
+    """Return (url, None) to keep playing, or (None, response) after speaking an error.
+
+    With validate=False the caller has already checked reachability (the
+    launch/play handler's stale-URL detection), so only hostname handling
+    runs here - no second HEAD request.
+    """
     try:
         hostname = get_ma_hostname(raise_on_http_scheme=True)
     except ValueError:
@@ -128,17 +147,15 @@ def _validated_stream_url(url, response_builder):
 
     url = replace_ip_in_url(url, hostname)
 
-    skip_validation = get_setting("SKIP_URL_VALIDATION", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-
-    if skip_validation:
+    if skip_url_validation():
         logging.info("Stream URL (validation skipped via SKIP_URL_VALIDATION): %s", url)
         return url, None
 
-    if not _stream_url_reachable(url):
+    if not validate:
+        logging.info("Stream URL (validation skipped by caller): %s", url)
+        return url, None
+
+    if not validate_stream_url(url):
         response_builder.speak(
             "Sorry, I can't reach the audio file. Please check that your stream URL is internet accessible via HTTPS at the MA_HOSTNAME variable you provided."
         )
@@ -148,11 +165,11 @@ def _validated_stream_url(url, response_builder):
     return url, None
 
 
-def play(url, offset, text, response_builder, supports_apl=False):
+def play(url, offset, text, response_builder, supports_apl=False, validate=True):
     if supports_apl and apl_enabled():
         add_apl(response_builder)
     else:
-        url, error = _validated_stream_url(url, response_builder)
+        url, error = _validated_stream_url(url, response_builder, validate=validate)
         if error is not None:
             return error
 

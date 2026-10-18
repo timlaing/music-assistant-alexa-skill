@@ -4,6 +4,7 @@ import gettext
 import logging
 import os
 import re
+import time
 
 from ask_sdk.standard import StandardSkillBuilder
 from ask_sdk_core.dispatch_components import (
@@ -226,12 +227,47 @@ class LaunchRequestOrPlayAudioHandler(AbstractRequestHandler):
             return handler_input.response_builder.response
 
         logger.info("Playing URL: %s", url)
+
+        # Optimistically validate the stored flow URL before handing it to
+        # Alexa (issue #40): Music Assistant answers 404 for it once the
+        # queue's flow session has streamed to the end, and playback of a
+        # stale URL fails with no way to recover.
+        validate = True
+        if not util.skip_url_validation():
+            if util.validate_stream_url(url):
+                # Already proven reachable - don't HEAD it again in play().
+                validate = False
+            else:
+                logger.info(
+                    "Stored stream URL failed validation; refreshing via MA resume"
+                )
+                device_id = _device_id_from(handler_input)
+                player_id = device_mapping.get_player_for_device(device_id)
+                if not player_id:
+                    logger.warning(
+                        "No MA player mapped for device_id=%s; cannot refresh stale URL",
+                        _sanitize_log_value(device_id),
+                    )
+                    handler_input.response_builder.speak(
+                        _(data.DEVICE_NOT_MAPPED_MSG)
+                    ).set_should_end_session(True)
+                    return handler_input.response_builder.response
+
+                refreshed = _refresh_stream_url(device_id, player_id)
+                if refreshed:
+                    url = refreshed
+                    validate = False
+                # On refresh failure fall through with the stored URL and
+                # validate=True: play()'s validation speaks the usual
+                # reachability error instead of silently serving a 404 URL.
+
         return util.play(
             url=url,
             offset=0,
             text=data.WELCOME_MSG,
             response_builder=handler_input.response_builder,
             supports_apl=_supports_apl(handler_input),
+            validate=validate,
         )
 
 
@@ -312,6 +348,51 @@ def _sync_to_ma_unless_echo(handler_input, command):
             _sanitize_log_value(command),
             _sanitize_log_value(player_id),
         )
+
+
+# How long the launch/play handler waits for MA to push a refreshed stream
+# URL after asking it to resume, and the polling interval while waiting.
+_REFRESH_WAIT_SECONDS = 2.5
+_REFRESH_POLL_SECONDS = 0.25
+
+
+def _refresh_stream_url(device_id, player_id):
+    """Ask MA to resume `player_id` and return a freshly pushed URL.
+
+    Music Assistant flow stream URLs are one-shot: once the queue's flow
+    session has streamed to the end, MA answers 404 for it forever (issue
+    #40). Resuming the queue makes MA start a new flow session and push its
+    URL to /ma/push-url; this waits briefly for that push. Returns the new
+    URL, or None if the MA command fails or no new URL arrives in time (the
+    caller falls back to the stored URL, whose validation then produces the
+    usual reachability error).
+    """
+    import shared_store
+
+    before = shared_store.get_ma() or {}
+    # Distinct token: MA's alexa provider echoes an AMAZON.ResumeIntent back
+    # into the device when it receives players.play(); that echo is a side
+    # effect of this refresh, not a user resume, so ResumeIntentHandler
+    # swallows exactly this token instead of playing a second time.
+    ma_control.mark_ma_triggered(device_id, "play_refresh")
+    if not ma_control.send_player_command(player_id, "resume"):
+        return None
+
+    deadline = time.monotonic() + _REFRESH_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(_REFRESH_POLL_SECONDS)
+        current = shared_store.get_ma() or {}
+        url = current.get("streamUrl")
+        if (
+            url
+            and current.get("version") != before.get("version")
+            and url != before.get("streamUrl")
+        ):
+            logger.info("Refreshed stale stream URL via MA resume")
+            return url
+
+    logger.warning("Timed out waiting for MA to push a fresh stream URL")
+    return None
 
 
 class NextOrPreviousIntentHandler(AbstractRequestHandler):
@@ -409,6 +490,19 @@ class ResumeIntentHandler(AbstractRequestHandler):
         logger.info("In ResumeIntentHandler")
         request = handler_input.request_envelope.request
         _ = handler_input.attributes_manager.request_attributes["_"]
+
+        device_id = _device_id_from(handler_input)
+        if ma_control.is_echo_of_ma_command(device_id, "play_refresh"):
+            # Echo of the launch/play handler's own stale-URL refresh: its
+            # resume command makes MA's alexa provider speak a ResumeIntent
+            # back into the device. That handler already sent the Play
+            # directive for the fresh URL - ack with an empty response
+            # instead of playing the stream a second time.
+            logger.info(
+                "Suppressing resume echo of our own stream URL refresh for device_id=%s",
+                _sanitize_log_value(device_id),
+            )
+            return handler_input.response_builder.response
 
         _sync_to_ma_unless_echo(handler_input, "resume")
 
