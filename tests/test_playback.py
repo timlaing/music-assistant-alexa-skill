@@ -401,3 +401,196 @@ def test_apl_preserves_provider_artwork_on_render_and_refresh(client, monkeypatc
     ]
     assert images
     assert all(value == artwork for value in images)
+
+
+# --- stale stream URL refresh (issue #40) -------------------------------
+
+STALE_URL = "https://streams.example.com/music/flow/stale.mp3"
+FRESH_URL = "https://streams.example.com/music/flow/fresh.mp3"
+
+
+@pytest.fixture
+def echo_marks():
+    """Scope MA echo-suppression marks to tests that create them."""
+    ma_control._recent_ma_triggered.clear()
+    yield
+    ma_control._recent_ma_triggered.clear()
+
+
+def test_launch_refreshes_stale_stream_url(monkeypatch, echo_marks):
+    device_mapping.set_player_for_device("echo-1", "ma-player")
+    monkeypatch.setenv("SKIP_URL_VALIDATION", "false")
+    monkeypatch.setattr(handlers, "_REFRESH_WAIT_SECONDS", 1)
+    monkeypatch.setattr(handlers, "_REFRESH_POLL_SECONDS", 0.01)
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "Track"})
+    monkeypatch.setattr(util, "validate_stream_url", lambda url: False)
+    sent = []
+
+    def fake_send(player, command):
+        sent.append((player, command))
+        # MA starts a new flow session and pushes its URL like /ma/push-url.
+        shared_store.set_ma({"streamUrl": FRESH_URL, "title": "Track"})
+        return True
+
+    monkeypatch.setattr(ma_control, "send_player_command", fake_send)
+
+    response = invoke(event())
+    assert sent == [("ma-player", "resume")]
+    stream = response["directives"][0]["audioItem"]["stream"]
+    assert stream["url"] == FRESH_URL
+
+
+def test_launch_stale_url_unmapped_device_speaks(monkeypatch, echo_marks):
+    monkeypatch.setenv("SKIP_URL_VALIDATION", "false")
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "Track"})
+    monkeypatch.setattr(util, "validate_stream_url", lambda url: False)
+    sent = []
+    monkeypatch.setattr(
+        ma_control,
+        "send_player_command",
+        lambda player, command: sent.append((player, command)) or True,
+    )
+
+    response = invoke(event())
+    assert not sent  # no player to resume without a mapping
+    assert data.DEVICE_NOT_MAPPED_MSG in response["outputSpeech"]["ssml"]
+
+
+def test_launch_stale_url_refresh_timeout_speaks_error(monkeypatch, echo_marks):
+    device_mapping.set_player_for_device("echo-1", "ma-player")
+    monkeypatch.setenv("SKIP_URL_VALIDATION", "false")
+    monkeypatch.setattr(handlers, "_REFRESH_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(handlers, "_REFRESH_POLL_SECONDS", 0.01)
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "Track"})
+    monkeypatch.setattr(util, "validate_stream_url", lambda url: False)
+    monkeypatch.setattr(ma_control, "send_player_command", lambda player, cmd: True)
+
+    response = invoke(event())
+    # Refresh failed: play() re-validates the stored URL and speaks the
+    # reachability error instead of handing Alexa a 404 URL.
+    assert "can't reach the audio file" in response["outputSpeech"]["ssml"]
+    assert "directives" not in response
+
+
+# CHUNK2
+
+
+# --- stale stream URL refresh (issue #40) ----------------------------------
+
+STALE_URL = "https://streams.example.com/music/flow/stale.mp3"
+FRESH_URL = "https://streams.example.com/music/flow/fresh.mp3"
+
+
+def test_launch_refreshes_stale_stream_url_via_ma_resume(monkeypatch):
+    device_mapping.set_player_for_device("echo-1", "ma-player")
+    monkeypatch.setenv("SKIP_URL_VALIDATION", "false")
+    monkeypatch.setattr(util, "validate_stream_url", lambda url: False)
+    monkeypatch.setattr(handlers, "_REFRESH_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(handlers, "_REFRESH_WAIT_SECONDS", 1)
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "t"})
+    sent = []
+
+    def fake_send(player, command):
+        sent.append((player, command))
+        # MA starts a new flow session and pushes its URL, as /ma/push-url would.
+        shared_store.set_ma({"streamUrl": FRESH_URL, "title": "t"})
+        return True
+
+    monkeypatch.setattr(ma_control, "send_player_command", fake_send)
+    response = invoke(event())
+
+    assert sent == [("ma-player", "resume")]
+    stream = response["directives"][0]["audioItem"]["stream"]
+    assert stream["url"] == FRESH_URL
+    # Leaves a one-shot mark for the ResumeIntent echo MA sends back.
+    assert ma_control.is_echo_of_ma_command("echo-1", "play_refresh")
+
+
+def test_launch_stale_url_unmapped_device_speaks_not_mapped(monkeypatch):
+    monkeypatch.setenv("SKIP_URL_VALIDATION", "false")
+    monkeypatch.setattr(util, "validate_stream_url", lambda url: False)
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "t"})
+
+    response = invoke(event())
+
+    expected = " ".join(data.DEVICE_NOT_MAPPED_MSG.split())
+    assert expected in " ".join(response["outputSpeech"]["ssml"].split())
+    assert not response.get("directives")
+    assert response["shouldEndSession"] is True
+
+
+def test_launch_refresh_timeout_speaks_reachability_error(monkeypatch):
+    device_mapping.set_player_for_device("echo-1", "ma-player")
+    monkeypatch.setenv("SKIP_URL_VALIDATION", "false")
+    monkeypatch.setattr(util, "validate_stream_url", lambda url: False)
+    monkeypatch.setattr(handlers, "_REFRESH_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(handlers, "_REFRESH_WAIT_SECONDS", 0.05)
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "t"})
+    sent = []
+    monkeypatch.setattr(
+        ma_control,
+        "send_player_command",
+        lambda player, command: sent.append((player, command)) or True,
+    )
+
+    response = invoke(event())
+
+    assert sent == [("ma-player", "resume")]
+    assert "can't reach the audio file" in response["outputSpeech"]["ssml"]
+    assert response["shouldEndSession"] is True
+    # Consumes the play_refresh mark this test leaves behind.
+    assert ma_control.is_echo_of_ma_command("echo-1", "play_refresh")
+
+
+def test_resume_swallows_play_refresh_echo_once():
+    shared_store.set_ma({"streamUrl": FRESH_URL, "title": "t"})
+    ma_control.mark_ma_triggered("echo-1", "play_refresh")
+
+    echoed = invoke(event("IntentRequest", intent="AMAZON.ResumeIntent"))
+    assert not echoed.get("directives")
+    assert "outputSpeech" not in echoed
+
+    # The mark is one-shot: the next resume is a genuine user action.
+    played = invoke(event("IntentRequest", intent="AMAZON.ResumeIntent"))
+    assert played["directives"][0]["audioItem"]["stream"]["url"] == FRESH_URL
+
+
+def test_launch_stale_detection_skipped_when_validation_disabled(monkeypatch):
+    device_mapping.set_player_for_device("echo-1", "ma-player")
+
+    def must_not_run(url):
+        raise AssertionError(
+            "stream URL must not be validated when SKIP_URL_VALIDATION is set"
+        )
+
+    monkeypatch.setattr(util, "validate_stream_url", must_not_run)
+    sent = []
+    monkeypatch.setattr(
+        ma_control,
+        "send_player_command",
+        lambda player, command: sent.append(command) or True,
+    )
+    shared_store.set_ma({"streamUrl": STALE_URL, "title": "t"})
+
+    response = invoke(event())
+
+    assert sent == []
+    assert response["directives"][0]["audioItem"]["stream"]["url"] == STALE_URL
+
+
+def test_validate_stream_url_statuses(monkeypatch):
+    def resp(code):
+        return SimpleNamespace(status_code=code, close=lambda: None)
+
+    monkeypatch.setattr(util.requests, "head", lambda url, **kw: resp(200))
+    assert util.validate_stream_url(FRESH_URL) is True
+
+    monkeypatch.setattr(util.requests, "head", lambda url, **kw: resp(404))
+    monkeypatch.setattr(util.requests, "get", lambda url, **kw: resp(404))
+    assert util.validate_stream_url(FRESH_URL) is False
+
+    def boom(url, **kw):
+        raise util.requests.RequestException("dns down")
+
+    monkeypatch.setattr(util.requests, "head", boom)
+    assert util.validate_stream_url(FRESH_URL) is False
