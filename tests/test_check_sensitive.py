@@ -192,9 +192,82 @@ def test_main_reports_findings(repo, monkeypatch, capsys):
     assert "--no-verify" in out
 
 
+def test_main_deduplicates_findings(repo, monkeypatch, capsys):
+    monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: None)
+    monkeypatch.chdir(repo)
+    rel = _write(
+        repo,
+        "dupe.py",
+        "A = 'https://dupe.example.com/1'\nB = 'https://dupe.example.com/2'\n",
+    )
+    assert check_sensitive.main([rel]) == 1
+    out = capsys.readouterr().out
+    assert out.count("dupe.example.com") == 1
+
+
 def test_main_clean_and_empty(repo, monkeypatch):
     monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: None)
     monkeypatch.chdir(repo)
     rel = _write(repo, "clean.py", "URL = 'https://localhost/api'\n")
     assert check_sensitive.main([rel]) == 0
     assert check_sensitive.main([]) == 0
+
+
+# --- repo_root / get_staged_files / build_allowlist -----------------------
+
+
+def test_repo_root_walks_up_and_falls_back(repo, monkeypatch):
+    nested = repo / "a" / "b"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    assert check_sensitive.repo_root() == str(repo)
+    plain = repo.parent / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    assert check_sensitive.repo_root() == str(plain)
+
+
+def test_get_staged_files_from_git(monkeypatch):
+    def fake_check_output(cmd, text=False, cwd=None, stderr=None):
+        assert "--cached" in cmd
+        return "app/app.py\n\nscripts/demo.py\n"
+
+    monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: "/usr/bin/git")
+    monkeypatch.setattr(check_sensitive.subprocess, "check_output", fake_check_output)
+    assert check_sensitive.get_staged_files() == ["app/app.py", "scripts/demo.py"]
+
+
+def test_get_staged_files_fallback_walk(repo, monkeypatch):
+    monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: None)
+    monkeypatch.chdir(repo)
+    (repo / "src").mkdir()
+    (repo / "src" / "keep.py").write_text("x")
+    (repo / "skip.png").write_text("x")
+    (repo / "node_modules").mkdir()
+    (repo / "node_modules" / "junk.py").write_text("x")
+    files = check_sensitive.get_staged_files()
+    assert "src/keep.py" in files
+    assert not any(f.endswith("skip.png") for f in files)
+    assert not any(f.startswith("node_modules") for f in files)
+
+
+def test_build_allowlist_file_and_env(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    (repo / ".sensitive_allowlist").write_text(
+        "# comment\npartner.example.net\n\nUPPER.example.org\n"
+    )
+    monkeypatch.setenv("SENSITIVE_ALLOWLIST", "extra.example.com, ,also.example.io")
+    allow = check_sensitive.build_allowlist()
+    assert {"partner.example.net", "upper.example.org"} <= allow
+    assert {"extra.example.com", "also.example.io"} <= allow
+    assert check_sensitive.DEFAULT_ALLOWLIST <= allow
+
+
+def test_get_staged_content_git_error_falls_back(repo, monkeypatch):
+    def fake_check_output(cmd, cwd=None, stderr=None, text=False):
+        raise check_sensitive.subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: "/usr/bin/git")
+    monkeypatch.setattr(check_sensitive.subprocess, "check_output", fake_check_output)
+    (repo / "a.txt").write_text("fallback works", encoding="utf-8")
+    assert check_sensitive.get_staged_content("a.txt", str(repo)) == "fallback works"
