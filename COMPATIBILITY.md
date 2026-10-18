@@ -9,7 +9,8 @@ The device and region list below records historical upstream testing. For the ma
 
 ## Supported Devices (tested)
 
-### Non-APL devices: 
+### Non-APL devices:
+
 - **Echo (Gen 1)**
 - **Echo (Gen 3)**
 - **Echo (Gen 4)**
@@ -20,11 +21,14 @@ The device and region list below records historical upstream testing. For the ma
 - **Echo Dot Clock (Gen 5)**
 - **Echo Plus (Gen 2)**
 - **Echo Pop (Gen 1)**
+
 ### APL devices:
+
 - **Echo Show 5 (Gen 1)**
 - **Echo Show 8 (Gen 2)**
 
 ## Currently Unsupported Devices (tested)
 
 ### APL devices:
+
 - **Echo Show 11 (Gen 1)**

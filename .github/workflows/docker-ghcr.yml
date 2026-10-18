@@ -2,32 +2,32 @@ name: Build and Push Docker image to GHCR
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'Dockerfile'
-      - '.github/workflows/docker-ghcr.yml'
-      - 'app/**'
+      - "Dockerfile"
+      - ".github/workflows/docker-ghcr.yml"
+      - "app/**"
     tags:
-      - 'v*'
+      - "v*"
   # Releases are cut by publishing a GitHub release; building from the
   # release event guarantees the image carries the release tag (v1.3.5 …)
   # even when the tag was created by the release itself.
   release:
-    types: [ published ]
+    types: [published]
   pull_request:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'Dockerfile'
-      - '.github/workflows/docker-ghcr.yml'
-      - 'app/**'
+      - "Dockerfile"
+      - ".github/workflows/docker-ghcr.yml"
+      - "app/**"
   # Backfill a release tag onto an already-built image, e.g. after enabling
   # this workflow: gh workflow run docker-ghcr.yml -f image_tag=v1.3.5
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Extra raw image tag to apply (release tag to backfill)'
+        description: "Extra raw image tag to apply (release tag to backfill)"
         required: false
-        default: ''
+        default: ""
 
 permissions:
   contents: read

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Which segment to bump: major, minor, or patch'
+        description: "Which segment to bump: major, minor, or patch"
         required: true
-        default: 'minor'
+        default: "minor"
 
 permissions:
   contents: write

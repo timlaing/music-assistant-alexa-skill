@@ -31,10 +31,10 @@ OPENAPI_SPEC: Dict[str, Any] = {
                                 "title": "Sample Track",
                                 "artist": "Sample Artist",
                                 "album": "Sample Album",
-                                "imageUrl": "https://example.com/cover.jpg"
-                            }
+                                "imageUrl": "https://example.com/cover.jpg",
+                            },
                         }
-                    }
+                    },
                 },
                 "responses": {
                     "200": {"description": "ok"},
@@ -79,19 +79,21 @@ OPENAPI_SPEC: Dict[str, Any] = {
                                 "session": {
                                     "new": True,
                                     "sessionId": "amzn1.echo-api.session.123",
-                                    "application": {"applicationId": "amzn1.ask.skill.123"},
-                                    "user": {"userId": "amzn1.ask.account.test"}
+                                    "application": {
+                                        "applicationId": "amzn1.ask.skill.123"
+                                    },
+                                    "user": {"userId": "amzn1.ask.account.test"},
                                 },
                                 "context": {},
                                 "request": {
                                     "type": "LaunchRequest",
                                     "requestId": "amzn1.echo-api.request.456",
                                     "locale": "en-US",
-                                    "timestamp": "2020-03-22T18:00:00Z"
-                                }
-                            }
+                                    "timestamp": "2020-03-22T18:00:00Z",
+                                },
+                            },
                         }
-                    }
+                    },
                 },
                 "responses": {
                     "200": {
@@ -102,17 +104,20 @@ OPENAPI_SPEC: Dict[str, Any] = {
                                 "example": {
                                     "version": "1.0",
                                     "response": {
-                                        "outputSpeech": {"type": "PlainText", "text": "Hello from the skill"},
-                                        "shouldEndSession": True
-                                    }
-                                }
+                                        "outputSpeech": {
+                                            "type": "PlainText",
+                                            "text": "Hello from the skill",
+                                        },
+                                        "shouldEndSession": True,
+                                    },
+                                },
                             }
-                        }
+                        },
                     },
-                    "400": {"description": "Invalid request"}
-                }
+                    "400": {"description": "Invalid request"},
+                },
             }
-        }
+        },
     },
 }
 
@@ -156,6 +161,6 @@ def render() -> Response:
 
     Uses a small template so the HTML remains easy to read and modify.
     """
-    openapi_url = request.url_root.rstrip('/') + '/openapi.json'
+    openapi_url = request.url_root.rstrip("/") + "/openapi.json"
     rendered = render_template_string(_HTML_TEMPLATE, openapi_url=openapi_url)
-    return Response(rendered, mimetype='text/html')
+    return Response(rendered, mimetype="text/html")

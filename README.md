@@ -1,22 +1,5 @@
 # Music Assistant Alexa Skill
 
-[![Test](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/test.yml/badge.svg)](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/test.yml)
-[![Docker](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/docker-ghcr.yml/badge.svg)](https://github.com/timlaing/music-assistant-alexa-skill/actions/workflows/docker-ghcr.yml)
-[![License](https://img.shields.io/badge/license-Amazon%20Software%20License%201.0-blue.svg)](LICENSE)
-
-[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=coverage)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=bugs)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=timlaing_music-assistant-alexa-skill&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=timlaing_music-assistant-alexa-skill)
-
 This project provides the Alexa skill service for Music Assistant, with a Flask API and a personal-skill deployment wizard.
 
 For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api). This skill repository contains the application; the companion repository packages and configures it for Home Assistant.

@@ -1,106 +1,8 @@
 {
-  "type": "APL",
-  "version": "2024.3",
-  "theme": "dark",
   "import": [
     {
       "name": "alexa-layouts",
       "version": "1.7.0"
-    }
-  ],
-  "resources": [
-    {
-      "description": "Default resource definitions for Audio template",
-      "colors": {
-        "colorText": "@colorText"
-      },
-      "dimensions": {
-        "assetHeight": "425dp",
-        "assetWidth": "425dp",
-        "coverImageShadowRadius": "40dp",
-        "coverImageShadowVerticalOffset": "20dp",
-        "mainViewHeight": "85%",
-        "mainViewTopSpacing": "15%",
-        "primaryControlSize": "120dp",
-        "secondaryControlSize": "92dp",
-        "sliderIndeterminateHeight": "80dp",
-        "sliderPaddingTop": "@spacingMedium",
-        "trackInfoLeftPadding": "@spacingMedium",
-        "transportLayoutMargins": "0"
-      },
-      "numbers": {
-        "primarySongTextMaxLines": 3,
-        "secondarySongTextMaxLines": 2
-      }
-    },
-    {
-      "description": "Resource definitions for Audio template - hubLandscapeMedium",
-      "when": "${@viewportProfile == @hubLandscapeMedium}",
-      "dimensions": {
-        "assetHeight": "300dp",
-        "assetWidth": "300dp",
-        "primaryControlSize": "80dp",
-        "secondaryControlSize": "60dp",
-        "sliderPaddingTop": "0"
-      }
-    },
-    {
-      "description": "Resource definitions for Audio template - hubLandscapeSmall",
-      "when": "${@viewportProfile == @hubLandscapeSmall}",
-      "dimensions": {
-        "assetHeight": "206dp",
-        "assetWidth": "206dp",
-        "primaryControlSize": "80dp",
-        "secondaryControlSize": "60dp",
-        "sliderIndeterminateHeight": "60dp",
-        "sliderPaddingTop": "0"
-      },
-      "numbers": {
-        "primarySongTextMaxLines": 1,
-        "secondarySongTextMaxLines": 2
-      }
-    },
-    {
-      "description": "Resource definitions for Audio template - round",
-      "when": "${@viewportProfile == @hubRoundSmall}",
-      "dimensions": {
-        "assetHeight": "96dp",
-        "assetWidth": "96dp",
-        "mainViewHeight": "80%",
-        "mainViewTopSpacing": "20%",
-        "primaryControlSize": "80dp",
-        "secondaryControlSize": "60dp",
-        "sliderIndeterminateHeight": "40dp",
-        "sliderPaddingTop": "@spacingSmall",
-        "trackInfoLeftPadding": 0
-      },
-      "numbers": {
-        "primarySongTextMaxLines": 1,
-        "secondarySongTextMaxLines": 1
-      }
-    },
-    {
-      "description": "Resource definitions for Audio template - tv full screen",
-      "when": "${@viewportProfile == @tvLandscapeXLarge}",
-      "dimensions": {
-        "assetHeight": "240dp",
-        "assetWidth": "240dp",
-        "coverImageShadowRadius": "20dp",
-        "coverImageShadowVerticalOffset": "10dp",
-        "primaryControlSize": "60dp",
-        "secondaryControlSize": "46dp",
-        "sliderIndeterminateHeight": "40dp"
-      },
-      "numbers": {
-        "primarySongTextMaxLines": 4,
-        "secondarySongTextMaxLines": 2
-      }
-    },
-    {
-      "when": "${viewport.theme == 'light'}",
-      "colors": {
-        "colorText": "@colorTextReversed"
-      }
     }
   ],
   "layouts": {
@@ -207,10 +109,7 @@
                 },
                 {
                   "type": "SendEvent",
-                  "arguments": [
-                    "MetadataRefresh",
-                    "${refreshTick}"
-                  ]
+                  "arguments": ["MetadataRefresh", "${refreshTick}"]
                 }
               ]
             }
@@ -455,9 +354,7 @@
     }
   },
   "mainTemplate": {
-    "parameters": [
-      "payload"
-    ],
+    "parameters": ["payload"],
     "items": [
       {
         "type": "AudioPlayer",
@@ -473,5 +370,103 @@
         "sliderType": "determinate"
       }
     ]
-  }
+  },
+  "resources": [
+    {
+      "description": "Default resource definitions for Audio template",
+      "colors": {
+        "colorText": "@colorText"
+      },
+      "dimensions": {
+        "assetHeight": "425dp",
+        "assetWidth": "425dp",
+        "coverImageShadowRadius": "40dp",
+        "coverImageShadowVerticalOffset": "20dp",
+        "mainViewHeight": "85%",
+        "mainViewTopSpacing": "15%",
+        "primaryControlSize": "120dp",
+        "secondaryControlSize": "92dp",
+        "sliderIndeterminateHeight": "80dp",
+        "sliderPaddingTop": "@spacingMedium",
+        "trackInfoLeftPadding": "@spacingMedium",
+        "transportLayoutMargins": "0"
+      },
+      "numbers": {
+        "primarySongTextMaxLines": 3,
+        "secondarySongTextMaxLines": 2
+      }
+    },
+    {
+      "description": "Resource definitions for Audio template - hubLandscapeMedium",
+      "when": "${@viewportProfile == @hubLandscapeMedium}",
+      "dimensions": {
+        "assetHeight": "300dp",
+        "assetWidth": "300dp",
+        "primaryControlSize": "80dp",
+        "secondaryControlSize": "60dp",
+        "sliderPaddingTop": "0"
+      }
+    },
+    {
+      "description": "Resource definitions for Audio template - hubLandscapeSmall",
+      "when": "${@viewportProfile == @hubLandscapeSmall}",
+      "dimensions": {
+        "assetHeight": "206dp",
+        "assetWidth": "206dp",
+        "primaryControlSize": "80dp",
+        "secondaryControlSize": "60dp",
+        "sliderIndeterminateHeight": "60dp",
+        "sliderPaddingTop": "0"
+      },
+      "numbers": {
+        "primarySongTextMaxLines": 1,
+        "secondarySongTextMaxLines": 2
+      }
+    },
+    {
+      "description": "Resource definitions for Audio template - round",
+      "when": "${@viewportProfile == @hubRoundSmall}",
+      "dimensions": {
+        "assetHeight": "96dp",
+        "assetWidth": "96dp",
+        "mainViewHeight": "80%",
+        "mainViewTopSpacing": "20%",
+        "primaryControlSize": "80dp",
+        "secondaryControlSize": "60dp",
+        "sliderIndeterminateHeight": "40dp",
+        "sliderPaddingTop": "@spacingSmall",
+        "trackInfoLeftPadding": 0
+      },
+      "numbers": {
+        "primarySongTextMaxLines": 1,
+        "secondarySongTextMaxLines": 1
+      }
+    },
+    {
+      "description": "Resource definitions for Audio template - tv full screen",
+      "when": "${@viewportProfile == @tvLandscapeXLarge}",
+      "dimensions": {
+        "assetHeight": "240dp",
+        "assetWidth": "240dp",
+        "coverImageShadowRadius": "20dp",
+        "coverImageShadowVerticalOffset": "10dp",
+        "primaryControlSize": "60dp",
+        "secondaryControlSize": "46dp",
+        "sliderIndeterminateHeight": "40dp"
+      },
+      "numbers": {
+        "primarySongTextMaxLines": 4,
+        "secondarySongTextMaxLines": 2
+      }
+    },
+    {
+      "when": "${viewport.theme == 'light'}",
+      "colors": {
+        "colorText": "@colorTextReversed"
+      }
+    }
+  ],
+  "theme": "dark",
+  "type": "APL",
+  "version": "2024.3"
 }

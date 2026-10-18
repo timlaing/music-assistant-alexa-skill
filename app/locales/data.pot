@@ -60,4 +60,3 @@ msgstr ""
 #: alexa/data.py:16
 msgid "test with parameters {0} and {1}"
 msgstr ""
-

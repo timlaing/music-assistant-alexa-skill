@@ -6,9 +6,11 @@
 
 ## Known Issues
 
-### All devices: 
+### All devices:
+
 - Skill session does not persist on AlexaPy device commands
 - Alexa groups (including stereo) are not supported at this time
 
 ### APL devices:
- - A follow up prompt will continously stay open because of the constant metadata refresh
+
+- A follow up prompt will continously stay open because of the constant metadata refresh

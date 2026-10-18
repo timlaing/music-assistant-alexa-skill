@@ -89,3 +89,6 @@ addons/music-assistant-skill/scripts
 ask_data/
 .pytest_cache/
 .ruff_cache/
+
+# Node (prettier tooling)
+node_modules/

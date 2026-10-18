@@ -65,4 +65,3 @@ msgstr "test italiano"
 #: alexa/data.py:16
 msgid "test with parameters {} and {}"
 msgstr "testa con i parametri {} e {}"
-

@@ -3,33 +3,112 @@
     "languageModel": {
       "invocationName": "sag music assistant",
       "intents": [
-        { "intent": "AMAZON.CancelIntent", "utterances": ["abbrechen", "vergiss es", "ist mir egal"] },
-        { "intent": "AMAZON.FallbackIntent", "utterances": ["ich weiß nicht", "das hilft nicht"] },
-        { "intent": "AMAZON.HelpIntent", "utterances": ["hilfe", "hilf mir", "kannst du mir helfen"] },
-        { "intent": "AMAZON.LoopOffIntent", "utterances": ["wiederholung aus", "schleife ausschalten"] },
-        { "intent": "AMAZON.LoopOnIntent", "utterances": ["wiederholen", "schleife an", "immer wieder spielen"] },
-        { "intent": "AMAZON.NextIntent", "utterances": ["nächster", "überspringen", "weiter"] },
+        {
+          "intent": "AMAZON.CancelIntent",
+          "utterances": ["abbrechen", "vergiss es", "ist mir egal"]
+        },
+        {
+          "intent": "AMAZON.FallbackIntent",
+          "utterances": ["ich weiß nicht", "das hilft nicht"]
+        },
+        {
+          "intent": "AMAZON.HelpIntent",
+          "utterances": ["hilfe", "hilf mir", "kannst du mir helfen"]
+        },
+        {
+          "intent": "AMAZON.LoopOffIntent",
+          "utterances": ["wiederholung aus", "schleife ausschalten"]
+        },
+        {
+          "intent": "AMAZON.LoopOnIntent",
+          "utterances": ["wiederholen", "schleife an", "immer wieder spielen"]
+        },
+        {
+          "intent": "AMAZON.NextIntent",
+          "utterances": ["nächster", "überspringen", "weiter"]
+        },
         { "intent": "AMAZON.NoIntent", "utterances": ["nein", "nein danke"] },
-        { "intent": "AMAZON.PauseIntent", "utterances": ["pausieren", "pause"] },
-        { "intent": "AMAZON.PreviousIntent", "utterances": ["zurück", "vorherige", "zurückgehen"] },
-        { "intent": "AMAZON.RepeatIntent", "utterances": ["wiederhole das", "nochmal", "noch einmal sagen"] },
-        { "intent": "AMAZON.ResumeIntent", "utterances": ["weitermachen", "fortsetzen"] },
-        { "intent": "AMAZON.SelectIntent", "utterances": ["das auswählen", "diesen Eintrag auswählen", "wähle die erste Option"] },
-        { "intent": "AMAZON.SendToPhoneIntent", "utterances": ["an mein Telefon senden", "schick mir den Link auf mein Handy"] },
-        { "intent": "AMAZON.ShuffleOffIntent", "utterances": ["zufällig aus", "shuffle ausschalten"] },
-        { "intent": "AMAZON.ShuffleOnIntent", "utterances": ["zufällig abspielen", "shuffle an"] },
-        { "intent": "AMAZON.StartOverIntent", "utterances": ["nochmal von vorn", "neu starten"] },
-        { "intent": "AMAZON.StopIntent", "utterances": ["stopp", "aufhören", "beenden"] },
+        {
+          "intent": "AMAZON.PauseIntent",
+          "utterances": ["pausieren", "pause"]
+        },
+        {
+          "intent": "AMAZON.PreviousIntent",
+          "utterances": ["zurück", "vorherige", "zurückgehen"]
+        },
+        {
+          "intent": "AMAZON.RepeatIntent",
+          "utterances": ["wiederhole das", "nochmal", "noch einmal sagen"]
+        },
+        {
+          "intent": "AMAZON.ResumeIntent",
+          "utterances": ["weitermachen", "fortsetzen"]
+        },
+        {
+          "intent": "AMAZON.SelectIntent",
+          "utterances": [
+            "das auswählen",
+            "diesen Eintrag auswählen",
+            "wähle die erste Option"
+          ]
+        },
+        {
+          "intent": "AMAZON.SendToPhoneIntent",
+          "utterances": [
+            "an mein Telefon senden",
+            "schick mir den Link auf mein Handy"
+          ]
+        },
+        {
+          "intent": "AMAZON.ShuffleOffIntent",
+          "utterances": ["zufällig aus", "shuffle ausschalten"]
+        },
+        {
+          "intent": "AMAZON.ShuffleOnIntent",
+          "utterances": ["zufällig abspielen", "shuffle an"]
+        },
+        {
+          "intent": "AMAZON.StartOverIntent",
+          "utterances": ["nochmal von vorn", "neu starten"]
+        },
+        {
+          "intent": "AMAZON.StopIntent",
+          "utterances": ["stopp", "aufhören", "beenden"]
+        },
         { "intent": "AMAZON.YesIntent", "utterances": ["ja", "gerne"] },
-        { "intent": "AMAZON.ScrollUpIntent", "utterances": ["nach oben scrollen", "scroll nach oben"] },
-        { "intent": "AMAZON.ScrollLeftIntent", "utterances": ["nach links scrollen", "scroll nach links"] },
-        { "intent": "AMAZON.ScrollDownIntent", "utterances": ["nach unten scrollen", "scroll nach unten"] },
-        { "intent": "AMAZON.ScrollRightIntent", "utterances": ["nach rechts scrollen", "scroll nach rechts"] },
-        { "intent": "AMAZON.PageUpIntent", "utterances": ["seite nach oben", "seite hoch"] },
-        { "intent": "AMAZON.PageDownIntent", "utterances": ["seite nach unten", "seite runter"] },
+        {
+          "intent": "AMAZON.ScrollUpIntent",
+          "utterances": ["nach oben scrollen", "scroll nach oben"]
+        },
+        {
+          "intent": "AMAZON.ScrollLeftIntent",
+          "utterances": ["nach links scrollen", "scroll nach links"]
+        },
+        {
+          "intent": "AMAZON.ScrollDownIntent",
+          "utterances": ["nach unten scrollen", "scroll nach unten"]
+        },
+        {
+          "intent": "AMAZON.ScrollRightIntent",
+          "utterances": ["nach rechts scrollen", "scroll nach rechts"]
+        },
+        {
+          "intent": "AMAZON.PageUpIntent",
+          "utterances": ["seite nach oben", "seite hoch"]
+        },
+        {
+          "intent": "AMAZON.PageDownIntent",
+          "utterances": ["seite nach unten", "seite runter"]
+        },
         { "intent": "AMAZON.MoreIntent", "utterances": ["mehr", "zeige mehr"] },
-        { "intent": "AMAZON.NavigateHomeIntent", "utterances": ["nach hause gehen", "zum startbildschirm gehen"] },
-        { "intent": "AMAZON.NavigateSettingsIntent", "utterances": ["einstellungen öffnen", "gehe zu den einstellungen"] }
+        {
+          "intent": "AMAZON.NavigateHomeIntent",
+          "utterances": ["nach hause gehen", "zum startbildschirm gehen"]
+        },
+        {
+          "intent": "AMAZON.NavigateSettingsIntent",
+          "utterances": ["einstellungen öffnen", "gehe zu den einstellungen"]
+        }
       ],
       "types": []
     }

@@ -16,9 +16,9 @@ def test_openapi_spec_is_valid_json_with_documented_paths(client):
 
 
 def test_openapi_spec_documents_required_stream_url(client):
-    schema = client.get("/openapi.json", headers=AUTH).json["paths"]["/ma/push-url"]["post"][
-        "requestBody"
-    ]["content"]["application/json"]["schema"]
+    schema = client.get("/openapi.json", headers=AUTH).json["paths"]["/ma/push-url"][
+        "post"
+    ]["requestBody"]["content"]["application/json"]["schema"]
     assert schema["required"] == ["streamUrl"]
     assert "streamUrl" in schema["properties"]
 

@@ -1,41 +1,41 @@
 {
-    "version": "0.2.0",
-    "configurations": [
+  "configurations": [
+    {
+      "name": "Music Assistant Alexa Skill: Server",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "app",
+      "python": "${workspaceFolder}/venv/bin/python",
+      "cwd": "${workspaceFolder}/app",
+      "justMyCode": false,
+      "args": [],
+      "env": {
+        "PYTHONDEVMODE": "1",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_REGION": "us-east-1",
+        "TZ": "America/Chicago",
+        "PORT": "5000",
+        "QUIET_HTTP": "1",
+        "SKILL_HOSTNAME": "<hostname>",
+        "MA_HOSTNAME": "<hostname>"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Python: Remote Attach",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5678
+      },
+      "pathMappings": [
         {
-            "name": "Music Assistant Alexa Skill: Server",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "app",
-            "python": "${workspaceFolder}/venv/bin/python",
-            "cwd": "${workspaceFolder}/app",
-            "justMyCode": false,
-            "args": [],
-            "env": {
-                "PYTHONDEVMODE": "1",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "AWS_REGION": "us-east-1",
-                "TZ": "America/Chicago",
-                "PORT": "5000",
-                "QUIET_HTTP": "1",
-                "SKILL_HOSTNAME": "<hostname>",
-                "MA_HOSTNAME": "<hostname>"
-            },
-            "console": "integratedTerminal"
-        },
-        {
-            "name": "Python: Remote Attach",
-            "type": "debugpy",
-            "request": "attach",
-            "connect": {
-                "host": "localhost",
-                "port": 5678
-            },
-            "pathMappings": [
-                {
-                    "localRoot": "${workspaceFolder}/app",
-                    "remoteRoot": "/app/src"
-                }
-            ]
-        },
-    ]
+          "localRoot": "${workspaceFolder}/app",
+          "remoteRoot": "/app/src"
+        }
+      ]
+    }
+  ],
+  "version": "0.2.0"
 }

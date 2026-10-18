@@ -1,5 +1,5 @@
-name-template: 'v$RESOLVED_VERSION'
-tag-template: 'v$RESOLVED_VERSION'
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
 filter-by-commitish: true
 commitish: main
 categories:
@@ -45,23 +45,23 @@ categories:
     semver-increment: patch
 autolabeler:
   - label: documentation
-    files: ['**/*.md', 'docs/**']
+    files: ["**/*.md", "docs/**"]
     title: ['/^(docs)(\(.+\))?:/i']
   - label: bug
     title: ['/^(fix)(\(.+\))?:/i', '/^fix\b/i']
-    branch: ['/(^|/)fix[/-]/']
+    branch: ["/(^|/)fix[/-]/"]
   - label: enhancement
     title: ['/^(feat)(\(.+\))?:/i']
-    branch: ['/(^|/)feature[/-]/']
+    branch: ["/(^|/)feature[/-]/"]
   - label: dependencies
     title: ['/^(build|chore)\(deps[^)]*\):/i', '/^bump\b/i']
     branch: ['/^dependabot\//']
   - label: maintenance
-    files: ['.github/workflows/**', '.github/dependabot*']
+    files: [".github/workflows/**", ".github/dependabot*"]
     title: ['/^(ci|chore)(\(.+\))?:/i']
-change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
 change-title-escapes: '\<*_&'
-no-changes-template: '* No notable changes in this release.'
+no-changes-template: "* No notable changes in this release."
 sort-by: title
 sort-direction: ascending
 template: |

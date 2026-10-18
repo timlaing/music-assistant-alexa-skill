@@ -30,85 +30,47 @@
         },
         {
           "name": "AMAZON.CancelIntent",
-          "samples": [
-            "annuleren",
-            "laat maar",
-            "vergeet het"
-          ]
+          "samples": ["annuleren", "laat maar", "vergeet het"]
         },
         {
           "name": "AMAZON.FallbackIntent",
-          "samples": [
-            "ik weet het niet",
-            "dat is het niet"
-          ]
+          "samples": ["ik weet het niet", "dat is het niet"]
         },
         {
           "name": "AMAZON.HelpIntent",
-          "samples": [
-            "help",
-            "help me",
-            "kun je me helpen"
-          ]
+          "samples": ["help", "help me", "kun je me helpen"]
         },
         {
           "name": "AMAZON.LoopOffIntent",
-          "samples": [
-            "herhalen uit",
-            "stop met herhalen"
-          ]
+          "samples": ["herhalen uit", "stop met herhalen"]
         },
         {
           "name": "AMAZON.LoopOnIntent",
-          "samples": [
-            "herhaal",
-            "herhalen aan",
-            "in herhaling afspelen"
-          ]
+          "samples": ["herhaal", "herhalen aan", "in herhaling afspelen"]
         },
         {
           "name": "AMAZON.NextIntent",
-          "samples": [
-            "volgende",
-            "overslaan",
-            "naar de volgende"
-          ]
+          "samples": ["volgende", "overslaan", "naar de volgende"]
         },
         {
           "name": "AMAZON.NoIntent",
-          "samples": [
-            "nee",
-            "nee bedankt"
-          ]
+          "samples": ["nee", "nee bedankt"]
         },
         {
           "name": "AMAZON.PauseIntent",
-          "samples": [
-            "pauze",
-            "pauzeer"
-          ]
+          "samples": ["pauze", "pauzeer"]
         },
         {
           "name": "AMAZON.PreviousIntent",
-          "samples": [
-            "vorige",
-            "ga terug"
-          ]
+          "samples": ["vorige", "ga terug"]
         },
         {
           "name": "AMAZON.RepeatIntent",
-          "samples": [
-            "herhaal",
-            "zeg nog eens",
-            "herhaal dat"
-          ]
+          "samples": ["herhaal", "zeg nog eens", "herhaal dat"]
         },
         {
           "name": "AMAZON.ResumeIntent",
-          "samples": [
-            "hervatten",
-            "doorgaan"
-          ]
+          "samples": ["hervatten", "doorgaan"]
         },
         {
           "name": "AMAZON.SelectIntent",
@@ -127,100 +89,59 @@
         },
         {
           "name": "AMAZON.ShuffleOffIntent",
-          "samples": [
-            "willekeurig uit",
-            "stop met shuffelen"
-          ]
+          "samples": ["willekeurig uit", "stop met shuffelen"]
         },
         {
           "name": "AMAZON.ShuffleOnIntent",
-          "samples": [
-            "shuffle",
-            "willekeurig afspelen"
-          ]
+          "samples": ["shuffle", "willekeurig afspelen"]
         },
         {
           "name": "AMAZON.StartOverIntent",
-          "samples": [
-            "opnieuw",
-            "opnieuw vanaf het begin"
-          ]
+          "samples": ["opnieuw", "opnieuw vanaf het begin"]
         },
         {
           "name": "AMAZON.StopIntent",
-          "samples": [
-            "stop",
-            "stoppen",
-            "afsluiten"
-          ]
+          "samples": ["stop", "stoppen", "afsluiten"]
         },
         {
           "name": "AMAZON.YesIntent",
-          "samples": [
-            "ja",
-            "oké"
-          ]
+          "samples": ["ja", "oké"]
         },
         {
           "name": "AMAZON.ScrollUpIntent",
-          "samples": [
-            "scroll omhoog",
-            "naar boven scrollen"
-          ]
+          "samples": ["scroll omhoog", "naar boven scrollen"]
         },
         {
           "name": "AMAZON.ScrollLeftIntent",
-          "samples": [
-            "scroll naar links"
-          ]
+          "samples": ["scroll naar links"]
         },
         {
           "name": "AMAZON.ScrollDownIntent",
-          "samples": [
-            "scroll omlaag",
-            "naar beneden scrollen"
-          ]
+          "samples": ["scroll omlaag", "naar beneden scrollen"]
         },
         {
           "name": "AMAZON.ScrollRightIntent",
-          "samples": [
-            "scroll naar rechts"
-          ]
+          "samples": ["scroll naar rechts"]
         },
         {
           "name": "AMAZON.PageUpIntent",
-          "samples": [
-            "vorige pagina",
-            "pagina omhoog"
-          ]
+          "samples": ["vorige pagina", "pagina omhoog"]
         },
         {
           "name": "AMAZON.PageDownIntent",
-          "samples": [
-            "volgende pagina",
-            "pagina omlaag"
-          ]
+          "samples": ["volgende pagina", "pagina omlaag"]
         },
         {
           "name": "AMAZON.MoreIntent",
-          "samples": [
-            "meer",
-            "toon meer"
-          ]
+          "samples": ["meer", "toon meer"]
         },
         {
           "name": "AMAZON.NavigateHomeIntent",
-          "samples": [
-            "ga naar start",
-            "naar het startscherm"
-          ]
+          "samples": ["ga naar start", "naar het startscherm"]
         },
         {
           "name": "AMAZON.NavigateSettingsIntent",
-          "samples": [
-            "open instellingen",
-            "ga naar instellingen"
-          ]
+          "samples": ["open instellingen", "ga naar instellingen"]
         }
       ],
       "types": []

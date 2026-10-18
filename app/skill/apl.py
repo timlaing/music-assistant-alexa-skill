@@ -18,8 +18,8 @@ if _app_src not in sys.path:
 def _load_apl_template():
     # type: () -> dict
     """Load the APL document template from JSON file."""
-    template_path = os.path.join(os.path.dirname(__file__), 'apl_document.json')
-    with open(template_path, 'r') as f:
+    template_path = os.path.join(os.path.dirname(__file__), "apl_document.json")
+    with open(template_path, "r") as f:
         return json.load(f)
 
 
@@ -43,13 +43,17 @@ def add_apl(response_builder, start_paused=False):
 
     # Update autoplay in Video component and AlexaTransportControls
     try:
-        video_component = apl_document["layouts"]["AudioPlayer"]["item"][0]["items"][2]["items"][1]["items"][0]
+        video_component = apl_document["layouts"]["AudioPlayer"]["item"][0]["items"][2][
+            "items"
+        ][1]["items"][0]
         video_component["autoplay"] = autoplay
     except (KeyError, IndexError):
         logging.debug("Could not set video autoplay in APL template")
 
     try:
-        transport_controls = apl_document["layouts"]["AudioPlayer"]["item"][0]["items"][2]["items"][1]["items"][1]["items"][0]["item"][1]
+        transport_controls = apl_document["layouts"]["AudioPlayer"]["item"][0]["items"][
+            2
+        ]["items"][1]["items"][1]["items"][0]["item"][1]
         transport_controls["autoplay"] = autoplay
     except (KeyError, IndexError):
         logging.debug("Could not set transport autoplay in APL template")
@@ -57,24 +61,24 @@ def add_apl(response_builder, start_paused=False):
     # Update mainTemplate with metadata values
     try:
         main_template_item = apl_document["mainTemplate"]["items"][0]
-        main_template_item.update({
-            "audioSources": metadata.get("audioSources", ""),
-            "backgroundImageSource": background_image,
-            "coverImageSource": cover_image,
-            "headerAttributionImage": metadata.get("headerAttributionImage", ""),
-            "headerTitle": metadata.get("headerTitle", ""),
-            "headerSubtitle": metadata.get("headerSubtitle", ""),
-            "primaryText": metadata.get("primaryText", ""),
-            "secondaryText": metadata.get("secondaryText", "")
-        })
+        main_template_item.update(
+            {
+                "audioSources": metadata.get("audioSources", ""),
+                "backgroundImageSource": background_image,
+                "coverImageSource": cover_image,
+                "headerAttributionImage": metadata.get("headerAttributionImage", ""),
+                "headerTitle": metadata.get("headerTitle", ""),
+                "headerSubtitle": metadata.get("headerSubtitle", ""),
+                "primaryText": metadata.get("primaryText", ""),
+                "secondaryText": metadata.get("secondaryText", ""),
+            }
+        )
     except (KeyError, IndexError):
         logging.warning("Could not update mainTemplate in APL document")
 
     response_builder.add_directive(
         RenderDocumentDirective(
-            token="playbackToken",
-            document=apl_document,
-            datasources={}
+            token="playbackToken", document=apl_document, datasources={}
         )
     )
 

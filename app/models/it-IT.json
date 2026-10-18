@@ -49,9 +49,7 @@
         },
         {
           "name": "AMAZON.StopIntent",
-          "samples" : [
-            "puoi mettere in pausa"
-          ]
+          "samples": ["puoi mettere in pausa"]
         },
         {
           "name": "AMAZON.CancelIntent"

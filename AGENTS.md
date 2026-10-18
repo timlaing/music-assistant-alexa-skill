@@ -29,7 +29,16 @@
 ## Tests and lint
 
 - `python -m pytest tests/ -q`
-- `ruff check .` (no format gate; do not mass-reformat).
+- `ruff check .` — lint (rules pinned in `pyproject.toml`).
+- `ruff format .` — Python formatting is **mandated**: the Lint workflow
+  fails on unformatted files.
+- `npx prettier --write .` — Markdown/YAML/JSON formatting is **mandated**
+  the same way (prettier and its plugins pinned in `package.json`).
+- `prek run --all-files` runs everything (hygiene hooks, ruff, prettier,
+  the sensitive-data check); `prek install` wires the suite up as a git
+  hook. The repo-local `.githooks/pre-commit` (via
+  `git config core.hooksPath .githooks`) remains for the version-sync +
+  sensitive-data check without the pre-commit framework.
 - CI also builds the image on PRs (`pull_request` path — build, no push, so
   the GHCR token is never exposed to PR code).
 

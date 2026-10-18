@@ -22,37 +22,37 @@ def _ensure_logging_configured():
     root = logging.getLogger()
     # If a filter already injected `component`, skip reconfiguration
     for f in root.filters:
-        if getattr(f, '__name__', '') == '_ComponentFilter':
+        if getattr(f, "__name__", "") == "_ComponentFilter":
             return
 
     class _ComponentFilter(logging.Filter):
         def filter(self, record):
-            name = (record.name or "")
-            if name.startswith(('music_assistant_api', 'ma_routes')):
-                record.component = 'API'
-            elif name == 'lambda_function' or name.startswith(('skill', 'ask_sdk')):
-                record.component = 'Skill'
+            name = record.name or ""
+            if name.startswith(("music_assistant_api", "ma_routes")):
+                record.component = "API"
+            elif name == "lambda_function" or name.startswith(("skill", "ask_sdk")):
+                record.component = "Skill"
             else:
-                record.component = 'UI/Web'
+                record.component = "UI/Web"
             return True
 
     root.addFilter(_ComponentFilter())
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(component)s] %(name)s %(message)s",
-        datefmt="%H:%M:%S %Y-%m-%d %z"
+        datefmt="%H:%M:%S %Y-%m-%d %z",
     )
 
 
 def create_blueprint():
     # Base blueprint for non-/ma endpoints. Keep empty for now.
-    bp = Blueprint('music_assistant_api', __name__)
+    bp = Blueprint("music_assistant_api", __name__)
     register_routes(bp)
     return bp
 
 
 def create_ma_app():
     _ensure_logging_configured()
-    app = Flask('music_assistant_api')
-    app.register_blueprint(create_blueprint(), url_prefix='')
+    app = Flask("music_assistant_api")
+    app.register_blueprint(create_blueprint(), url_prefix="")
     return app

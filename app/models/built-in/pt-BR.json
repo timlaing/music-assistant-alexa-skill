@@ -3,33 +3,102 @@
     "languageModel": {
       "invocationName": "",
       "intents": [
-        { "intent": "AMAZON.CancelIntent", "utterances": ["cancelar", "esquece", "não importa"] },
-        { "intent": "AMAZON.FallbackIntent", "utterances": ["não sei", "isso não funciona"] },
-        { "intent": "AMAZON.HelpIntent", "utterances": ["ajuda", "me ajude", "você pode me ajudar"] },
-        { "intent": "AMAZON.LoopOffIntent", "utterances": ["repetir desligado", "desligar loop"] },
-        { "intent": "AMAZON.LoopOnIntent", "utterances": ["repetir", "ligar loop", "reproduzir em loop"] },
-        { "intent": "AMAZON.NextIntent", "utterances": ["próximo", "pular", "avançar"] },
+        {
+          "intent": "AMAZON.CancelIntent",
+          "utterances": ["cancelar", "esquece", "não importa"]
+        },
+        {
+          "intent": "AMAZON.FallbackIntent",
+          "utterances": ["não sei", "isso não funciona"]
+        },
+        {
+          "intent": "AMAZON.HelpIntent",
+          "utterances": ["ajuda", "me ajude", "você pode me ajudar"]
+        },
+        {
+          "intent": "AMAZON.LoopOffIntent",
+          "utterances": ["repetir desligado", "desligar loop"]
+        },
+        {
+          "intent": "AMAZON.LoopOnIntent",
+          "utterances": ["repetir", "ligar loop", "reproduzir em loop"]
+        },
+        {
+          "intent": "AMAZON.NextIntent",
+          "utterances": ["próximo", "pular", "avançar"]
+        },
         { "intent": "AMAZON.NoIntent", "utterances": ["não", "não obrigado"] },
         { "intent": "AMAZON.PauseIntent", "utterances": ["pausar", "pausa"] },
-        { "intent": "AMAZON.PreviousIntent", "utterances": ["anterior", "voltar"] },
-        { "intent": "AMAZON.RepeatIntent", "utterances": ["repetir isso", "de novo", "repete"] },
-        { "intent": "AMAZON.ResumeIntent", "utterances": ["retomar", "continuar"] },
-        { "intent": "AMAZON.SelectIntent", "utterances": ["seleciona esse item", "escolhe essa opção"] },
-        { "intent": "AMAZON.SendToPhoneIntent", "utterances": ["enviar para meu telefone", "manda para meu celular"] },
-        { "intent": "AMAZON.ShuffleOffIntent", "utterances": ["desligar aleatório", "parar shuffle"] },
-        { "intent": "AMAZON.ShuffleOnIntent", "utterances": ["embaralhar", "ativar shuffle"] },
-        { "intent": "AMAZON.StartOverIntent", "utterances": ["recomeçar", "começar de novo"] },
-        { "intent": "AMAZON.StopIntent", "utterances": ["parar", "pare", "sair"] },
+        {
+          "intent": "AMAZON.PreviousIntent",
+          "utterances": ["anterior", "voltar"]
+        },
+        {
+          "intent": "AMAZON.RepeatIntent",
+          "utterances": ["repetir isso", "de novo", "repete"]
+        },
+        {
+          "intent": "AMAZON.ResumeIntent",
+          "utterances": ["retomar", "continuar"]
+        },
+        {
+          "intent": "AMAZON.SelectIntent",
+          "utterances": ["seleciona esse item", "escolhe essa opção"]
+        },
+        {
+          "intent": "AMAZON.SendToPhoneIntent",
+          "utterances": ["enviar para meu telefone", "manda para meu celular"]
+        },
+        {
+          "intent": "AMAZON.ShuffleOffIntent",
+          "utterances": ["desligar aleatório", "parar shuffle"]
+        },
+        {
+          "intent": "AMAZON.ShuffleOnIntent",
+          "utterances": ["embaralhar", "ativar shuffle"]
+        },
+        {
+          "intent": "AMAZON.StartOverIntent",
+          "utterances": ["recomeçar", "começar de novo"]
+        },
+        {
+          "intent": "AMAZON.StopIntent",
+          "utterances": ["parar", "pare", "sair"]
+        },
         { "intent": "AMAZON.YesIntent", "utterances": ["sim", "claro"] },
-        { "intent": "AMAZON.ScrollUpIntent", "utterances": ["rolar para cima"] },
-        { "intent": "AMAZON.ScrollLeftIntent", "utterances": ["rolar para a esquerda"] },
-        { "intent": "AMAZON.ScrollDownIntent", "utterances": ["rolar para baixo"] },
-        { "intent": "AMAZON.ScrollRightIntent", "utterances": ["rolar para a direita"] },
+        {
+          "intent": "AMAZON.ScrollUpIntent",
+          "utterances": ["rolar para cima"]
+        },
+        {
+          "intent": "AMAZON.ScrollLeftIntent",
+          "utterances": ["rolar para a esquerda"]
+        },
+        {
+          "intent": "AMAZON.ScrollDownIntent",
+          "utterances": ["rolar para baixo"]
+        },
+        {
+          "intent": "AMAZON.ScrollRightIntent",
+          "utterances": ["rolar para a direita"]
+        },
         { "intent": "AMAZON.PageUpIntent", "utterances": ["página para cima"] },
-        { "intent": "AMAZON.PageDownIntent", "utterances": ["página para baixo"] },
-        { "intent": "AMAZON.MoreIntent", "utterances": ["mais", "mostrar mais"] },
-        { "intent": "AMAZON.NavigateHomeIntent", "utterances": ["ir para a tela inicial", "ir para a home"] },
-        { "intent": "AMAZON.NavigateSettingsIntent", "utterances": ["abrir configurações", "ir para configurações"] }
+        {
+          "intent": "AMAZON.PageDownIntent",
+          "utterances": ["página para baixo"]
+        },
+        {
+          "intent": "AMAZON.MoreIntent",
+          "utterances": ["mais", "mostrar mais"]
+        },
+        {
+          "intent": "AMAZON.NavigateHomeIntent",
+          "utterances": ["ir para a tela inicial", "ir para a home"]
+        },
+        {
+          "intent": "AMAZON.NavigateSettingsIntent",
+          "utterances": ["abrir configurações", "ir para configurações"]
+        }
       ],
       "types": []
     }

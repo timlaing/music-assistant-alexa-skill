@@ -1,4 +1,5 @@
 # Music Assistant Alexa Skill
+
 This project is an Alexa skill integration for controlling the Music Assistant server. It provides a Flask-based web service, Alexa skill handler, and API, with support for Docker deployment.
 
 For Home Assistant Supervisor, use the maintained [Music Assistant Alexa API add-on](https://github.com/timlaing/music-assistant-alexa-api) and the [README deployment guide](README.md#2-home-assistant-add-on). The steps below describe standalone Docker deployment and manual Alexa Console setup. The maintained add-on also provides guided setup through `/setup`. Screenshots illustrate the older Console flow; follow the current interaction-model import and interface instructions below.
@@ -13,63 +14,63 @@ The easiest way to run the project is with Docker Compose. This will build and s
 
 1. **Copy the docker-compose.yml** and ensure Docker and Docker Compose are installed
 2. **Set up secrets or proceed to step 3:**
-    - Place your APP username in `./secrets/app_username.txt` (Relative to your docker-compose.yml file)
-    - Place your APP password in `./secrets/app_password.txt` (Relative to your docker-compose.yml file)
+   - Place your APP username in `./secrets/app_username.txt` (Relative to your docker-compose.yml file)
+   - Place your APP password in `./secrets/app_password.txt` (Relative to your docker-compose.yml file)
 3. **Edit environment variables** in `docker-compose.yml` as needed (e.g., `MA_HOSTNAME`, `PORT`, `APP_USERNAME`, `APP_PASSWORD`)
 4. **Start the service:**
 
-	```sh
-	docker compose up -d
-	```
+   ```sh
+   docker compose up -d
+   ```
 
 5. The service will be available at `http://localhost:5000` (or the IP/port you configured)
 6. Setup a reverse proxy for the Alexa skill endpoint (port 443 required)
 7. Create a skill in the Alexa Developer Console (https://developer.amazon.com/alexa/console/ask) pointing to your public HTTPS endpoint
-    -   Click Create Skill and add "Music Assistant" as the Skill name and select your primary locale
+   - Click Create Skill and add "Music Assistant" as the Skill name and select your primary locale
 
-        ![Step 7.1 - Create Skill](assets/screenshots/step7-1.png)
+     ![Step 7.1 - Create Skill](assets/screenshots/step7-1.png)
 
-    -   Select Music & Audio as the experience, Custom as the model, and "Provision your own" as the hosting service
+   - Select Music & Audio as the experience, Custom as the model, and "Provision your own" as the hosting service
 
-        ![Step 7.2.1 - Select Experience and Model](assets/screenshots/step7-2-1.png)
+     ![Step 7.2.1 - Select Experience and Model](assets/screenshots/step7-2-1.png)
 
-        ![Step 7.2.2 - Select Hosting Service](assets/screenshots/step7-2-2.png)
+     ![Step 7.2.2 - Select Hosting Service](assets/screenshots/step7-2-2.png)
 
-    -   Choose "Start from Scratch" as the template
+   - Choose "Start from Scratch" as the template
 
-        ![Step 7.3 - Start from Scratch](assets/screenshots/step7-3.png)
+     ![Step 7.3 - Start from Scratch](assets/screenshots/step7-3.png)
 
-    -   Click the Invocation Name field and type in "music assistant" and hit save
+   - Click the Invocation Name field and type in "music assistant" and hit save
 
-        ![Step 7.4 - Invocation Name](assets/screenshots/step7-4.png)
+     ![Step 7.4 - Invocation Name](assets/screenshots/step7-4.png)
 
-    -   Click the Endpoint field, change it to HTTPS, fill in your HTTPS endpoint in Default Region, select the wildcard certificate option, and hit save
+   - Click the Endpoint field, change it to HTTPS, fill in your HTTPS endpoint in Default Region, select the wildcard certificate option, and hit save
 
-        ![Step 7.5 - Endpoint to HTTPS](assets/screenshots/step7-5.png)
+     ![Step 7.5 - Endpoint to HTTPS](assets/screenshots/step7-5.png)
 
-    -   On the left side go to Interaction Model > Intents, add an Intent named PlayAudio with the Sample Utterances "play audio", "start", and "play", and hit save
+   - On the left side go to Interaction Model > Intents, add an Intent named PlayAudio with the Sample Utterances "play audio", "start", and "play", and hit save
 
-        ![Step 7.6 - Add PlayAudio Intent](assets/screenshots/step7-6.png)
+     ![Step 7.6 - Add PlayAudio Intent](assets/screenshots/step7-6.png)
 
-    -   On the left side go to Interfaces and enable "Audio Player". Enable "Alexa Presentation Language" if you intend to opt into APL rendering (`ENABLE_APL=true`, or `enable_apl: true` in the maintained add-on). Then hit save.
+   - On the left side go to Interfaces and enable "Audio Player". Enable "Alexa Presentation Language" if you intend to opt into APL rendering (`ENABLE_APL=true`, or `enable_apl: true` in the maintained add-on). Then hit save.
 
-        ![Step 7.7 - Add Interfaces](assets/screenshots/step7-7.png)
+     ![Step 7.7 - Add Interfaces](assets/screenshots/step7-7.png)
 
-    -   Navigate to the main page under "CUSTOM" on the left side and hit "Build skill"
+   - Navigate to the main page under "CUSTOM" on the left side and hit "Build skill"
 
-        ![Step 7.8 - Build](assets/screenshots/step7-8.png)
+     ![Step 7.8 - Build](assets/screenshots/step7-8.png)
 
-    -   Navigate to the Test tab, change Off to Development
+   - Navigate to the Test tab, change Off to Development
 
-        ![Step 7.9 - Activate](assets/screenshots/step7-9.png)
-	
+     ![Step 7.9 - Activate](assets/screenshots/step7-9.png)
 
 ## Basic Troubleshooting
+
 ### Status Page
+
 `/status`
 
 Returns the skill setup and API status. In maintained add-on 1.2.0, an idle state before the first stream push is normal. Status pages require the configured API credentials; `/health` is an unauthenticated process-liveness endpoint.
-
 
 ---
 
@@ -78,4 +79,3 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for known supported devices, languages,
 See [LIMITATIONS.md](LIMITATIONS.md) for known limitations.
 
 See the [maintained add-on update](https://github.com/timlaing/music-assistant-alexa-api/pull/28) for current validation and release gates.
-

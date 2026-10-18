@@ -18,7 +18,7 @@ def get_env_secret(name: str):
         return None
     try:
         if os.path.exists(val) and os.path.isfile(val):
-            with open(val, 'r') as fh:
+            with open(val, "r") as fh:
                 return fh.read().strip()
     except Exception:
         # Fall back to returning the raw env value on any error

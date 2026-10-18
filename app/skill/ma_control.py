@@ -53,7 +53,9 @@ def mark_ma_triggered(device_id, command):
     if not device_id:
         return
     with _recent_lock:
-        _recent_ma_triggered[(device_id, command)] = time.time() + _ECHO_SUPPRESS_SECONDS
+        _recent_ma_triggered[(device_id, command)] = (
+            time.time() + _ECHO_SUPPRESS_SECONDS
+        )
 
 
 def is_echo_of_ma_command(device_id, command):
@@ -87,23 +89,23 @@ async def _send_command(server_url, token, player_id, command):
         aiohttp.ClientSession() as session,
         MusicAssistantClient(server_url, session, token=token) as client,
     ):
-            if command == "next":
-                await client.players.next_track(player_id)
-            elif command == "previous":
-                await _play_relative_index(client, player_id, -1)
-            elif command == "start_over":
-                await _play_relative_index(client, player_id, 0)
-            elif command == "pause":
-                await client.players.pause(player_id)
-            elif command == "stop":
-                await client.players.stop(player_id)
-            elif command == "resume":
-                # Not players.resume(): the alexa provider only overrides
-                # play(), which is what speaks the AMAZON.ResumeIntent
-                # utterance back into the device.
-                await client.players.play(player_id)
-            else:
-                raise ValueError(f"Unsupported MA command: {command}")
+        if command == "next":
+            await client.players.next_track(player_id)
+        elif command == "previous":
+            await _play_relative_index(client, player_id, -1)
+        elif command == "start_over":
+            await _play_relative_index(client, player_id, 0)
+        elif command == "pause":
+            await client.players.pause(player_id)
+        elif command == "stop":
+            await client.players.stop(player_id)
+        elif command == "resume":
+            # Not players.resume(): the alexa provider only overrides
+            # play(), which is what speaks the AMAZON.ResumeIntent
+            # utterance back into the device.
+            await client.players.play(player_id)
+        else:
+            raise ValueError(f"Unsupported MA command: {command}")
 
 
 def send_player_command(player_id, command):
@@ -126,11 +128,20 @@ def send_player_command(player_id, command):
         asyncio.run(_send_command(server_url, token, player_id, command))
         return True
     except (CannotConnect, ConnectionFailed, InvalidServerVersion) as e:
-        logger.exception("Could not connect to Music Assistant at %s: %s", server_url, e)
+        logger.exception(
+            "Could not connect to Music Assistant at %s: %s", server_url, e
+        )
         return False
     except MusicAssistantError as e:
-        logger.exception("Music Assistant rejected %s command for player %s: %s", command, player_id, e)
+        logger.exception(
+            "Music Assistant rejected %s command for player %s: %s",
+            command,
+            player_id,
+            e,
+        )
         return False
     except Exception:
-        logger.exception("Unexpected error sending %s command to MA player %s", command, player_id)
+        logger.exception(
+            "Unexpected error sending %s command to MA player %s", command, player_id
+        )
         return False

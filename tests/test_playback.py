@@ -383,6 +383,7 @@ def test_simulator_bypass_requires_api_auth(client, header):
 
 def test_apl_preserves_provider_artwork_on_render_and_refresh(client, monkeypatch):
     from ask_sdk_core.response_helper import ResponseFactory
+
     monkeypatch.setenv("ENABLE_APL", "true")
     artwork = "https://art.provider.example/cover%20one.jpg"
     assert push(client, imageUrl=artwork).status_code == 200
@@ -392,7 +393,11 @@ def test_apl_preserves_provider_artwork_on_render_and_refresh(client, monkeypatc
     builder = ResponseFactory()
     util.update_apl_metadata(builder)
     commands = builder.response.directives[0].commands
-    images = [command["value"] for command in commands
-              if command["property"] in ("coverImageSource", "imageSource", "backgroundImageSource")]
+    images = [
+        command["value"]
+        for command in commands
+        if command["property"]
+        in ("coverImageSource", "imageSource", "backgroundImageSource")
+    ]
     assert images
     assert all(value == artwork for value in images)
