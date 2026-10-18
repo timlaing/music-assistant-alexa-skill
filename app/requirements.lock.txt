@@ -2,7 +2,7 @@
 # file with `pip install --require-hashes --only-binary :all:` so every wheel
 # (amd64 and arm64) is integrity-checked at install time.
 # Regenerate after any change to app/requirements.txt with:
-#   uv pip compile --python-version 3.12 --generate-hashes app/requirements.txt -o app/requirements.lock.txt
+#   uv pip compile --python-version 3.14 --generate-hashes app/requirements.txt -o app/requirements.lock.txt
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \
     --hash=sha256:9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472
@@ -1087,13 +1087,13 @@ multidict==7.1.0 \
     # via
     #   aiohttp
     #   yarl
-music-assistant-client==1.5.1 \
-    --hash=sha256:0e3d795357032aeac88d33a15be200c61707206e2f42f5ccc66fc94bbc7640a0 \
-    --hash=sha256:e92630cf3cdd7830cb27f65daeea8bd8bce8c8f9daec0478fd221e1cf642e511
+music-assistant-client==1.6.0 \
+    --hash=sha256:42b0cc23cc1625f9cc31335412a6b6b9043db92c41c7abedcc6d14a8dc598128 \
+    --hash=sha256:648a417f0353edf7addfe9de7cd12cf9e781a92d3998cbfc5b3e335853e07920
     # via -r app/requirements.txt
-music-assistant-models==1.1.189 \
-    --hash=sha256:6a59e8cef4a3d616847bbf67845ea0fc7990749b7c76ded0457956ee22d85ac3 \
-    --hash=sha256:fca60921ad4cb06ccbfb7ec6c20023ebec1395bff675e371f336942551e68f7a
+music-assistant-models==1.1.214 \
+    --hash=sha256:2bbfa4b27a3cb35e86122d45c586a5399d55ee18bca0fbf9e45ea581117307d6 \
+    --hash=sha256:914f09e325e20c950716a161808e48ff7d563c567f8d0576329b5ee2282448ab
     # via music-assistant-client
 orjson==3.13.0 \
     --hash=sha256:0526a3456db67b264c6d661b5f090077f326b6cd074d0ef53a72763595dec5d7 \
@@ -1336,10 +1336,7 @@ six==1.17.0 \
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 \
     --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
-    # via
-    #   aiohttp
-    #   aiosignal
-    #   mashumaro
+    # via mashumaro
 urllib3==2.8.0 \
     --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
     --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63

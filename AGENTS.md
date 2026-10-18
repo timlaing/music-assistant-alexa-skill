@@ -2,9 +2,9 @@
 
 ## Layout
 
-- `app/` — the skill/API application (Python 3.12, served by Flask; the
+- `app/` — the skill/API application (Python 3.14, served by Flask; the
   add-on serves the same code under gunicorn). `tests/` — pytest suite.
-- `Dockerfile` — Ubuntu 22.04 image: Python 3.12 venv at `/app/venv` (with
+- `Dockerfile` — Ubuntu 26.04 image: Python 3.14 venv at `/app/venv` (with
   the verifier.py + certvalidator/registry.py patches applied), Node + ASK
   CLI, code at `/app/src` (+ `/app/app`), assets, scripts.
 

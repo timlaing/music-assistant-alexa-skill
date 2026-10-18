@@ -1,10 +1,11 @@
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Python, Node.js and system dependencies.
-# Python 3.12 via deadsnakes: Ubuntu 22.04 only ships 3.10, but
-# music-assistant-client (in requirements.txt) requires >=3.11.
+# Python 3.14 ships natively in Ubuntu 26.04 (python3.14/python3.14-venv
+# from universe), satisfying music-assistant-client's >=3.11 requirement
+# without a third-party PPA.
 # Node.js 18 via the official NodeSource apt repository (ASK CLI requires a
 # modern Node version). The repository is added with a signed-by keyring
 # instead of executing the upstream setup script, so no downloaded artifact
@@ -13,9 +14,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        gnupg \
-        software-properties-common && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
+        gnupg && \
     curl --proto '=https' --proto-redir '=https' -fsSL \
         https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --batch --yes --dearmor -o /usr/share/keyrings/nodesource.gpg && \
@@ -27,8 +26,8 @@ RUN apt-get update && \
         libssl-dev \
         nodejs \
         python3-pip \
-        python3.12 \
-        python3.12-venv && \
+        python3.14 \
+        python3.14-venv && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -43,7 +42,7 @@ COPY app/requirements.lock.txt /app/requirements.lock.txt
 # Then create the app venv with pinned, wheel-only pip tooling and apply the
 # verifier.py patch in the same layer (the patch only depends on the venv).
 RUN npm install -g --ignore-scripts ask-cli@2.30.7 || true && \
-    python3.12 -m venv venv && \
+    python3.14 -m venv venv && \
     . venv/bin/activate && \
     pip install --upgrade --only-binary :all: pip==26.2.1 && \
     pip install --require-hashes --only-binary :all: -r requirements.lock.txt && \
