@@ -66,6 +66,8 @@ def test_get_staged_content_git_uses_revspec_and_repo_cwd(repo, monkeypatch):
     captured = {}
 
     def fake_check_output(cmd, cwd=None, stderr=None, text=False):
+        if "--cached" in cmd:
+            return "app/demo.py\n"
         captured["cmd"] = cmd
         captured["cwd"] = cwd
         return b"hello from index"
@@ -76,6 +78,22 @@ def test_get_staged_content_git_uses_revspec_and_repo_cwd(repo, monkeypatch):
     assert out == "hello from index"
     assert captured["cmd"] == ["/usr/bin/git", "show", ":app/demo.py"]
     assert captured["cwd"] == str(repo.resolve())
+
+
+def test_get_staged_content_unstaged_path_never_reaches_git(repo, monkeypatch):
+    calls = []
+
+    def fake_check_output(cmd, cwd=None, stderr=None, text=False):
+        calls.append(cmd)
+        return "app/other.py\n"
+
+    monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: "/usr/bin/git")
+    monkeypatch.setattr(check_sensitive.subprocess, "check_output", fake_check_output)
+    (repo / "a.txt").write_text("working tree copy", encoding="utf-8")
+    # not in the index: falls back to the confined working-tree read and the
+    # `git show` sink is never invoked with an uncorrelated path
+    assert check_sensitive.get_staged_content("a.txt", str(repo)) == "working tree copy"
+    assert all("--cached" in cmd for cmd in calls)
 
 
 def test_get_staged_content_fallback_reads_in_repo(repo, monkeypatch):
@@ -269,5 +287,6 @@ def test_get_staged_content_git_error_falls_back(repo, monkeypatch):
 
     monkeypatch.setattr(check_sensitive, "get_git_executable", lambda: "/usr/bin/git")
     monkeypatch.setattr(check_sensitive.subprocess, "check_output", fake_check_output)
+    monkeypatch.chdir(repo)
     (repo / "a.txt").write_text("fallback works", encoding="utf-8")
     assert check_sensitive.get_staged_content("a.txt", str(repo)) == "fallback works"

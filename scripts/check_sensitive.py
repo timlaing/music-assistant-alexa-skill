@@ -141,11 +141,20 @@ def get_staged_content(path, root=None):
     git = get_git_executable()
     if git:
         try:
-            # Get raw bytes from git to avoid UnicodeDecodeError when blobs
-            # contain binary. The ":<path>" revspec form cannot be mistaken
-            # for an option regardless of the path contents.
+            # Use the revspec form ":<path>" so no argument can be mistaken
+            # for a git option, and pass only paths git itself reported as
+            # staged: re-binding through get_staged_files() means an
+            # argv-derived value never reaches the command line uncorrelated
+            # (defence in depth on top of _resolve_in_repo, and what Sonar's
+            # S8705 taint analysis needs to see).
+            staged = get_staged_files()
+            canonical = next((f for f in staged if f == path), None)
+            if canonical is None:
+                raise OSError("path is not in the index")
             out = subprocess.check_output(
-                [git, "show", f":{path}"], cwd=root_real, stderr=subprocess.DEVNULL
+                [git, "show", f":{canonical}"],
+                cwd=root_real,
+                stderr=subprocess.DEVNULL,
             )
             return out.decode("utf-8", errors="ignore")
         except (subprocess.CalledProcessError, OSError):
@@ -161,49 +170,54 @@ def get_staged_content(path, root=None):
         return ""
 
 
+def _ast_strings(tree):
+    """String literals (incl. f-string parts) from a parsed AST."""
+    strings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            strings.append(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            strings.extend(
+                val.value
+                for val in getattr(node, "values", [])
+                if isinstance(val, ast.Constant) and isinstance(val.value, str)
+            )
+    return strings
+
+
+def _quoted_strings(content):
+    found = re.findall(r"'([^']*)'|\"([^\"]*)\"", content)
+    return [a or b for a, b in found]
+
+
 def _python_strings(content):
     """Extract string literals from Python source; fall back to the raw text."""
     try:
         tree = ast.parse(content)
     except (SyntaxError, ValueError):
         return content
-    strings = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            strings.append(node.value)
-        elif isinstance(node, ast.JoinedStr):
-            for val in getattr(node, "values", []):
-                if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                    strings.append(val.value)
-    return "\n".join(strings)
+    return "\n".join(_ast_strings(tree))
+
+
+def _heredoc_body_strings(body):
+    """Strings from one heredoc body: AST literals, falling back to quotes."""
+    try:
+        tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return _quoted_strings(body)
+    return _ast_strings(tree)
 
 
 def _shell_strings(content):
     """Extract heredoc bodies (parsed as Python when possible) and quoted strings."""
-    strings = []
-    for _, body in re.findall(r"<<['\"]?(\w+)['\"]?\n(.*?)\n\1", content, re.S):
-        try:
-            tree = ast.parse(body)
-        except (SyntaxError, ValueError):
-            # fallback: extract quoted strings from the heredoc body
-            found = re.findall(r"'([^']*)'|\"([^\"]*)\"", body)
-            strings.extend([a or b for a, b in found])
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                strings.append(node.value)
-            elif isinstance(node, ast.JoinedStr):
-                for val in getattr(node, "values", []):
-                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                        strings.append(val.value)
-
+    bodies = re.findall(r"<<['\"]?(\w+)['\"]?\n(.*?)\n\1", content, re.S)
+    strings = [s for _, body in bodies for s in _heredoc_body_strings(body)]
     # also capture top-level quoted strings in the shell script
-    found_top = re.findall(r"'([^']*)'|\"([^\"]*)\"", content)
-    strings.extend([a or b for a, b in found_top])
+    strings.extend(_quoted_strings(content))
     return "\n".join(strings)
 
 
-def _scan_text_for(path, content, ext):
+def _scan_text_for(content, ext):
     """Choose the string extractor for a file's extension."""
     if ext == ".py":
         return _python_strings(content)
@@ -262,7 +276,7 @@ def scan_files(paths, allowlist):
         content = get_staged_content(p)
         if not content:
             continue
-        scan_text = _scan_text_for(p, content, ext)
+        scan_text = _scan_text_for(content, ext)
         for m in DOMAIN_RE.finditer(scan_text):
             domain = m.group(0)
             line = _line_for(scan_text, m.start(), m.end())
