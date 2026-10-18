@@ -84,9 +84,9 @@ def test_bump_version_string_preserves_suffix():
 
 
 @pytest.mark.parametrize("bad", ["garbage", "1.2", "v1.2.3", ""])
-def test_bump_version_string_rejects_bad_input(bad):
+def test_bump_version_string_rejects_bad_input(bump, bad):
     with pytest.raises(SystemExit):
-        _load("bump_version").bump_version_string(bad)
+        bump.bump_version_string(bad)
 
 
 def test_main_bumps_and_stages_for_app_change(bump, monkeypatch):
