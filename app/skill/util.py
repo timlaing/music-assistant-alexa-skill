@@ -24,7 +24,7 @@ from .apl import add_apl
 
 
 def apl_enabled():
-    return get_setting('ENABLE_APL', 'false').lower() in ('true', '1', 'yes')
+    return get_setting("ENABLE_APL", "false").lower() in ("true", "1", "yes")
 
 
 # Last known playback-stopped position per device, so Resume can continue
@@ -55,17 +55,20 @@ def get_resume_offset(device_id, url):
 
 def get_ma_hostname(raise_on_http_scheme=True):
     from public_urls import public_base
+
     try:
-        return public_base(get_setting('MA_HOSTNAME', ''))
+        return public_base(get_setting("MA_HOSTNAME", ""))
     except ValueError:
         if raise_on_http_scheme:
             raise
-        return ''
+        return ""
 
 
 def replace_ip_in_url(url, hostname):
     from public_urls import rewrite_url
+
     return rewrite_url(url, hostname)
+
 
 def audio_data():
     try:
@@ -76,60 +79,82 @@ def audio_data():
 
 def push_alexa_metadata(url):
     payload = {
-        'streamUrl': url,
-        'title': data.get_info().get("primaryText"),
-        'secondary': data.get_info().get("secondaryText"),
-        'imageUrl': data.get_info().get("coverImageSource")
+        "streamUrl": url,
+        "title": data.get_info().get("primaryText"),
+        "secondary": data.get_info().get("secondaryText"),
+        "imageUrl": data.get_info().get("coverImageSource"),
     }
 
     import shared_store
+
     shared_store.set_alexa(payload)
+
+
+def _stream_url_reachable(url):
+    """HEAD the stream URL (streaming GET fallback); True when HTTP < 400."""
+    try:
+        head_resp = requests.head(url, allow_redirects=True, timeout=5)
+        resp = head_resp
+        if head_resp.status_code >= 400:
+            head_resp.close()
+            resp = requests.get(url, stream=True, allow_redirects=True, timeout=5)
+
+        status_code = resp.status_code
+        resp.close()
+        if status_code >= 400:
+            logging.error("Audio URL returned HTTP %s: %s", resp.status_code, url)
+            return False
+        return True
+    except requests.RequestException:
+        logging.exception("Play Function URL: %s", url)
+        return False
+
+
+def _validated_stream_url(url, response_builder):
+    """Return (url, None) to keep playing, or (None, response) after speaking an error."""
+    try:
+        hostname = get_ma_hostname(raise_on_http_scheme=True)
+    except ValueError:
+        response_builder.speak(
+            "The domain uses an unsupported scheme (http). Please check your environment variable MA_HOSTNAME."
+        ).set_should_end_session(True)
+        return None, response_builder.response
+
+    if not hostname:
+        response_builder.speak(
+            "You did not specify a valid hostname. Please check your environment variable MA_HOSTNAME."
+        ).set_should_end_session(True)
+        return None, response_builder.response
+
+    url = replace_ip_in_url(url, hostname)
+
+    skip_validation = get_setting("SKIP_URL_VALIDATION", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    if skip_validation:
+        logging.info("Stream URL (validation skipped via SKIP_URL_VALIDATION): %s", url)
+        return url, None
+
+    if not _stream_url_reachable(url):
+        response_builder.speak(
+            "Sorry, I can't reach the audio file. Please check that your stream URL is internet accessible via HTTPS at the MA_HOSTNAME variable you provided."
+        )
+        response_builder.set_should_end_session(True)
+        return None, response_builder.response
+
+    return url, None
 
 
 def play(url, offset, text, response_builder, supports_apl=False):
     if supports_apl and apl_enabled():
         add_apl(response_builder)
     else:
-        try:
-            hostname = get_ma_hostname(raise_on_http_scheme=True)
-        except ValueError:
-            response_builder.speak(
-                "The domain uses an unsupported scheme (http). Please check your environment variable MA_HOSTNAME.").set_should_end_session(True)
-            return response_builder.response
-
-        if not hostname:
-            response_builder.speak(
-                "You did not specify a valid hostname. Please check your environment variable MA_HOSTNAME.").set_should_end_session(True)
-            return response_builder.response
-
-        url = replace_ip_in_url(url, hostname)
-
-        skip_validation = get_setting('SKIP_URL_VALIDATION', 'false').lower() in ('true', '1', 'yes')
-
-        if skip_validation:
-            logging.info('Stream URL (validation skipped via SKIP_URL_VALIDATION): %s', url)
-        else:
-            try:
-                head_resp = requests.head(url, allow_redirects=True, timeout=5)
-                resp = head_resp
-                if head_resp.status_code >= 400:
-                    head_resp.close()
-                    resp = requests.get(url, stream=True, allow_redirects=True, timeout=5)
-
-                status_code = resp.status_code
-                resp.close()
-                if status_code >= 400:
-                    logging.error('Audio URL returned HTTP %s: %s', resp.status_code, url)
-                    response_builder.speak(
-                        "Sorry, I can't reach the audio file. Please check that your stream URL is internet accessible via HTTPS at the MA_HOSTNAME variable you provided.")
-                    response_builder.set_should_end_session(True)
-                    return response_builder.response
-            except requests.RequestException:
-                logging.exception('Play Function URL: %s', url)
-                response_builder.speak(
-                    "Sorry, I can't reach the audio file. Please check that your stream URL is internet accessible via HTTPS at the MA_HOSTNAME variable you provided.")
-                response_builder.set_should_end_session(True)
-                return response_builder.response
+        url, error = _validated_stream_url(url, response_builder)
+        if error is not None:
+            return error
 
         response_builder.add_directive(
             PlayDirective(
@@ -139,9 +164,9 @@ def play(url, offset, text, response_builder, supports_apl=False):
                         token=url,
                         url=url,
                         offset_in_milliseconds=offset,
-                        expected_previous_token=None
+                        expected_previous_token=None,
                     )
-                )
+                ),
             )
         )
         response_builder.set_should_end_session(True)
@@ -152,7 +177,7 @@ def play(url, offset, text, response_builder, supports_apl=False):
     try:
         push_alexa_metadata(url)
     except Exception:
-        logging.exception('Error while preparing Alexa API push payload')
+        logging.exception("Error while preparing Alexa API push payload")
 
     return response_builder.response
 
@@ -175,18 +200,17 @@ def pause(text, response_builder, supports_apl=False, session_new=False):
                 try:
                     add_apl(response_builder, start_paused=True)
                 except Exception:
-                    logging.exception('Failed to re-render APL on session new')
+                    logging.exception("Failed to re-render APL on session new")
                 response_builder.set_should_end_session(False)
             else:
-                cmd = ControlMediaCommand(command=MediaCommandType.pause, component_id="videoPlayer")
+                cmd = ControlMediaCommand(
+                    command=MediaCommandType.pause, component_id="videoPlayer"
+                )
                 response_builder.add_directive(
-                    ExecuteCommandsDirective(
-                        commands=[cmd],
-                        token="playbackToken"
-                    )
+                    ExecuteCommandsDirective(commands=[cmd], token="playbackToken")
                 ).set_should_end_session(False)
         except Exception:
-            logging.exception('Failed to add APL pause command; falling back to Stop')
+            logging.exception("Failed to add APL pause command; falling back to Stop")
             response_builder.add_directive(StopDirective())
             response_builder.set_should_end_session(True)
     else:
@@ -198,9 +222,11 @@ def pause(text, response_builder, supports_apl=False, session_new=False):
 
     return response_builder.response
 
+
 def clear(response_builder):
-    response_builder.add_directive(ClearQueueDirective(
-        clear_behavior=ClearBehavior.CLEAR_ENQUEUED))
+    response_builder.add_directive(
+        ClearQueueDirective(clear_behavior=ClearBehavior.CLEAR_ENQUEUED)
+    )
     return response_builder.response
 
 
@@ -222,65 +248,74 @@ def update_apl_metadata(response_builder):
 
         # Update primary text (song title)
         if data.get_info().get("primaryText"):
-            commands.append({
-                "type": "SetValue",
-                "componentId": "Audio_PrimaryText",
-                "property": "text",
-                "value": data.get_info()["primaryText"]
-            })
+            commands.append(
+                {
+                    "type": "SetValue",
+                    "componentId": "Audio_PrimaryText",
+                    "property": "text",
+                    "value": data.get_info()["primaryText"],
+                }
+            )
 
         # Update secondary text (artist/album)
         if data.get_info().get("secondaryText"):
-            commands.append({
-                "type": "SetValue",
-                "componentId": "Audio_SecondaryText",
-                "property": "text",
-                "value": data.get_info()["secondaryText"]
-            })
+            commands.append(
+                {
+                    "type": "SetValue",
+                    "componentId": "Audio_SecondaryText",
+                    "property": "text",
+                    "value": data.get_info()["secondaryText"],
+                }
+            )
 
         # Update cover image and bound data so conditional rendering refreshes.
         if cover_image:
-            commands.append({
-                "type": "SetValue",
-                "componentId": "AudioPlayerRoot",
-                "property": "coverImageSource",
-                "value": cover_image
-            })
-            commands.append({
-                "type": "SetValue",
-                "componentId": "Audio_CoverArt",
-                "property": "imageSource",
-                "value": cover_image
-            })
+            commands.append(
+                {
+                    "type": "SetValue",
+                    "componentId": "AudioPlayerRoot",
+                    "property": "coverImageSource",
+                    "value": cover_image,
+                }
+            )
+            commands.append(
+                {
+                    "type": "SetValue",
+                    "componentId": "Audio_CoverArt",
+                    "property": "imageSource",
+                    "value": cover_image,
+                }
+            )
 
         # Update background image and bound data so layouts recompute.
         if background_image:
-            commands.append({
-                "type": "SetValue",
-                "componentId": "AudioPlayerRoot",
-                "property": "backgroundImageSource",
-                "value": background_image
-            })
-            commands.append({
-                "type": "SetValue",
-                "componentId": "AlexaBackground",
-                "property": "backgroundImageSource",
-                "value": background_image
-            })
+            commands.append(
+                {
+                    "type": "SetValue",
+                    "componentId": "AudioPlayerRoot",
+                    "property": "backgroundImageSource",
+                    "value": background_image,
+                }
+            )
+            commands.append(
+                {
+                    "type": "SetValue",
+                    "componentId": "AlexaBackground",
+                    "property": "backgroundImageSource",
+                    "value": background_image,
+                }
+            )
 
         # Send ExecuteCommands directive if we have any commands
         if commands:
             response_builder.add_directive(
-                ExecuteCommandsDirective(
-                    commands=commands,
-                    token="playbackToken"
-                )
+                ExecuteCommandsDirective(commands=commands, token="playbackToken")
             )
         else:
             logging.warning("No SetValue commands generated - no metadata to update")
 
     except Exception:
-        logging.exception('Error while updating APL metadata')
+        logging.exception("Error while updating APL metadata")
 
 
 def schedule_apl_refresh(response_builder, delay_ms=1000):
@@ -292,24 +327,12 @@ def schedule_apl_refresh(response_builder, delay_ms=1000):
         return
     try:
         commands = [
-            {
-                "type": "Idle",
-                "delay": int(delay_ms)
-            },
-            {
-                "type": "SendEvent",
-                "arguments": [
-                    "MetadataRefresh",
-                    "${refreshTick}"
-                ]
-            }
+            {"type": "Idle", "delay": int(delay_ms)},
+            {"type": "SendEvent", "arguments": ["MetadataRefresh", "${refreshTick}"]},
         ]
 
         response_builder.add_directive(
-            ExecuteCommandsDirective(
-                commands=commands,
-                token="playbackToken"
-            )
+            ExecuteCommandsDirective(commands=commands, token="playbackToken")
         )
     except Exception:
-        logging.exception('Error while scheduling APL refresh')
+        logging.exception("Error while scheduling APL refresh")

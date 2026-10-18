@@ -307,7 +307,7 @@ if [[ "$UPLOAD_MODELS" = true ]]; then
     echo -n "Waiting for model build for $locale"
     attempts=0
     success=0
-    while [ $attempts -lt $MAX_RETRIES ]; do
+    while [[ $attempts -lt $MAX_RETRIES ]]; do
             STATUS_JSON=$(ask smapi get-skill-status --skill-id "$SKILL_ID" --resource interactionModel --profile "$PROFILE" 2>/dev/null || true)
             # Immediate quick check: if raw JSON contains a status SUCCEEDED anywhere, accept it
             if printf '%s' "$STATUS_JSON" | grep -q '"status"[[:space:]]*:[[:space:]]*"SUCCEEDED"'; then

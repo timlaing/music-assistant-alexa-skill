@@ -609,37 +609,45 @@ class DeploymentManager:
         if not path.startswith("/v1/"):
             raise DeploymentError("Unexpected Amazon API path.")
         for attempt in range(3):
-            token = self._refresh_access_token()
-            try:
-                response = self.http.request(
-                    method,
-                    API + path,
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=30,
-                    allow_redirects=False,
-                    **kwargs,
-                )
-            except requests.RequestException as exc:
-                if method == "GET" and attempt < 2:
-                    self.pause(2**attempt)
-                    continue
-                raise DeploymentError(
-                    "Amazon request timed out or could not connect. Check progress before retrying."
-                ) from exc
-            if response.status_code == 401 and attempt == 0:
-                self._renew_token_after_rejection()
-                continue  # explicit rejection: no operation was accepted
-            if (
-                method == "GET"
-                and response.status_code in (429, 500, 503)
-                and attempt < 2
-            ):
-                self.pause(2**attempt)
+            response = self._send_once(method, path, attempt, kwargs)
+            if response is None:
+                continue  # transient network failure; already paused for retry
+            if self._handle_status(method, response, attempt):
                 continue
-            if not 200 <= response.status_code < 300:
-                raise AmazonError(response.status_code)
             return response
         raise DeploymentError("Amazon is busy. Try again later.")
+
+    def _send_once(self, method, path, attempt, kwargs):
+        """One Amazon HTTP call; None on a retryable network failure."""
+        token = self._refresh_access_token()
+        try:
+            return self.http.request(
+                method,
+                API + path,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+                allow_redirects=False,
+                **kwargs,
+            )
+        except requests.RequestException as exc:
+            if method == "GET" and attempt < 2:
+                self.pause(2**attempt)
+                return None
+            raise DeploymentError(
+                "Amazon request timed out or could not connect. Check progress before retrying."
+            ) from exc
+
+    def _handle_status(self, method, response, attempt):
+        """True to retry (401 refresh / GET backoff), False on success (else raise)."""
+        if response.status_code == 401 and attempt == 0:
+            self._renew_token_after_rejection()
+            return True  # explicit rejection: no operation was accepted
+        if method == "GET" and response.status_code in (429, 500, 503) and attempt < 2:
+            self.pause(2**attempt)
+            return True
+        if not 200 <= response.status_code < 300:
+            raise AmazonError(response.status_code)
+        return False
 
     def pause(self, seconds):
         if self.cancel.wait(seconds):
@@ -813,7 +821,11 @@ class DeploymentManager:
                 raise DeploymentError(
                     "A skill is already saved or creation is uncertain. Select the existing skill by ID; automatic creation is blocked to prevent duplicates."
                 )
-            files = {f"skill-package/{SKILL_JSON_NAME}": (APP_DIR / SKILL_JSON_NAME).read_bytes()}
+            files = {
+                f"skill-package/{SKILL_JSON_NAME}": (
+                    APP_DIR / SKILL_JSON_NAME
+                ).read_bytes()
+            }
             manifest_path, baseline = "skill-package/skill.json", None
         else:
             if not any(item["id"] == skill for item in available):
@@ -1229,42 +1241,131 @@ def manager():
         return instance
 
 
+def _setup_protect():
+    """Require app credentials on setup routes (OAuth callback stays open)."""
+    if (
+        request.path
+        not in ("/setup/oauth/callback", "/ma-alexa-skill/setup/oauth/callback")
+        and not request.environ.get("ma.trusted_ingress")
+        and (not get_env_secret("APP_USERNAME") or not get_env_secret("APP_PASSWORD"))
+    ):
+        return jsonify(
+            error="Set the app username and password before using skill deployment."
+        ), 403
+    if request.method == "POST":
+        cookie, header = (
+            request.cookies.get("setup_csrf", ""),
+            request.headers.get("X-CSRF-Token", ""),
+        )
+        if not cookie or not secrets.compare_digest(cookie, header):
+            return jsonify(error="Reload the setup page before continuing."), 403
+
+
+def _setup_private(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = (
+        "SAMEORIGIN" if request.environ.get("ma.trusted_ingress") else "DENY"
+    )
+    return response
+
+
+def _setup_deployment_error(exc):
+    return jsonify(error=str(exc)), 400
+
+
+def _setup_settings_error(exc):
+    return jsonify(error=str(exc)), 400
+
+
+def _setup_status():
+    response = jsonify(
+        **manager().public_status(),
+        oauth_ready=bool(manager().state.get("oauth", {}).get("code"))
+        and secrets.compare_digest(
+            manager().state.get("oauth", {}).get("browser", ""),
+            digest(request.cookies.get("setup_oauth", "")),
+        ),
+        csrf=request.cookies.get("setup_csrf") or secrets.token_urlsafe(32),
+    )
+    body = response.get_json()
+    response.set_cookie(
+        "setup_csrf",
+        body["csrf"],
+        httponly=True,
+        secure=request.is_secure,
+        samesite="Strict",
+        path=request.script_root + SETUP_PATH,
+    )
+    return response
+
+
+def _save_settings():
+    if request.method == "GET":
+        return jsonify(**store().public())
+    instance = manager()
+    with instance.lock:
+        if instance.thread and instance.thread.is_alive():
+            raise SettingsError(
+                "Wait for the current deployment operation before saving settings."
+            )
+        try:
+            previous_key = config_key()
+        except (DeploymentError, ValueError):
+            previous_key = None
+        result = store().save(request.get_json(silent=True))
+        try:
+            current_key = config_key()
+        except (DeploymentError, ValueError):
+            current_key = None
+        # Keep pending sign-in for unrelated edits; OAuth binds to its own config.
+        changes = {"review": None}
+        if previous_key != current_key:
+            changes["oauth"] = {}
+        instance.update(**changes)
+    return jsonify(**result)
+
+
+def _start_preview():
+    payload = request.get_json() or {}
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("create", False), bool
+    ):
+        raise DeploymentError(
+            "Choose an existing skill or explicitly request creation."
+        )
+    settings()  # fail before spawning a job
+    manager().start_job(
+        "preparing",
+        manager().prepare,
+        payload.get("vendor", ""),
+        payload.get("skill", ""),
+        payload.get("create") is True,
+    )
+    return jsonify(status="preparing"), 202
+
+
+def _start_deploy():
+    payload = request.get_json() or {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("review_id"), str):
+        raise DeploymentError("Prepare a review before deploying.")
+    manager().start_job("running", manager().deploy, payload["review_id"])
+    return jsonify(status="running"), 202
+
+
+def _start_resume():
+    if not manager().state.get("import_path"):
+        raise DeploymentError("No accepted import is available to resume.")
+    manager().start_job("running", manager().finish)
+    return jsonify(status="running"), 202
+
+
 def register_setup(app):
     blueprint = Blueprint("personal_setup", __name__)
-
-    @blueprint.before_request
-    def protect():
-        if (
-            request.path
-            not in ("/setup/oauth/callback", "/ma-alexa-skill/setup/oauth/callback")
-            and not request.environ.get("ma.trusted_ingress")
-            and (
-                not get_env_secret("APP_USERNAME") or not get_env_secret("APP_PASSWORD")
-            )
-        ):
-            return jsonify(
-                error="Set the app username and password before using skill deployment."
-            ), 403
-        if request.method == "POST":
-            cookie, header = (
-                request.cookies.get("setup_csrf", ""),
-                request.headers.get("X-CSRF-Token", ""),
-            )
-            if not cookie or not secrets.compare_digest(cookie, header):
-                return jsonify(error="Reload the setup page before continuing."), 403
-
-    @blueprint.after_request
-    def private(response):
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Frame-Options"] = (
-            "SAMEORIGIN" if request.environ.get("ma.trusted_ingress") else "DENY"
-        )
-        return response
-
-    @blueprint.errorhandler(DeploymentError)
-    def error(exc):
-        return jsonify(error=str(exc)), 400
+    blueprint.before_request(_setup_protect)
+    blueprint.after_request(_setup_private)
+    blueprint.errorhandler(DeploymentError)(_setup_deployment_error)
+    blueprint.errorhandler(SettingsError)(_setup_settings_error)
 
     @blueprint.route("/setup", methods=["GET"])
     def page():
@@ -1272,55 +1373,11 @@ def register_setup(app):
 
     @blueprint.route("/setup/status", methods=["GET"])
     def status():
-        response = jsonify(
-            **manager().public_status(),
-            oauth_ready=bool(manager().state.get("oauth", {}).get("code"))
-            and secrets.compare_digest(
-                manager().state.get("oauth", {}).get("browser", ""),
-                digest(request.cookies.get("setup_oauth", "")),
-            ),
-            csrf=request.cookies.get("setup_csrf") or secrets.token_urlsafe(32),
-        )
-        body = response.get_json()
-        response.set_cookie(
-            "setup_csrf",
-            body["csrf"],
-            httponly=True,
-            secure=request.is_secure,
-            samesite="Strict",
-            path=request.script_root + SETUP_PATH,
-        )
-        return response
-
-    @blueprint.errorhandler(SettingsError)
-    def settings_error(exc):
-        return jsonify(error=str(exc)), 400
+        return _setup_status()
 
     @blueprint.route("/setup/settings", methods=["GET", "POST"])
     def application_settings():
-        if request.method == "GET":
-            return jsonify(**store().public())
-        instance = manager()
-        with instance.lock:
-            if instance.thread and instance.thread.is_alive():
-                raise SettingsError(
-                    "Wait for the current deployment operation before saving settings."
-                )
-            try:
-                previous_key = config_key()
-            except (DeploymentError, ValueError):
-                previous_key = None
-            result = store().save(request.get_json(silent=True))
-            try:
-                current_key = config_key()
-            except (DeploymentError, ValueError):
-                current_key = None
-            # Keep pending sign-in for unrelated edits; OAuth binds to its own config.
-            changes = {"review": None}
-            if previous_key != current_key:
-                changes["oauth"] = {}
-            instance.update(**changes)
-        return jsonify(**result)
+        return _save_settings()
 
     @blueprint.route("/setup/settings/api-password", methods=["POST"])
     def reveal_api_password():
@@ -1370,32 +1427,11 @@ def register_setup(app):
 
     @blueprint.route("/setup/preview", methods=["POST"])
     def preview():
-        payload = request.get_json() or {}
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("create", False), bool
-        ):
-            raise DeploymentError(
-                "Choose an existing skill or explicitly request creation."
-            )
-        settings()  # fail before spawning a job
-        manager().start_job(
-            "preparing",
-            manager().prepare,
-            payload.get("vendor", ""),
-            payload.get("skill", ""),
-            payload.get("create") is True,
-        )
-        return jsonify(status="preparing"), 202
+        return _start_preview()
 
     @blueprint.route("/setup/deploy", methods=["POST"])
     def deploy():
-        payload = request.get_json() or {}
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("review_id"), str
-        ):
-            raise DeploymentError("Prepare a review before deploying.")
-        manager().start_job("running", manager().deploy, payload["review_id"])
-        return jsonify(status="running"), 202
+        return _start_deploy()
 
     @blueprint.route("/setup/reconcile-import", methods=["POST"])
     def reconcile():
@@ -1404,9 +1440,6 @@ def register_setup(app):
 
     @blueprint.route("/setup/resume", methods=["POST"])
     def resume():
-        if not manager().state.get("import_path"):
-            raise DeploymentError("No accepted import is available to resume.")
-        manager().start_job("running", manager().finish)
-        return jsonify(status="running"), 202
+        return _start_resume()
 
     app.register_blueprint(blueprint)

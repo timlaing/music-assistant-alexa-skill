@@ -53,8 +53,9 @@ def test_send_command_rejects_unknown_command(monkeypatch):
     monkeypatch.setattr(
         ma_control, "MusicAssistantClient", _fake_client_context(client)
     )
+    command = ma_control._send_command("http://ma:8095", "tok", "player", "seek")
     with pytest.raises(ValueError, match="Unsupported MA command"):
-        asyncio.run(ma_control._send_command("http://ma:8095", "tok", "player", "seek"))
+        asyncio.run(command)
 
 
 def test_send_player_command_success(monkeypatch):
@@ -88,13 +89,15 @@ def test_play_relative_index_requires_active_track():
             play_index=AsyncMock(),
         )
     )
+    first = ma_control._play_relative_index(client, "player", -1)
     with pytest.raises(ValueError, match="No active queue"):
-        asyncio.run(ma_control._play_relative_index(client, "player", -1))
+        asyncio.run(first)
     client.player_queues.get_active_queue = AsyncMock(
         return_value=SimpleNamespace(queue_id="q", current_index=None)
     )
+    second = ma_control._play_relative_index(client, "player", -1)
     with pytest.raises(ValueError, match="No active queue"):
-        asyncio.run(ma_control._play_relative_index(client, "player", -1))
+        asyncio.run(second)
 
 
 def test_send_command_previous_and_start_over_use_queue_index(monkeypatch):

@@ -261,30 +261,37 @@ def _context_allows(path, line):
     return False
 
 
+def _scan_one(path, allowlist):
+    """(path, domain) findings for a single staged file; [] when skipped."""
+    # skip repository-local hooks and other ignored paths
+    if path.split(os.sep)[0] in IGNORED_DIRS:
+        return []
+    if os.path.normpath(path) in IGNORED_FILES:
+        return []
+    _, ext = os.path.splitext(path)
+    # skip common image files entirely
+    if ext.lower().lstrip(".") in IMAGE_EXTS:
+        return []
+    content = get_staged_content(path)
+    if not content:
+        return []
+    scan_text = _scan_text_for(content, ext)
+    findings = []
+    for m in DOMAIN_RE.finditer(scan_text):
+        domain = m.group(0)
+        line = _line_for(scan_text, m.start(), m.end())
+        if _ignored_domain(domain) or _context_allows(path, line):
+            continue
+        if is_allowed(domain, allowlist):
+            continue
+        findings.append((path, domain))
+    return findings
+
+
 def scan_files(paths, allowlist):
     findings = []
     for p in paths:
-        # skip repository-local hooks and other ignored paths
-        if p.split(os.sep)[0] in IGNORED_DIRS:
-            continue
-        if os.path.normpath(p) in IGNORED_FILES:
-            continue
-        _, ext = os.path.splitext(p)
-        # skip common image files entirely
-        if ext.lower().lstrip(".") in IMAGE_EXTS:
-            continue
-        content = get_staged_content(p)
-        if not content:
-            continue
-        scan_text = _scan_text_for(content, ext)
-        for m in DOMAIN_RE.finditer(scan_text):
-            domain = m.group(0)
-            line = _line_for(scan_text, m.start(), m.end())
-            if _ignored_domain(domain) or _context_allows(p, line):
-                continue
-            if is_allowed(domain, allowlist):
-                continue
-            findings.append((p, domain))
+        findings.extend(_scan_one(p, allowlist))
     return findings
 
 

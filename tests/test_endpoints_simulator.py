@@ -67,7 +67,8 @@ def test_build_payload_without_override():
 def test_build_payload_with_valid_and_invalid_override(client):
     with app_request(client):
         payload, error = simulator._build_payload("X", '{"custom": true}')
-        assert error is None and payload == {"custom": True}
+        assert error is None
+        assert payload == {"custom": True}
         payload, error = simulator._build_payload("X", "{not json")
         assert payload is None
         _, status = error
@@ -82,7 +83,8 @@ def test_resolve_target_requires_skill_hostname(client, monkeypatch):
     monkeypatch.setenv("MA_HOSTNAME", "")
     with app_request(client):
         target, _headers, _verify, error = simulator._resolve_target("hostname")
-    assert target is None and error[1] == 400
+    assert target is None
+    assert error[1] == 400
     assert "SKILL_HOSTNAME not configured" in error[0].json["error"]
 
 

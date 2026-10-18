@@ -232,7 +232,6 @@ def simulator_send():
     data = request.get_json(silent=True) or {}
     intent = data.get('intent')
     use = data.get('use', 'local')
-    sample = data.get('sample')
     if not intent:
         return jsonify({'error': 'missing intent'}), 400
 

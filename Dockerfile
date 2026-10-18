@@ -45,7 +45,7 @@ RUN npm install -g --ignore-scripts ask-cli@2.30.7 || true && \
     python3.12 -m venv venv && \
     . venv/bin/activate && \
     pip install --upgrade --only-binary :all: pip==26.2.1 && \
-    pip install -r requirements.txt && \
+    pip install --only-binary :all: -r requirements.txt && \
     pip install --only-binary :all: debugpy==1.8.22 && \
     /app/venv/bin/python - <<'PY'
 import sysconfig, os, sys

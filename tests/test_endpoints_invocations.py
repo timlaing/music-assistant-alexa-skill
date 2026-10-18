@@ -90,7 +90,8 @@ def test_render_entry_supports_payload_key_alias_and_json_string_response():
     assert "Invocation 7" in body
     assert "SessionEndedRequest" in body
     # The JSON-string response body is pretty-printed (and HTML-escaped).
-    assert "ok" in body and "true" in body
+    assert "ok" in body
+    assert "true" in body
 
 
 def test_format_time_shapes():

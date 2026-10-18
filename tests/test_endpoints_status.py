@@ -251,7 +251,8 @@ def test_render_metadata_html_branches(client):
         html = status._render_metadata_html(
             {"audioSources": "https://x/song.mp3", "primaryText": "Song"}
         )
-        assert "green" in html and "Song" in html
+        assert "green" in html
+        assert "Song" in html
         html = status._render_metadata_html({})
         assert "no data loaded yet" in html
 
@@ -299,10 +300,12 @@ def test_status_sub_endpoints(client):
 def test_status_ma_and_alexa_show_pushed_streams(client):
     shared_store.set_ma({"streamUrl": "https://x/now-playing.mp3", "title": "T"})
     payload = client.get("/status/ma", headers=AUTH).json["ma_api_html"]
-    assert "ready" in payload and "now-playing.mp3" in payload
+    assert "ready" in payload
+    assert "now-playing.mp3" in payload
     shared_store.set_alexa({"streamUrl": "https://x/alexa.mp3"})
     payload = client.get("/status/alexa", headers=AUTH).json["alexa_api_html"]
-    assert "ready" in payload and "alexa.mp3" in payload
+    assert "ready" in payload
+    assert "alexa.mp3" in payload
 
 
 def test_status_html_page(client):
@@ -356,7 +359,8 @@ def test_status_json_variants(client, selector):
 
 def test_status_api_and_ask_fragments(client):
     payload = client.get("/status/api", headers=AUTH).json
-    assert "skill_ask_html" in payload and "ma_api_html" in payload
+    assert "skill_ask_html" in payload
+    assert "ma_api_html" in payload
     ask = client.get("/status/ask", headers=AUTH).json
     assert set(ask) == {"skill_ask_html"}
 

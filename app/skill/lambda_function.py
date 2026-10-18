@@ -75,30 +75,28 @@ root_logger.addFilter(_filter)
 _orig_log_record_factory = logging.getLogRecordFactory()
 
 
+def _component_for(name, norm_path):
+    """Derive a LogRecord's `component` label from logger name and path."""
+    if name.startswith(("music_assistant_api", "ma_routes")):
+        return "API"
+    if name == "lambda_function" or name.startswith(("alexa", "ask_sdk")):
+        return "Skill"
+    if not norm_path:
+        return COMPONENT_UI_WEB
+    if "/app/skill/" in norm_path:
+        return "Skill"
+    if "/app/music_assistant_api/" in norm_path or "/app/alexa_api/" in norm_path:
+        return "API"
+    return COMPONENT_UI_WEB
+
+
 def _log_record_factory(*args, **kwargs):
     record = _orig_log_record_factory(*args, **kwargs)
     if not hasattr(record, "component"):
         name = getattr(record, "name", "") or ""
         path = getattr(record, "pathname", "") or ""
         norm_path = path.replace(os.sep, "/") if path else ""
-        if name.startswith(("music_assistant_api", "ma_routes")):
-            record.component = "API"
-        elif name == "lambda_function" or name.startswith(("alexa", "ask_sdk")):
-            record.component = "Skill"
-        elif norm_path:
-            if "/app/skill/" in norm_path:
-                record.component = "Skill"
-            elif (
-                "/app/music_assistant_api/" in norm_path
-                or "/app/alexa_api/" in norm_path
-            ):
-                record.component = "API"
-            elif "/app/endpoints/" in norm_path or norm_path.endswith("/app.py"):
-                record.component = COMPONENT_UI_WEB
-            else:
-                record.component = COMPONENT_UI_WEB
-        else:
-            record.component = COMPONENT_UI_WEB
+        record.component = _component_for(name, norm_path)
     return record
 
 
@@ -249,9 +247,7 @@ class HelpIntentHandler(AbstractRequestHandler):
         logger.info("In HelpIntentHandler")
         _ = handler_input.attributes_manager.request_attributes["_"]
         handler_input.response_builder.speak(
-            _(data.HELP_MSG).format(
-                util.audio_data()
-            )
+            _(data.HELP_MSG).format(util.audio_data())
         ).set_should_end_session(False)
         return handler_input.response_builder.response
 
@@ -311,7 +307,11 @@ def _sync_to_ma_unless_echo(handler_input, command):
 
     ma_control.mark_ma_triggered(device_id, command)
     if not ma_control.send_player_command(player_id, command):
-        logger.warning("Failed to sync %s to MA player %s", _sanitize_log_value(command), _sanitize_log_value(player_id))
+        logger.warning(
+            "Failed to sync %s to MA player %s",
+            _sanitize_log_value(command),
+            _sanitize_log_value(player_id),
+        )
 
 
 class NextOrPreviousIntentHandler(AbstractRequestHandler):
@@ -788,9 +788,7 @@ class CatchAllExceptionHandler(AbstractExceptionHandler):
         logger.error(exception, exc_info=True)
         _ = handler_input.attributes_manager.request_attributes["_"]
         handler_input.response_builder.speak(_(data.UNHANDLED_MSG)).ask(
-            _(data.HELP_MSG).format(
-                util.audio_data()
-            )
+            _(data.HELP_MSG).format(util.audio_data())
         )
 
         return handler_input.response_builder.response
