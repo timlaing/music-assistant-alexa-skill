@@ -22,8 +22,11 @@
       <p><a href="/status">← Back to status</a></p>
     </main>
     <script>
+      window.setupBase = {{ request.script_root|tojson }};
+    </script>
+    <script>
       const el = (id) => document.getElementById(id);
-      const base = {{ request.script_root|tojson }};
+      const base = window.setupBase || "";
       let csrf = "";
       let pending = false;
       let settingsState = null;
@@ -48,7 +51,7 @@
         });
         const body = await response.json();
         if (!response.ok)
-          throw Error(body.error || "Request failed. Reload and retry.");
+          throw new Error(body.error || "Request failed. Reload and retry.");
         return body;
       }
 

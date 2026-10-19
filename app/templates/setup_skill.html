@@ -125,13 +125,13 @@
       const file = el("certificateUpload").files[0];
       if (!file) return;
       if (file.size > 16384)
-        throw Error("Choose a public PEM certificate smaller than 16 KB.");
+        throw new Error("Choose a public PEM certificate smaller than 16 KB.");
       const text = await file.text();
       if (
         !text.trim().startsWith("-----BEGIN CERTIFICATE-----") ||
         text.includes("PRIVATE KEY")
       )
-        throw Error("Choose a public PEM certificate, without a private key.");
+        throw new Error("Choose a public PEM certificate, without a private key.");
       certificatePem = text;
       updateCertificate();
     });
@@ -163,7 +163,7 @@
     action(async () => {
       const skill = el("skills").value;
       if (!el("vendors").value || !skill)
-        throw Error("Choose an account and skill first.");
+        throw new Error("Choose an account and skill first.");
       await api("/setup/preview", {
         vendor: el("vendors").value,
         skill: skill === "__create__" ? "" : skill,

@@ -39,6 +39,22 @@ def _read_health_content(response):
     return content
 
 
+def _classify_testaudio(code, response):
+    """Classify the static test-audio probe (see _classify_response)."""
+    if 200 <= code < 300:
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if content_type.startswith("audio/"):
+            return "reachable", f"Public audio delivered over HTTPS (HTTP {code})"
+        return (
+            "warning",
+            f"HTTPS reachable (HTTP {code}), but the response is not audio; check proxy routing",
+        )
+    return (
+        "failed",
+        f"Test audio returned HTTP {code}; check proxy routing to the add-on",
+    )
+
+
 def _classify_response(kind, code, response):
     """Map a completed probe response to a (status, message) pair.
 
@@ -60,18 +76,7 @@ def _classify_response(kind, code, response):
             "HTTPS reachable, but response does not identify the add-on",
         )
     if kind == "testaudio":
-        if 200 <= code < 300:
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            if content_type.startswith("audio/"):
-                return "reachable", f"Public audio delivered over HTTPS (HTTP {code})"
-            return (
-                "warning",
-                f"HTTPS reachable (HTTP {code}), but the response is not audio; check proxy routing",
-            )
-        return (
-            "failed",
-            f"Test audio returned HTTP {code}; check proxy routing to the add-on",
-        )
+        return _classify_testaudio(code, response)
     if 200 <= code < 300:
         return "reachable", f"HTTPS reachable (HTTP {code})"
     if kind == "host" and code in (404, 405):
