@@ -1378,8 +1378,8 @@ def _wizard_done():
     return {
         1: bool(str(values.get("ma_hostname", "")).strip()),
         2: bool(status.get("connected")),
-        3: bool(status.get("skill_id")),
-        4: bool(status.get("review")),
+        3: bool(status.get("skill_id") or status.get("review")),
+        4: status.get("phase") == "complete",
     }
 
 

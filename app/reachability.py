@@ -40,11 +40,16 @@ def _read_health_content(response):
 
 
 def _classify_testaudio(code, response):
-    """Classify the static test-audio probe (see _classify_response)."""
-    if 200 <= code < 300:
+    """Classify the streamed test-audio GET (see _classify_response)."""
+    if code == 200:
         content_type = (response.headers.get("Content-Type") or "").lower()
         if content_type.startswith("audio/"):
-            return "reachable", f"Public audio delivered over HTTPS (HTTP {code})"
+            if _read_health_content(response):
+                return "reachable", "Public audio delivered over HTTPS (HTTP 200)"
+            return (
+                "failed",
+                f"Test audio returned HTTP {code} with no audio data; check proxy routing",
+            )
         return (
             "warning",
             f"HTTPS reachable (HTTP {code}), but the response is not audio; check proxy routing",
@@ -113,7 +118,7 @@ def probe(label, value, kind, session):
             url = result["url"].rstrip("/") + "/test-audio.mp3"
             result["url"] = url
         with session.request(
-            "GET" if kind == "skill" else "HEAD",
+            "GET" if kind in ("skill", "testaudio") else "HEAD",
             url,
             timeout=(3, 5),
             allow_redirects=False,

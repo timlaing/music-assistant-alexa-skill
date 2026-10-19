@@ -501,6 +501,22 @@ def test_setup_wizard_step_pages_render(client, deployment):
     assert client.get("/setup/step/x", headers=AUTH).status_code == 404
 
 
+def test_wizard_steps_track_prepare_and_deploy_lifecycle(deployment, client):
+    from app import app
+
+    manager, _ = deployment
+    app.extensions["skill_deployment"] = manager
+    manager.prepare("vendor", SKILL, False)
+    landing = client.get("/setup", headers=AUTH)
+    assert landing.status_code == 302
+    # The prepared review waits on step 4 even before a skill is deployed.
+    assert landing.headers["Location"].endswith("/setup/step/4")
+    deploy(manager)
+    page = client.get("/setup/step/4", headers=AUTH).get_data(as_text=True)
+    # Step 4 stays green after deploy consumes the review.
+    assert 'class="led green" data-badge="4"' in page
+
+
 def test_first_incomplete_step_prefers_earliest_gap():
     from skill_deployment import _first_incomplete_step
 

@@ -156,6 +156,42 @@ def test_testaudio_html_embeds_player():
     assert 'src="https://example.com/test-audio.mp3"' in rendered
 
 
+def test_testaudio_probe_streams_get_and_requires_data():
+    session = Session(Response())
+    ok = probe("Public audio delivery", "https://example.com/", "testaudio", session)
+    assert session.calls[0][0] == "GET"
+    assert ok["status"] == "reachable"
+
+    class EmptyAudio(Response):
+        def iter_content(self, _size):
+            return iter(())
+
+    empty = probe(
+        "Public audio delivery",
+        "https://example.com/",
+        "testaudio",
+        Session(EmptyAudio()),
+    )
+    assert empty["status"] == "failed"
+
+    no_content = probe(
+        "Public audio delivery",
+        "https://example.com/",
+        "testaudio",
+        Session(Response(204)),
+    )
+    assert no_content["status"] == "failed"
+
+    audio_session = Session(Response())
+    probe(
+        "Current audio",
+        "https://streams.example.com/track.mp3",
+        "audio",
+        audio_session,
+    )
+    assert audio_session.calls[0][0] == "HEAD"
+
+
 def test_checks_cached_and_status_does_not_block(monkeypatch):
     import reachability
 

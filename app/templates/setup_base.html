@@ -29,8 +29,10 @@
       const base = window.setupBase || "";
       let csrf = "";
       let pending = false;
+      let refreshing = false;
       let settingsState = null;
       let settingsRendered = false;
+      let formRevision = "";
 
       function option(select, value, label) {
         const item = document.createElement("option");
@@ -74,8 +76,11 @@
 
       function applySettings(body, render) {
         settingsState = body;
-        if (render && typeof window.renderSettings === "function")
-          window.renderSettings(body);
+        if (render) {
+          formRevision = body.revision;
+          if (typeof window.renderSettings === "function")
+            window.renderSettings(body);
+        }
       }
 
       async function loadSettings(render) {
@@ -86,7 +91,7 @@
         const body = await api("/setup/settings", {
           values,
           clear_secrets,
-          revision: settingsState ? settingsState.revision : "",
+          revision: formRevision,
         });
         applySettings(body, true);
       }
@@ -108,8 +113,8 @@
         const done = {
           1: Boolean((settingsState.values.ma_hostname || "").trim()),
           2: Boolean(status.connected),
-          3: Boolean(status.skill_id),
-          4: Boolean(status.review),
+          3: Boolean(status.skill_id || status.review),
+          4: status.phase === "complete",
         };
         document.querySelectorAll("[data-badge]").forEach((badge) => {
           badge.className = "led" + (done[badge.dataset.badge] ? " green" : "");
@@ -125,10 +130,15 @@
         box.hidden = !text;
       };
 
-      setInterval(() => {
-        if (!pending) refreshBadges().catch((error) => showError(error.message));
-      }, 3000);
-      refreshBadges().catch((error) => showError(error.message));
+      function tick() {
+        if (pending || refreshing) return;
+        refreshing = true;
+        refreshBadges()
+          .catch((error) => showError(error.message))
+          .finally(() => (refreshing = false));
+      }
+      setInterval(tick, 3000);
+      tick();
     </script>
     {% block page_js %}{% endblock %}
   </body>
