@@ -443,7 +443,11 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
     manager, _ = deployment
     app.extensions["skill_deployment"] = manager
     assert client.get("/setup/status").status_code == 401
-    assert client.get("/setup", headers=AUTH).status_code == 200
+    response = client.get("/setup", headers=AUTH)
+    assert response.status_code == 302
+    # The deployment fixture saves settings via env and connects Amazon, so
+    # the wizard resumes at the first incomplete step: skill selection.
+    assert response.headers["Location"].endswith("/setup/step/3")
     assert client.post("/setup/preview", headers=AUTH, json={}).status_code == 403
     status = client.get("/setup/status", headers=AUTH, base_url=BASE_URL).json
     headers = {**AUTH, "X-CSRF-Token": status["csrf"]}
@@ -478,6 +482,33 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
         ).status_code
         == 400
     )
+
+
+def test_setup_wizard_step_pages_render(client, deployment):
+    from app import app
+
+    manager, _ = deployment
+    app.extensions["skill_deployment"] = manager
+    for number in (1, 2, 3, 4):
+        response = client.get(f"/setup/step/{number}", headers=AUTH)
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "Setup steps" in body
+        assert "__NAV__" not in body
+        assert body.count('aria-current="step"') == 1
+    assert client.get("/setup/step/0", headers=AUTH).status_code == 404
+    assert client.get("/setup/step/5", headers=AUTH).status_code == 404
+    assert client.get("/setup/step/x", headers=AUTH).status_code == 404
+
+
+def test_first_incomplete_step_prefers_earliest_gap():
+    from skill_deployment import _first_incomplete_step
+
+    assert _first_incomplete_step({1: False, 2: True, 3: True, 4: True}) == 1
+    assert _first_incomplete_step({1: True, 2: False, 3: True, 4: True}) == 2
+    assert _first_incomplete_step({1: True, 2: True, 3: False, 4: True}) == 3
+    assert _first_incomplete_step({1: True, 2: True, 3: True, 4: False}) == 4
+    assert _first_incomplete_step({1: True, 2: True, 3: True, 4: True}) == 4
 
 
 def test_setup_requires_credentials_outside_ingress(deployment, client, monkeypatch):

@@ -184,7 +184,9 @@ def _check_app_basic_auth():
     if ingress_enabled() and ui_path(request.path):
         return Response("Open this page through Home Assistant ingress", 403)
     # Allow the Alexa skill POST endpoint to be called without app-level auth
-    if request.path == "/health" or (request.path == "/" and request.method == "POST"):
+    if request.path in ("/health", "/test-audio.mp3") or (
+        request.path == "/" and request.method == "POST"
+    ):
         return None
     # Read credentials from secrets (APP_USERNAME/APP_PASSWORD)
     app_user = get_env_secret("APP_USERNAME")

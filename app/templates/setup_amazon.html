@@ -1,0 +1,106 @@
+{% extends 'setup_base.html' %}
+{% block title %}Connect to Amazon — Alexa skill setup{% endblock %}
+{% block heading %}Connect to Amazon{% endblock %}
+{% block intro %}
+<p>Create a Login with Amazon (LWA) security profile once, using the Amazon developer account that owns your personal skill.</p>
+<ol>
+  <li>Save your public audio URL on the <a href="/setup/step/1">previous step</a> so the callback URL below is correct.</li>
+  <li>Open the <a href="https://developer.amazon.com/loginwithamazon/console/site/lwa/overview.html" target="_blank" rel="noopener noreferrer">Login with Amazon developer console ↗</a>. Choose <strong>Create a New Security Profile</strong>, enter a name (for example Music Assistant), a description and the required privacy notice URL, then save.</li>
+  <li>Open the profile’s gear menu → <strong>Web Settings → Edit</strong>. Add the exact callback below to <strong>Allowed Return URLs</strong>, then save. Use Allowed Return URLs, rather than Allowed Origins or the Home Assistant ingress address.</li>
+  <li>Copy the profile’s <strong>Client ID</strong> and <strong>Client Secret</strong> into the fields below. Select <strong>Save Amazon settings</strong>, then <strong>Connect</strong>.</li>
+</ol>
+{% endblock %}
+{% block content %}
+<section id="amazonConnection">
+  <h2>Connect to Amazon</h2>
+  <form id="amazonForm">
+    <label>Amazon callback URL<input id="callback" readonly /><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
+    <p id="callbackHint">The callback must be publicly reachable over HTTPS through your /ma-alexa-skill/ proxy route. Amazon sign-in opens in a separate window; return here when it completes. If you change the public hostname, update the profile’s Allowed Return URLs and reconnect.</p>
+    <p><a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html#configure-an-lwa-security-profile-to-use-with-smapi" target="_blank" rel="noopener noreferrer">Amazon’s security profile instructions ↗</a>. This app supplies its own callback above; the ASK CLI localhost callback examples in that guide are for CLI use.</p>
+    <label>Amazon client ID<input id="lwa_client_id" autocomplete="off" /></label>
+    <label>Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password" /><small id="lwa_client_secret_hint"></small></label>
+    <label><input id="clear_lwa_client_secret" type="checkbox" /> Remove saved Amazon client secret</label>
+    <button id="saveAmazon" type="submit">Save Amazon settings</button><output id="saved"></output>
+  </form>
+  <p>
+    <button id="connect" disabled>Connect</button><output id="connectMessage" class="notice" aria-live="polite"></output><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a>
+  </p>
+  <p><a href="/status">Test audio delivery on the status page →</a></p>
+</section>
+<p class="step-nav"><a href="/setup/step/1">← Back: Application settings</a><a href="/setup/step/3">Next: Skill setup →</a></p>
+{% endblock %}
+{% block page_js %}
+<script>
+  window.renderSettings = (body) => {
+    el("callback").value = body.callback_url;
+    el("lwa_client_id").value = body.values.lwa_client_id;
+    el("lwa_client_secret").value = "";
+    el("lwa_client_secret_hint").textContent = body.secrets_set.lwa_client_secret
+      ? "Saved. Leave blank to keep the current value."
+      : "Not set.";
+    el("clear_lwa_client_secret").checked = false;
+  };
+  window.onSetupStatus = (status) => {
+    const busyNow = busy(status);
+    el("saveAmazon").disabled = busyNow;
+    el("connect").disabled = busyNow || !csrf;
+    if (status.connected) {
+      el("amazonSignin").hidden = true;
+      el("amazonSignin").removeAttribute("href");
+      el("connectMessage").textContent = "✓ Amazon account connected.";
+      el("connectMessage").classList.add("success");
+      return;
+    }
+    el("connectMessage").classList.remove("success");
+    if (!pending && !el("amazonSignin").hasAttribute("href")) {
+      el("connectMessage").textContent =
+        status.configuration_error || "Save your Amazon settings, then connect.";
+    }
+  };
+  el("amazonForm").onsubmit = (event) => {
+    event.preventDefault();
+    action(async () => {
+      await saveSettings(
+        {
+          lwa_client_id: el("lwa_client_id").value,
+          lwa_client_secret: el("lwa_client_secret").value,
+        },
+        el("clear_lwa_client_secret").checked ? ["lwa_client_secret"] : [],
+      );
+      el("saved").textContent = "Saved.";
+    });
+  };
+  el("connect").onclick = () => {
+    const current = window.setupStatus || {};
+    if (current.configuration_error) {
+      el("connectMessage").textContent =
+        current.configuration_error + " Enter and save these settings.";
+      return;
+    }
+    let popup = null;
+    try {
+      popup = window.open("about:blank", "_blank");
+      if (popup) popup.opener = null;
+    } catch {
+      popup = null;
+    }
+    el("amazonSignin").hidden = true;
+    el("amazonSignin").removeAttribute("href");
+    el("connectMessage").textContent = "Preparing Amazon sign-in…";
+    action(async () => {
+      try {
+        const body = await api("/setup/oauth/start", {});
+        el("amazonSignin").href = body.url;
+        el("amazonSignin").hidden = false;
+        el("connectMessage").textContent =
+          "Complete sign-in in the Amazon window, then return here. If it did not open, use the link below.";
+        if (popup) popup.location.assign(body.url);
+      } catch (error) {
+        if (popup) popup.close();
+        el("connectMessage").textContent = error.message;
+        throw error;
+      }
+    });
+  };
+</script>
+{% endblock %}

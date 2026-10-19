@@ -3,14 +3,27 @@ import re
 import shutil
 import subprocess
 import urllib.parse
+from pathlib import Path
 
 from app_settings import get_setting
-from flask import Blueprint, Response, current_app, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    current_app,
+    jsonify,
+    render_template,
+    request,
+    send_file,
+)
 from markupsafe import escape
+from page_nav import nav_html
 from setup_helpers import has_functional_cli_config
 from skill_deployment import DeploymentError, manager, settings
 
 status_bp = Blueprint("status_bp", __name__)
+
+TEST_AUDIO_FILE = Path(__file__).resolve().parents[2] / "assets" / "test-tone.mp3"
 
 # Repeated display fragments kept as constants.
 TESTING_ENABLED = "testing enabled"
@@ -323,6 +336,7 @@ def status():
     # Non-JSON: render status template
     try:
         tpl = render_template("status.html")
+        tpl = tpl.replace("__NAV__", nav_html("status"))
         tpl = tpl.replace("__URLS_HTML__", "Checking public URLs…")
         tpl = tpl.replace(
             "__SKILL_HTML__", '<span class="led green"></span> Skill running'
@@ -357,6 +371,14 @@ def status():
             </body>
             </html>"""
         return Response(html, status=200, mimetype="text/html")
+
+
+@status_bp.route("/test-audio.mp3", methods=["GET"])
+def test_audio():
+    """Serve a small self-generated tone for public-delivery diagnostics."""
+    if not TEST_AUDIO_FILE.is_file():
+        abort(404)
+    return send_file(TEST_AUDIO_FILE, mimetype="audio/mpeg", max_age=86400)
 
 
 @status_bp.route("/status/api", methods=["GET"])

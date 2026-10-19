@@ -1,5 +1,6 @@
 from flask import Blueprint, Response, current_app
 from markupsafe import escape
+from page_nav import nav_html
 from pathlib import Path
 import json
 from datetime import datetime, timezone
@@ -128,6 +129,7 @@ def _invocations_response(body):
     try:
         tpl_path = Path(__file__).parent.parent / "templates" / "invocations.html"
         tpl = tpl_path.read_text()
+        tpl = tpl.replace("__NAV__", nav_html("invocations"))
         tpl = tpl.replace("__INVOCATIONS_BODY__", body)
         return Response(tpl, status=200, mimetype="text/html")
     except Exception:

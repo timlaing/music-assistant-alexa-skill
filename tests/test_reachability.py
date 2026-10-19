@@ -7,9 +7,12 @@ from shared_store import set_ma
 
 
 class Response:
-    def __init__(self, status=200, body=None):
+    def __init__(self, status=200, body=None, headers=None):
         self.status_code = status
         self.body = body if body is not None else {"status": "ok"}
+        self.headers = (
+            headers if headers is not None else {"Content-Type": "audio/mpeg"}
+        )
 
     def iter_content(self, _size):
         yield json.dumps(self.body).encode()
@@ -96,6 +99,63 @@ def test_actual_stream_url_uses_configured_public_base(monkeypatch):
     assert targets()[-1][1] == "https://streams.example.com/music/flow/track.mp3"
 
 
+def test_testaudio_target_follows_skill_host(monkeypatch):
+    monkeypatch.setenv("SKILL_HOSTNAME", "https://example.com/ma-alexa-skill")
+    assert (
+        "Public audio delivery",
+        "https://example.com/ma-alexa-skill",
+        "testaudio",
+    ) in targets()
+
+
+def test_testaudio_probe_checks_content_type():
+    ok = probe(
+        "Public audio delivery",
+        "https://example.com/ma-alexa-skill/",
+        "testaudio",
+        Session(Response()),
+    )
+    assert ok["status"] == "reachable"
+    assert ok["kind"] == "testaudio"
+    assert ok["url"] == "https://example.com/ma-alexa-skill/test-audio.mp3"
+    wrong_type = probe(
+        "Public audio delivery",
+        "https://example.com/",
+        "testaudio",
+        Session(Response(headers={"Content-Type": "text/html"})),
+    )
+    assert wrong_type["status"] == "warning"
+    missing = probe(
+        "Public audio delivery",
+        "https://example.com/",
+        "testaudio",
+        Session(Response(404)),
+    )
+    assert missing["status"] == "failed"
+
+
+def test_testaudio_html_embeds_player():
+    from reachability import html
+
+    rendered = html(
+        {
+            "checks": [
+                {
+                    "label": "Public audio delivery",
+                    "kind": "testaudio",
+                    "status": "reachable",
+                    "message": "ok",
+                    "url": "https://example.com/test-audio.mp3",
+                }
+            ],
+            "checking": False,
+            "perspective": "p",
+        }
+    )
+    assert "<audio controls" in rendered
+    assert 'src="https://example.com/test-audio.mp3"' in rendered
+
+
 def test_checks_cached_and_status_does_not_block(monkeypatch):
     import reachability
 
@@ -116,7 +176,7 @@ def test_checks_cached_and_status_does_not_block(monkeypatch):
     checker.thread.join(2)
     result = checker.snapshot()
     assert result["checked_at"]
-    assert len(result["checks"]) == 2
+    assert len(result["checks"]) == 3
     old_thread = checker.thread
     checker.snapshot()
     assert checker.thread is old_thread

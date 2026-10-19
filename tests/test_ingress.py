@@ -24,11 +24,19 @@ def test_ingress_pages_no_app_auth_and_urls_keep_prefix(client, monkeypatch):
     monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
     monkeypatch.delenv("APP_USERNAME")
     monkeypatch.delenv("APP_PASSWORD")
-    for path in ("/status", "/setup", "/setup/status", "/status/ma", "/status/alexa"):
+    for path in ("/status", "/setup/status", "/status/ma", "/status/alexa"):
         response = gateway(client, path)
         assert response.status_code == 200
         assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
-    assert PREFIX + "/status" in gateway(client, "/setup").text
+    # /setup now redirects into the wizard at the first incomplete step.
+    landing = gateway(client, "/setup")
+    assert landing.status_code == 302
+    assert landing.headers["Location"].startswith(PREFIX + "/setup/step/")
+    assert landing.headers["X-Frame-Options"] == "SAMEORIGIN"
+    step = gateway(client, "/setup/step/1")
+    assert step.status_code == 200
+    assert step.headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert PREFIX + "/status" in step.text
     from endpoints import devices
 
     monkeypatch.setattr(devices, "_seen_devices", lambda: {"device": {}})
@@ -153,7 +161,7 @@ def test_status_and_setup_share_page_styling(client, monkeypatch):
         .read_text()
         .strip()
     )
-    for path in ("/status", "/setup"):
+    for path in ("/status", "/setup/step/1"):
         response = gateway(client, path)
         assert shared in response.text
         assert '<meta name="viewport"' in response.text

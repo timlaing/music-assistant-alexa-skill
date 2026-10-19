@@ -17,6 +17,8 @@ def targets():
     stream = get_setting("MA_HOSTNAME", "").strip()
     skill = get_setting("SKILL_HOSTNAME", "").strip()
     result = [("Skill endpoint", skill, "skill"), ("Stream host", stream, "host")]
+    if skill:
+        result.append(("Public audio delivery", skill, "testaudio"))
     latest = get_ma() or {}
     if latest.get("url"):
         try:
@@ -57,6 +59,19 @@ def _classify_response(kind, code, response):
             "warning",
             "HTTPS reachable, but response does not identify the add-on",
         )
+    if kind == "testaudio":
+        if 200 <= code < 300:
+            content_type = (response.headers.get("Content-Type") or "").lower()
+            if content_type.startswith("audio/"):
+                return "reachable", f"Public audio delivered over HTTPS (HTTP {code})"
+            return (
+                "warning",
+                f"HTTPS reachable (HTTP {code}), but the response is not audio; check proxy routing",
+            )
+        return (
+            "failed",
+            f"Test audio returned HTTP {code}; check proxy routing to the add-on",
+        )
     if 200 <= code < 300:
         return "reachable", f"HTTPS reachable (HTTP {code})"
     if kind == "host" and code in (404, 405):
@@ -72,6 +87,8 @@ def _classify_response(kind, code, response):
 
 def probe(label, value, kind, session):
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
+    if kind == "testaudio":
+        result["kind"] = kind
     if not value:
         return result
     try:
@@ -87,6 +104,9 @@ def probe(label, value, kind, session):
         result["url"] = urlunparse(parsed._replace(query="", fragment=""))
         if kind == "skill":
             url = url.rstrip("/") + "/health"
+        if kind == "testaudio":
+            url = result["url"].rstrip("/") + "/test-audio.mp3"
+            result["url"] = url
         with session.request(
             "GET" if kind == "skill" else "HEAD",
             url,
@@ -165,6 +185,14 @@ def html(result):
         parts.append(
             f'<div><span class="led {colors[check["status"]]}"></span> {escape(check["label"])}: {escape(check["message"])} <span class="muted">{escape(check.get("url", ""))}</span></div>'
         )
+        if (
+            check.get("kind") == "testaudio"
+            and check.get("status") == "reachable"
+            and check.get("url")
+        ):
+            parts.append(
+                f'<div><audio controls preload="none" src="{escape(check["url"])}"></audio> <span class="muted">Play the test tone through the same public route an Echo uses.</span></div>'
+            )
     if result["checking"]:
         parts.append("<div>Checking public URLs…</div>")
     parts.append(f'<div class="muted">{escape(result["perspective"])}</div>')

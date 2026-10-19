@@ -314,9 +314,19 @@ def test_status_html_page(client):
     assert response.mimetype == "text/html"
     body = response.get_data(as_text=True)
     assert "Skill running" in body
+    assert "site-nav" in body
+    assert 'aria-current="page"' in body
+    assert "__NAV__" not in body
     assert "__SKILL_HTML__" not in body
     assert "__MA_API_HTML__" not in body
     assert "__INVOCATIONS_HTML__" not in body
+
+
+def test_test_audio_file_served(client):
+    response = client.get("/test-audio.mp3")
+    assert response.status_code == 200
+    assert response.mimetype == "audio/mpeg"
+    assert len(response.data) > 1000
 
 
 def test_status_html_falls_back_when_template_missing(client, monkeypatch):

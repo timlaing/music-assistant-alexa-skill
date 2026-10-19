@@ -27,7 +27,18 @@ from app_settings import (
     validate_certificate,
 )
 from env_secrets import get_env_secret
-from flask import Blueprint, Response, current_app, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
+from page_nav import nav_html
 
 APP_DIR = Path(__file__).resolve().parent
 API = "https://api.amazonalexa.com"
@@ -1360,6 +1371,31 @@ def _start_resume():
     return jsonify(status="running"), 202
 
 
+def _wizard_done():
+    """Report which wizard steps already have their prerequisites saved."""
+    status = manager().public_status()
+    values = store().public()["values"]
+    return {
+        1: bool(str(values.get("ma_hostname", "")).strip()),
+        2: bool(status.get("connected")),
+        3: bool(status.get("skill_id")),
+        4: bool(status.get("review")),
+    }
+
+
+def _first_incomplete_step(done):
+    """Return the first step whose prerequisites are missing, else the last."""
+    return next((number for number in range(1, 5) if not done[number]), 4)
+
+
+SETUP_PAGES = {
+    1: "setup_settings.html",
+    2: "setup_amazon.html",
+    3: "setup_skill.html",
+    4: "setup_review.html",
+}
+
+
 def register_setup(app):
     blueprint = Blueprint("personal_setup", __name__)
     blueprint.before_request(_setup_protect)
@@ -1369,7 +1405,14 @@ def register_setup(app):
 
     @blueprint.route("/setup", methods=["GET"])
     def page():
-        return render_template("setup.html")
+        return redirect(url_for(".step", number=_first_incomplete_step(_wizard_done())))
+
+    @blueprint.route("/setup/step/<int:number>", methods=["GET"])
+    def step(number):
+        if number not in SETUP_PAGES:
+            abort(404)
+        page = render_template(SETUP_PAGES[number], step=number, done=_wizard_done())
+        return page.replace("__NAV__", nav_html("setup"))
 
     @blueprint.route("/setup/status", methods=["GET"])
     def status():

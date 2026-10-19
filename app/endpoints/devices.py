@@ -3,6 +3,7 @@ from pathlib import Path
 
 from flask import Blueprint, Response, current_app, redirect, request, url_for
 from markupsafe import escape
+from page_nav import nav_html
 from skill import device_mapping
 
 devices_bp = Blueprint("devices_bp", __name__)
@@ -109,6 +110,7 @@ def devices_page():
     try:
         tpl_path = Path(__file__).parent.parent / "templates" / "devices.html"
         tpl = tpl_path.read_text()
+        tpl = tpl.replace("__NAV__", nav_html("devices"))
         tpl = tpl.replace("__DEVICES_BODY__", body)
         return Response(tpl, status=200, mimetype="text/html")
     except Exception:

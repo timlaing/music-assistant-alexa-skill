@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Personal Alexa skill setup{% endblock %}</title>
+    {% include '_page_style.html' %}
+  </head>
+  <body>
+    <main>
+      __NAV__
+      <h1>{% block heading %}Set up your personal Alexa skill{% endblock %}</h1>
+      {% block intro %}{% endblock %}
+      <nav class="stepper" aria-label="Setup steps">
+        {%- for label in ['Application settings', 'Connect to Amazon', 'Skill setup', 'Review and deploy'] %}
+        <a class="step{% if step == loop.index %} current{% endif %}" href="/setup/step/{{ loop.index }}"{% if step == loop.index %} aria-current="step"{% endif %}>
+          <span class="led{% if done[loop.index] %} green{% endif %}" data-badge="{{ loop.index }}" aria-hidden="true"></span>{{ label }}</a>
+        {%- endfor %}
+      </nav>
+      <p id="error" role="alert" hidden></p>
+      {% block content %}{% endblock %}
+      <p><a href="/status">← Back to status</a></p>
+    </main>
+    <script>
+      const el = (id) => document.getElementById(id);
+      const base = {{ request.script_root|tojson }};
+      let csrf = "";
+      let pending = false;
+      let settingsState = null;
+      let settingsRendered = false;
+
+      function option(select, value, label) {
+        const item = document.createElement("option");
+        item.value = value;
+        item.textContent = label;
+        select.append(item);
+      }
+
+      async function api(path, payload) {
+        const response = await fetch(base + path, {
+          method: payload === undefined ? "GET" : "POST",
+          credentials: "same-origin",
+          headers:
+            payload === undefined
+              ? {}
+              : { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+          body: payload === undefined ? undefined : JSON.stringify(payload),
+        });
+        const body = await response.json();
+        if (!response.ok)
+          throw Error(body.error || "Request failed. Reload and retry.");
+        return body;
+      }
+
+      function showError(text) {
+        el("error").textContent = text || "";
+        el("error").hidden = !text;
+      }
+
+      async function action(fn) {
+        pending = true;
+        showError("");
+        try {
+          await fn();
+        } catch (error) {
+          showError(error.message);
+        } finally {
+          pending = false;
+        }
+      }
+
+      function applySettings(body, render) {
+        settingsState = body;
+        if (render && typeof window.renderSettings === "function")
+          window.renderSettings(body);
+      }
+
+      async function loadSettings(render) {
+        applySettings(await api("/setup/settings"), render);
+      }
+
+      async function saveSettings(values, clear_secrets) {
+        const body = await api("/setup/settings", {
+          values,
+          clear_secrets,
+          revision: settingsState ? settingsState.revision : "",
+          csrf,
+        });
+        applySettings(body, true);
+      }
+
+      function busy(status) {
+        return pending || ["preparing", "running"].includes(status.phase);
+      }
+
+      async function refreshBadges() {
+        let status = await api("/setup/status");
+        csrf = status.csrf;
+        if (status.oauth_ready) {
+          await api("/setup/oauth/finish", {});
+          status = await api("/setup/status");
+          csrf = status.csrf;
+        }
+        await loadSettings(!settingsRendered);
+        settingsRendered = true;
+        const done = {
+          1: Boolean((settingsState.values.ma_hostname || "").trim()),
+          2: Boolean(status.connected),
+          3: Boolean(status.skill_id),
+          4: Boolean(status.review),
+        };
+        document.querySelectorAll("[data-badge]").forEach((badge) => {
+          badge.className = "led" + (done[badge.dataset.badge] ? " green" : "");
+        });
+        window.setupStatus = status;
+        if (typeof window.onSetupStatus === "function")
+          await window.onSetupStatus(status, done);
+      }
+
+      window.stepMessage = (text) => {
+        const box = el("message");
+        box.textContent = text || "";
+        box.hidden = !text;
+      };
+
+      setInterval(() => {
+        if (!pending) refreshBadges().catch((error) => showError(error.message));
+      }, 3000);
+      refreshBadges().catch((error) => showError(error.message));
+    </script>
+    {% block page_js %}{% endblock %}
+  </body>
+</html>
