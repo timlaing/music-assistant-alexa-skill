@@ -5,7 +5,7 @@ from pathlib import Path
 
 import requests
 from app_settings import get_setting
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, render_template, request
 from page_nav import nav_html
 
 simulator_bp = Blueprint("simulator_bp", __name__)
@@ -41,8 +41,7 @@ SAMPLE_PAYLOAD = {
 
 @simulator_bp.route("/simulator", methods=["GET"])
 def simulator_index():
-    tpl_path = Path(__file__).parent.parent / "templates" / "simulator.html"
-    page = tpl_path.read_text()
+    page = render_template("simulator.html")
     page = page.replace("__NAV__", nav_html("simulator"))
     # expose configured SKILL_HOSTNAME to the client for convenience
     page = page.replace(
