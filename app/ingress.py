@@ -21,6 +21,7 @@ def ui_path(path):
             "/simulator",
             "/docs",
             "/openapi.json",
+            "/assets",
         )
     )
 

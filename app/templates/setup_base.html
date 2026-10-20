@@ -1,145 +1,149 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{% block title %}Personal Alexa skill setup{% endblock %}</title>
-    {% include '_page_style.html' %}
-  </head>
-  <body>
-    <main>
-      __NAV__
-      <h1>{% block heading %}Set up your personal Alexa skill{% endblock %}</h1>
-      {% block intro %}{% endblock %}
-      <nav class="stepper" aria-label="Setup steps">
-        {%- for label in ['Application settings', 'Connect to Amazon', 'Skill setup', 'Review and deploy'] %}
-        <a class="step{% if step == loop.index %} current{% endif %}" href="/setup/step/{{ loop.index }}"{% if step == loop.index %} aria-current="step"{% endif %}>
-          <span class="led{% if done[loop.index] %} green{% endif %}" data-badge="{{ loop.index }}" aria-hidden="true"></span>{{ label }}</a>
-        {%- endfor %}
-      </nav>
-      <p id="error" role="alert" hidden></p>
-      {% block content %}{% endblock %}
-      <p><a href="/status">← Back to status</a></p>
-    </main>
-    <script>
-      window.setupBase = {{ request.script_root|tojson }};
-    </script>
-    <script>
-      const el = (id) => document.getElementById(id);
-      const base = window.setupBase || "";
-      let csrf = "";
-      let pending = false;
-      let refreshing = false;
-      let settingsState = null;
-      let settingsRendered = false;
-      let formRevision = "";
+{% extends 'base.html' %}
+{% block title %}Personal Alexa skill setup{% endblock %}
+{% block heading %}Set up your personal Alexa skill{% endblock %}
+{% block content_class %} ma-form{% endblock %}
+{% block content %}
+{% set step_labels = ['Application settings', 'Connect to Amazon', 'Skill setup', 'Review and deploy'] %}
+{% set back_names = ['status', 'Application settings', 'Connect to Amazon', 'Skill setup'] %}
+<nav class="ma-stepper" aria-label="Setup steps">
+  {%- for label in step_labels %}
+  <a class="ma-step" href="/setup/step/{{ loop.index }}"{% if step == loop.index %} aria-current="step"{% endif %}>
+    <span class="ma-stepnum led{% if done[loop.index] %} green{% endif %}" data-badge="{{ loop.index }}">{{ loop.index }}</span><span class="ma-steplabel">{{ label }}</span></a>
+  {%- endfor %}
+</nav>
+<p class="ma-small ma-muted">Step {{ step }} of 4 · {{ step_labels[step - 1] }}</p>
+{% block intro %}{% endblock %}
+<p id="error" role="alert" hidden></p>
+{% block setup_content %}{% endblock %}
+<div class="ma-bottom">
+  {%- if step > 1 %}
+  <a class="ma-button" href="/setup/step/{{ step - 1 }}">← Back: {{ back_names[step - 1] }}</a>
+  {%- else %}
+  <a class="ma-button" href="/status">← Back to status</a>
+  {%- endif %}
+  <div class="ma-actions">{% block setup_actions %}{% endblock %}</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.setupBase = {{ request.script_root|tojson }};
+</script>
+<script>
+  const el = (id) => document.getElementById(id);
+  const base = window.setupBase || "";
+  let csrf = "";
+  let pending = false;
+  let refreshing = false;
+  let settingsState = null;
+  let settingsRendered = false;
+  let formRevision = "";
 
-      function option(select, value, label) {
-        const item = document.createElement("option");
-        item.value = value;
-        item.textContent = label;
-        select.append(item);
-      }
+  function option(select, value, label) {
+    const item = document.createElement("option");
+    item.value = value;
+    item.textContent = label;
+    select.append(item);
+  }
 
-      async function api(path, payload) {
-        const response = await fetch(base + path, {
-          method: payload === undefined ? "GET" : "POST",
-          credentials: "same-origin",
-          headers:
-            payload === undefined
-              ? {}
-              : { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-          body: payload === undefined ? undefined : JSON.stringify(payload),
-        });
-        const body = await response.json();
-        if (!response.ok)
-          throw new Error(body.error || "Request failed. Reload and retry.");
-        return body;
-      }
+  async function api(path, payload) {
+    const response = await fetch(base + path, {
+      method: payload === undefined ? "GET" : "POST",
+      credentials: "same-origin",
+      headers:
+        payload === undefined
+          ? {}
+          : { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (!response.ok)
+      throw new Error(body.error || "Request failed. Reload and retry.");
+    return body;
+  }
 
-      function showError(text) {
-        el("error").textContent = text || "";
-        el("error").hidden = !text;
-      }
+  function showError(text) {
+    el("error").textContent = text || "";
+    el("error").hidden = !text;
+  }
 
-      async function action(fn) {
-        pending = true;
-        showError("");
-        try {
-          await fn();
-        } catch (error) {
-          showError(error.message);
-        } finally {
-          pending = false;
-        }
-      }
+  async function action(fn) {
+    pending = true;
+    showError("");
+    try {
+      await fn();
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      pending = false;
+    }
+  }
 
-      function applySettings(body, render) {
-        settingsState = body;
-        if (render) {
-          formRevision = body.revision;
-          if (typeof window.renderSettings === "function")
-            window.renderSettings(body);
-        }
-      }
+  function applySettings(body, render) {
+    settingsState = body;
+    if (render) {
+      formRevision = body.revision;
+      if (typeof window.renderSettings === "function")
+        window.renderSettings(body);
+    }
+  }
 
-      async function loadSettings(render) {
-        applySettings(await api("/setup/settings"), render);
-      }
+  async function loadSettings(render) {
+    applySettings(await api("/setup/settings"), render);
+  }
 
-      async function saveSettings(values, clear_secrets) {
-        const body = await api("/setup/settings", {
-          values,
-          clear_secrets,
-          revision: formRevision,
-        });
-        applySettings(body, true);
-      }
+  async function saveSettings(values, clear_secrets) {
+    const body = await api("/setup/settings", {
+      values,
+      clear_secrets,
+      revision: formRevision,
+    });
+    applySettings(body, true);
+  }
 
-      function busy(status) {
-        return pending || ["preparing", "running"].includes(status.phase);
-      }
+  function busy(status) {
+    return pending || ["preparing", "running"].includes(status.phase);
+  }
 
-      async function refreshBadges() {
-        let status = await api("/setup/status");
-        csrf = status.csrf;
-        if (status.oauth_ready) {
-          await api("/setup/oauth/finish", {});
-          status = await api("/setup/status");
-          csrf = status.csrf;
-        }
-        await loadSettings(!settingsRendered);
-        settingsRendered = true;
-        const done = {
-          1: Boolean((settingsState.values.ma_hostname || "").trim()),
-          2: Boolean(status.connected),
-          3: Boolean(status.skill_id || status.review),
-          4: status.phase === "complete",
-        };
-        document.querySelectorAll("[data-badge]").forEach((badge) => {
-          badge.className = "led" + (done[badge.dataset.badge] ? " green" : "");
-        });
-        window.setupStatus = status;
-        if (typeof window.onSetupStatus === "function")
-          await window.onSetupStatus(status, done);
-      }
+  async function refreshBadges() {
+    let status = await api("/setup/status");
+    csrf = status.csrf;
+    if (status.oauth_ready) {
+      await api("/setup/oauth/finish", {});
+      status = await api("/setup/status");
+      csrf = status.csrf;
+    }
+    await loadSettings(!settingsRendered);
+    settingsRendered = true;
+    const done = {
+      1: Boolean((settingsState.values.ma_hostname || "").trim()),
+      2: Boolean(status.connected),
+      3: Boolean(status.skill_id || status.review),
+      4: status.phase === "complete",
+    };
+    document.querySelectorAll("[data-badge]").forEach((badge) => {
+      badge.className =
+        "ma-stepnum led" + (done[badge.dataset.badge] ? " green" : "");
+    });
+    window.setupStatus = status;
+    if (typeof window.onSetupStatus === "function")
+      await window.onSetupStatus(status, done);
+  }
 
-      window.stepMessage = (text) => {
-        const box = el("message");
-        box.textContent = text || "";
-        box.hidden = !text;
-      };
+  window.stepMessage = (text) => {
+    const box = el("message");
+    box.textContent = text || "";
+    box.hidden = !text;
+  };
 
-      function tick() {
-        if (pending || refreshing) return;
-        refreshing = true;
-        refreshBadges()
-          .catch((error) => showError(error.message))
-          .finally(() => (refreshing = false));
-      }
-      setInterval(tick, 3000);
-      tick();
-    </script>
-    {% block page_js %}{% endblock %}
-  </body>
-</html>
+  function tick() {
+    if (pending || refreshing) return;
+    refreshing = true;
+    refreshBadges()
+      .catch((error) => showError(error.message))
+      .finally(() => (refreshing = false));
+  }
+  setInterval(tick, 3000);
+  tick();
+</script>
+{% block page_js %}{% endblock %}
+{% endblock %}

@@ -4,20 +4,20 @@
 {% block intro %}
 <p>Save these skill settings, then review and deploy to apply them to Amazon.</p>
 {% endblock %}
-{% block content %}
-<section id="skillSetup">
-  <h2>Skill settings</h2>
+{% block setup_content %}
+<section id="skillSetup" class="ma-panel">
+  <div class="ma-panelhead"><h2>Personal skill</h2></div>
   <form id="skillForm">
-    <label>Alexa locale<select id="locale"></select></label>
-    <label><input id="enable_apl" type="checkbox" /> Enable Echo Show artwork and controls</label>
-    <details>
+    <label class="ma-field">Alexa locale<select id="locale"></select></label>
+    <label class="ma-check"><input id="enable_apl" type="checkbox" /> Enable Echo Show artwork and controls</label>
+    <details class="ma-detail">
       <summary>Advanced skill settings</summary>
-      <label
+      <label class="ma-field"
         >Public skill endpoint override<input id="skill_hostname" type="url" /><small
           >Optional. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override only when your skill uses another public endpoint.</small
         ></label
       >
-      <label
+      <label class="ma-field"
         >HTTPS certificate type<select id="skill_certificate_type">
           <option value="Trusted">Trusted</option>
           <option value="Wildcard">Trusted sub-domain</option>
@@ -25,26 +25,28 @@
         ><small>Choose Trusted for a normal Nginx Proxy Manager Let’s Encrypt certificate, Trusted sub-domain for a CA-issued wildcard certificate, or File for a self-signed development certificate.</small></label
       >
       <div id="certificateFile" hidden>
-        <label
+        <label class="ma-field"
           >Public certificate file<input id="certificateUpload" type="file" accept=".pem,.crt,.cer" /><small
             >One PEM-encoded public certificate, up to 16 KB. Never upload a private key. A file certificate applies to skill development testing; Amazon sign-in still needs publicly trusted HTTPS.</small
           ></label
         ><output id="certificateSaved"></output>
-        <button id="clearCertificate" type="button">Remove saved certificate</button>
+        <button class="ma-button" id="clearCertificate" type="button">Remove saved certificate</button>
       </div>
     </details>
-    <button id="saveSkill" type="submit">Save skill settings</button><output id="saved"></output>
+    <div class="ma-actions"><button class="ma-button" id="saveSkill" type="submit">Save skill settings</button><output id="saved"></output></div>
   </form>
   <output id="message" aria-live="polite" hidden></output>
   <div id="selection" hidden>
     <h3>Choose your personal skill</h3>
-    <label>Developer account<select id="vendors"><option value="">Choose account…</option></select></label>
-    <label>Skill<select id="skills"><option value="">Choose skill…</option></select></label>
+    <label class="ma-field">Developer account<select id="vendors"><option value="">Choose account…</option></select></label>
+    <label class="ma-field">Skill<select id="skills"><option value="">Choose skill…</option></select></label>
     <p>The skill ID identifies which skill is updated, even when names are identical. Only development custom skills are shown. Other skills are never deleted.</p>
-    <button id="reload">Refresh skill list</button><button id="review">Review settings</button><button id="resume" hidden>Resume accepted import</button>
+    <div class="ma-actions"><button class="ma-button" id="reload">Refresh skill list</button><button class="ma-button ma-primary" id="review">Review settings</button><button class="ma-button" id="resume" hidden>Resume accepted import</button></div>
   </div>
 </section>
-<p class="step-nav"><a href="/setup/step/2">← Back: Connect to Amazon</a><a href="/setup/step/4">Next: Review and deploy →</a></p>
+{% endblock %}
+{% block setup_actions %}
+<a class="ma-button ma-primary" href="/setup/step/4">Next: Review and deploy →</a>
 {% endblock %}
 {% block page_js %}
 <script>

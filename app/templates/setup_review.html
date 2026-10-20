@@ -4,35 +4,36 @@
 {% block intro %}
 <p id="emptyReview">Nothing to review yet. Choose your account and personal skill on the <a href="/setup/step/3">previous step</a>, then select Review settings.</p>
 {% endblock %}
-{% block content %}
-<section id="approval" hidden>
-  <h2>Review and deploy</h2>
+{% block setup_content %}
+<section id="approval" class="ma-panel" hidden>
+  <div class="ma-panelhead"><h2>Deployment summary</h2></div>
   <dl id="details"></dl>
   <p>This replaces the selected locale’s voice model with Music Assistant’s model, preserving an existing invocation name, other locales and unrelated package files. It updates the HTTPS endpoint and regional endpoints, enables AudioPlayer, applies your APL preference and enables development testing.</p>
   <p id="newWarning" hidden>Creating a skill adds a new personal skill to this Amazon developer account.</p>
-  <details><summary>Configuration to be sent to Amazon</summary><pre id="manifest"></pre></details>
-  <button id="deploy">Deploy approved settings</button>
+  <details class="ma-detail"><summary>Configuration to be sent to Amazon</summary><pre id="manifest"></pre></details>
 </section>
 <output id="message" aria-live="polite" hidden></output>
-<section id="reconciliation" hidden>
-  <h2>Recover an uncertain import</h2>
+<section id="reconciliation" class="ma-panel" hidden>
+  <div class="ma-panelhead"><h2>Recover an uncertain import</h2></div>
   <p>Amazon may have accepted an import without returning its recovery ID. Check the saved skill’s import with Amazon before continuing. Do not clear this block while the operation is running or its result remains unknown.</p>
   <p>Saved skill: <strong id="reconcileSkill"></strong></p>
-  <label>Type the saved skill ID to confirm<input id="reconcileSkillInput" autocomplete="off" /></label>
-  <label
+  <label class="ma-field">Type the saved skill ID to confirm<input id="reconcileSkillInput" autocomplete="off" /></label>
+  <label class="ma-field"
     >Confirmed Amazon result<select id="reconcileResult">
       <option value="">Choose a confirmed result…</option>
       <option value="SUCCEEDED">Import succeeded</option>
       <option value="FAILED">Import failed</option>
       <option value="NOT_ACCEPTED">Amazon confirmed it was not accepted</option> </select
   ></label>
-  <label>Amazon confirmation reference or explanation<input id="reconcileReference" maxlength="1000" /><small>Do not include credentials or authorization codes.</small></label>
-  <label><input id="reconcileConfirmed" type="checkbox" /> I confirmed this result with Amazon and verified no import is still running for this attempt.</label>
-  <button id="reconcileImport">Record confirmed result</button>
+  <label class="ma-field">Amazon confirmation reference or explanation<input id="reconcileReference" maxlength="1000" /><small>Do not include credentials or authorization codes.</small></label>
+  <label class="ma-check"><input id="reconcileConfirmed" type="checkbox" /> I confirmed this result with Amazon and verified no import is still running for this attempt.</label>
+  <div class="ma-actions"><button class="ma-button" id="reconcileImport">Record confirmed result</button></div>
   <p>This records your confirmation, clears the retry block and requires a fresh review. It does not mark deployment verified or submit another import.</p>
 </section>
 <p>After Amazon confirms deployment, test playback on your Echo. Your Echo must use this Amazon account and the configured locale. No publication or certification is requested.</p>
-<p class="step-nav"><a href="/setup/step/3">← Back: Skill setup</a><span></span></p>
+{% endblock %}
+{% block setup_actions %}
+<button class="ma-button ma-primary" id="deploy" hidden>Deploy approved settings</button>
 {% endblock %}
 {% block page_js %}
 <script>

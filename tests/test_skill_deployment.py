@@ -514,7 +514,7 @@ def test_wizard_steps_track_prepare_and_deploy_lifecycle(deployment, client):
     deploy(manager)
     page = client.get("/setup/step/4", headers=AUTH).get_data(as_text=True)
     # Step 4 stays green after deploy consumes the review.
-    assert 'class="led green" data-badge="4"' in page
+    assert 'class="ma-stepnum led green" data-badge="4"' in page
 
 
 def test_first_incomplete_step_prefers_earliest_gap():

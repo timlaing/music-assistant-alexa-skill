@@ -43,7 +43,7 @@ def test_ingress_pages_no_app_auth_and_urls_keep_prefix(client, monkeypatch):
     assert 'action="' + PREFIX + "/devices" in gateway(client, "/devices").text
     assert "fetch('" + PREFIX + "/status/ma" in gateway(client, "/status").text
     assert gateway(client, "/").headers["Location"] == PREFIX + "/status"
-    for path in ("/setup", "/setup/status", "/status", "/status/api"):
+    for path in ("/setup", "/setup/status", "/status", "/status/api", "/assets/ui.css"):
         assert client.get(path).status_code == 403
     assert gateway(client, "/ma/latest-url").status_code == 403
     assert (
@@ -154,18 +154,15 @@ def test_cached_double_slash_ingress_entry_opens_status(client, monkeypatch):
 
 def test_status_and_setup_share_page_styling(client, monkeypatch):
     monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
-    from pathlib import Path
-
-    shared = (
-        (Path(__file__).resolve().parents[1] / "app/templates/_page_style.html")
-        .read_text()
-        .strip()
-    )
     for path in ("/status", "/setup/step/1"):
         response = gateway(client, path)
-        assert shared in response.text
+        # Both pages render the shared shell with the packaged stylesheet
+        # and shell script, referenced through the trusted ingress prefix.
+        assert PREFIX + "/assets/ui.css" in response.text
+        assert PREFIX + "/assets/ui-shell.js" in response.text
+        assert PREFIX + "/assets/app-icon.png" in response.text
         assert '<meta name="viewport"' in response.text
-        assert "<main>" in response.text
+        assert 'id="main-content"' in response.text
 
 
 def test_connect_reports_missing_amazon_settings_before_first_signin(

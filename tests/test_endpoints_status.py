@@ -314,7 +314,7 @@ def test_status_html_page(client):
     assert response.mimetype == "text/html"
     body = response.get_data(as_text=True)
     assert "Skill running" in body
-    assert "site-nav" in body
+    assert "ma-nav" in body
     assert 'aria-current="page"' in body
     assert "__NAV__" not in body
     assert "__SKILL_HTML__" not in body

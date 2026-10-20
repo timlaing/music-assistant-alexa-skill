@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 
 import alexa_api as alexa_api
 import music_assistant_api as ma_api
@@ -11,7 +12,7 @@ import swagger_ui as maa_swagger
 from app_settings import initialize
 from endpoints import devices_bp, invocations_bp, simulator_bp, status_bp
 from env_secrets import get_env_secret
-from flask import Flask, Response, g, jsonify, redirect, request
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory
 
 # The SDK imports an unused DynamoDB client that still requires a region.
 # This internal compatibility default is not an application setting.
@@ -376,6 +377,16 @@ def openapi_json():
 @app.route("/docs", methods=["GET"])
 def docs():
     return maa_swagger.render()
+
+
+# Packaged UI assets (app icon, stylesheet, shell script). Copied to
+# /app/assets by the image build next to the copied application directories.
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
+
+
+@app.route("/assets/<path:filename>", methods=["GET"])
+def ui_assets(filename):
+    return send_from_directory(ASSETS_DIR, filename, max_age=86400)
 
 
 @app.before_request

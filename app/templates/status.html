@@ -1,138 +1,138 @@
-<!doctype html>
-            <html lang="en">
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0%200%20100%20100'><circle cx='50' cy='50' r='50' fill='%2300A4E3'/><circle cx='50' cy='50' r='34' fill='none' stroke='%23FFFFFF' stroke-width='8' opacity='0.8'/></svg>">
-                <title>Service Status</title>
-                {% include '_page_style.html' %}
-            </head>
-            <body><main>
-                __NAV__
-                <a href="/setup">Set up personal Alexa skill →</a>
-                <h1>Service Status</h1>
-                <section aria-labelledby="reachability-heading"><h2 id="reachability-heading">Public URL reachability</h2>
-                    <div class="row" id="urls-row">__URLS_HTML__</div>
-                </section>
-                <section aria-labelledby="skill-heading"><h2 id="skill-heading">Alexa skill</h2>
-                    <div class="row">__SKILL_HTML__</div>
-                    <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
-                </section>
-                <section aria-labelledby="playback-heading"><h2 id="playback-heading">Playback APIs</h2>
-                    <div class="row" id="api-row">__MA_API_HTML__</div>
-                    <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
-                </section>
-                <section aria-labelledby="display-heading"><h2 id="display-heading">Echo Show display</h2>
-                    <div class="row" id="metadata-row">__METADATA_HTML__</div>
-                </section>
-                <section aria-labelledby="activity-heading"><h2 id="activity-heading">Recent activity</h2>
-                    <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
-                </section>
-                <script>
-                (function pollUrls(){
-                    fetch('/status/urls').then(r=>r.json()).then(j=>{
-                        document.getElementById('urls-row').innerHTML = j.urls_html;
-                        setTimeout(pollUrls, j.checking ? 2000 : 15000);
-                    }).catch(()=>setTimeout(pollUrls, 10000));
-                })();
-                // Fetch MA and Alexa checks independently so each row updates when ready
-                (function pollMa(){
-                    fetch('/status/ma').then(r=>r.json()).then(j=>{
-                        try{ const maEl = document.getElementById('api-row'); if(maEl && j.ma_api_html){ maEl.innerHTML = j.ma_api_html; } }catch(e){
-                            // best-effort: row refresh is optional; keep polling if this update fails
-                        }
-                        setTimeout(pollMa, 3000);
-                    }).catch(()=>{ setTimeout(pollMa, 5000); });
-                })();
+{% extends 'base.html' %}
+{% block content %}
+<div class="ma-grid">
+    <section class="ma-panel" aria-labelledby="reachability-heading">
+        <div class="ma-panelhead"><h2 id="reachability-heading">Public URL reachability</h2></div>
+        <div class="row" id="urls-row">__URLS_HTML__</div>
+    </section>
+    <section class="ma-panel" aria-labelledby="skill-heading">
+        <div class="ma-panelhead"><h2 id="skill-heading">Alexa skill</h2></div>
+        <div class="row">__SKILL_HTML__</div>
+        <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
+        <a class="ma-link" href="/setup">Set up personal Alexa skill →</a>
+    </section>
+</div>
+<div class="ma-grid">
+    <section class="ma-panel" aria-labelledby="playback-heading">
+        <div class="ma-panelhead"><h2 id="playback-heading">Playback APIs</h2></div>
+        <div class="row" id="api-row">__MA_API_HTML__</div>
+        <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
+    </section>
+    <section class="ma-panel" aria-labelledby="display-heading">
+        <div class="ma-panelhead"><h2 id="display-heading">Echo Show display</h2></div>
+        <div class="row" id="metadata-row">__METADATA_HTML__</div>
+    </section>
+</div>
+<section class="ma-panel" aria-labelledby="activity-heading">
+    <div class="ma-panelhead"><h2 id="activity-heading">Recent activity</h2></div>
+    <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(function pollUrls(){
+    fetch('/status/urls').then(r=>r.json()).then(j=>{
+        document.getElementById('urls-row').innerHTML = j.urls_html;
+        setTimeout(pollUrls, j.checking ? 2000 : 15000);
+    }).catch(()=>setTimeout(pollUrls, 10000));
+})();
+// Fetch MA and Alexa checks independently so each row updates when ready
+(function pollMa(){
+    fetch('/status/ma').then(r=>r.json()).then(j=>{
+        try{ const maEl = document.getElementById('api-row'); if(maEl && j.ma_api_html){ maEl.innerHTML = j.ma_api_html; } }catch(e){
+            // best-effort: row refresh is optional; keep polling if this update fails
+        }
+        setTimeout(pollMa, 3000);
+    }).catch(()=>{ setTimeout(pollMa, 5000); });
+})();
 
-                (function pollAlexa(){
-                    fetch('/status/alexa').then(r=>r.json()).then(j=>{
-                        try{ const alexaEl = document.getElementById('alexa-row'); if(alexaEl && j.alexa_api_html){ alexaEl.innerHTML = j.alexa_api_html; } }catch(e){
-                            // best-effort: row refresh is optional; keep polling if this update fails
-                        }
-                        setTimeout(pollAlexa, 3000);
-                    }).catch(()=>{ setTimeout(pollAlexa, 5000); });
-                })();
+(function pollAlexa(){
+    fetch('/status/alexa').then(r=>r.json()).then(j=>{
+        try{ const alexaEl = document.getElementById('alexa-row'); if(alexaEl && j.alexa_api_html){ alexaEl.innerHTML = j.alexa_api_html; } }catch(e){
+            // best-effort: row refresh is optional; keep polling if this update fails
+        }
+        setTimeout(pollAlexa, 3000);
+    }).catch(()=>{ setTimeout(pollAlexa, 5000); });
+})();
 
-                (function pollMetadata(){
-                    fetch('/status/metadata').then(r=>r.json()).then(j=>{
-                        try{ const metadataEl = document.getElementById('metadata-row'); if(metadataEl && j.metadata_html){ metadataEl.innerHTML = j.metadata_html; } }catch(e){
-                            // best-effort: row refresh is optional; keep polling if this update fails
-                        }
-                        setTimeout(pollMetadata, 3000);
-                    }).catch(()=>{ setTimeout(pollMetadata, 5000); });
-                })();
+(function pollMetadata(){
+    fetch('/status/metadata').then(r=>r.json()).then(j=>{
+        try{ const metadataEl = document.getElementById('metadata-row'); if(metadataEl && j.metadata_html){ metadataEl.innerHTML = j.metadata_html; } }catch(e){
+            // best-effort: row refresh is optional; keep polling if this update fails
+        }
+        setTimeout(pollMetadata, 3000);
+    }).catch(()=>{ setTimeout(pollMetadata, 5000); });
+})();
 
-                (function pollAsk(){
-                    fetch('/status/ask').then(r=>r.json()).then(j=>{
-                        try{ const askEl = document.getElementById('skill-ask-row'); if(askEl && j.skill_ask_html){ askEl.innerHTML = j.skill_ask_html; } }catch(e){
-                            // best-effort: Ask checks are slower and optional; keep polling if this update fails
-                        }
-                        // Ask checks are slower; poll less frequently
-                        setTimeout(pollAsk, 5000);
-                    }).catch(()=>{ setTimeout(pollAsk, 10000); });
-                })();
+(function pollAsk(){
+    fetch('/status/ask').then(r=>r.json()).then(j=>{
+        try{ const askEl = document.getElementById('skill-ask-row'); if(askEl && j.skill_ask_html){ askEl.innerHTML = j.skill_ask_html; } }catch(e){
+            // best-effort: Ask checks are slower and optional; keep polling if this update fails
+        }
+        // Ask checks are slower; poll less frequently
+        setTimeout(pollAsk, 5000);
+    }).catch(()=>{ setTimeout(pollAsk, 10000); });
+})();
 
-                // Poll invocations count so the invocation row updates live
-                (function pollInvocations(){
-                    fetch('/status/invocations').then(r=>r.json()).then(j=>{
-                        try{ const invEl = document.getElementById('invocations-row'); if(invEl && j.invocations_html){ invEl.innerHTML = j.invocations_html; } }catch(e){
-                            // best-effort: invocation count refresh is optional; keep polling if this update fails
-                        }
-                        setTimeout(pollInvocations, 3000);
-                    }).catch(()=>{ setTimeout(pollInvocations, 5000); });
-                })();
+// Poll invocations count so the invocation row updates live
+(function pollInvocations(){
+    fetch('/status/invocations').then(r=>r.json()).then(j=>{
+        try{ const invEl = document.getElementById('invocations-row'); if(invEl && j.invocations_html){ invEl.innerHTML = j.invocations_html; } }catch(e){
+            // best-effort: invocation count refresh is optional; keep polling if this update fails
+        }
+        setTimeout(pollInvocations, 3000);
+    }).catch(()=>{ setTimeout(pollInvocations, 5000); });
+})();
 
-                // Delegated click handler to toggle intent payload/response pairs
-                document.addEventListener('click', function(e){
-                    try{
-                        var t = e.target || e.srcElement;
-                        if(t && t.closest){
-                            var box = t.closest('pre.status-box');
-                            if(box && box.focus){
-                                box.focus();
-                            }
-                        }
-                        if(t && t.classList && t.classList.contains('intent-toggle')){
-                            var pair = t.nextElementSibling;
-                            if(pair && pair.classList && pair.classList.contains('intent-pair')){
-                                pair.style.display = (pair.style.display === 'none' || pair.style.display === '') ? 'block' : 'none';
-                            }
-                        }
-                    }catch(err){
-                        // best-effort: click handling is optional; ignore malformed event targets
-                    }
-                });
+// Delegated click handler to toggle intent payload/response pairs
+document.addEventListener('click', function(e){
+    try{
+        var t = e.target || e.srcElement;
+        if(t && t.closest){
+            var box = t.closest('pre.status-box');
+            if(box && box.focus){
+                box.focus();
+            }
+        }
+        if(t && t.classList && t.classList.contains('intent-toggle')){
+            var pair = t.nextElementSibling;
+            if(pair && pair.classList && pair.classList.contains('intent-pair')){
+                pair.style.display = (pair.style.display === 'none' || pair.style.display === '') ? 'block' : 'none';
+            }
+        }
+    }catch(err){
+        // best-effort: click handling is optional; ignore malformed event targets
+    }
+});
 
-                // Limit Ctrl/Cmd+A selection to the focused status box.
-                document.addEventListener('keydown', function(e){
-                    try{
-                        var isSelectAll = (e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A');
-                        if(!isSelectAll){ return; }
+// Limit Ctrl/Cmd+A selection to the focused status box.
+document.addEventListener('keydown', function(e){
+    try{
+        var isSelectAll = (e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A');
+        if(!isSelectAll){ return; }
 
-                        var sel = window.getSelection ? window.getSelection() : null;
-                        var pre = null;
+        var sel = window.getSelection ? window.getSelection() : null;
+        var pre = null;
 
-                        if(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('status-box')){
-                            pre = document.activeElement;
-                        } else if(sel && sel.anchorNode){
-                            var anchor = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
-                            if(anchor && anchor.closest){
-                                pre = anchor.closest('pre.status-box');
-                            }
-                        }
+        if(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('status-box')){
+            pre = document.activeElement;
+        } else if(sel && sel.anchorNode){
+            var anchor = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+            if(anchor && anchor.closest){
+                pre = anchor.closest('pre.status-box');
+            }
+        }
 
-                        if(pre && sel && document.createRange){
-                            e.preventDefault();
-                            var range = document.createRange();
-                            range.selectNodeContents(pre);
-                            sel.removeAllRanges();
-                            sel.addRange(range);
-                        }
-                    }catch(err){
-                        // best-effort: select-all handling is optional; ignore failures so the default still works
-                    }
-                });
-                </script>
-            </main></body>
-            </html>
+        if(pre && sel && document.createRange){
+            e.preventDefault();
+            var range = document.createRange();
+            range.selectNodeContents(pre);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+    }catch(err){
+        // best-effort: select-all handling is optional; ignore failures so the default still works
+    }
+});
+</script>
+{% endblock %}

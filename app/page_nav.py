@@ -1,14 +1,17 @@
-"""Shared top navigation for the server-rendered UI pages."""
+"""Shared application header for the server-rendered UI pages."""
 
-from pathlib import Path
-
+from flask import render_template
 from markupsafe import Markup
 
-TEMPLATE = Path(__file__).parent / "templates" / "_nav.html"
+NAV_ITEMS = (
+    ("status", "Status"),
+    ("setup", "Setup"),
+    ("devices", "Devices"),
+    ("invocations", "Invocations"),
+    ("simulator", "Simulator"),
+)
 
 
 def nav_html(current):
-    """Return the shared navigation with the current page marked."""
-    markup = TEMPLATE.read_text()
-    marker = f'href="/{current}"'
-    return Markup(markup.replace(marker, f'{marker} aria-current="page"', 1))
+    """Return the shared header/navigation with the current page marked."""
+    return Markup(render_template("_nav.html", current=current, nav_items=NAV_ITEMS))

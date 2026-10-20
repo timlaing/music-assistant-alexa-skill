@@ -10,24 +10,26 @@
   <li>Copy the profile’s <strong>Client ID</strong> and <strong>Client Secret</strong> into the fields below. Select <strong>Save Amazon settings</strong>, then <strong>Connect</strong>.</li>
 </ol>
 {% endblock %}
-{% block content %}
-<section id="amazonConnection">
-  <h2>Connect to Amazon</h2>
+{% block setup_content %}
+<section id="amazonConnection" class="ma-panel">
+  <div class="ma-panelhead"><h2>Amazon connection</h2></div>
   <form id="amazonForm">
-    <label>Amazon callback URL<input id="callback" readonly /><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
+    <label class="ma-field">Amazon callback URL<input id="callback" readonly /><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
     <p id="callbackHint">The callback must be publicly reachable over HTTPS through your /ma-alexa-skill/ proxy route. Amazon sign-in opens in a separate window; return here when it completes. If you change the public hostname, update the profile’s Allowed Return URLs and reconnect.</p>
     <p><a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html#configure-an-lwa-security-profile-to-use-with-smapi" target="_blank" rel="noopener noreferrer">Amazon’s security profile instructions ↗</a>. This app supplies its own callback above; the ASK CLI localhost callback examples in that guide are for CLI use.</p>
-    <label>Amazon client ID<input id="lwa_client_id" autocomplete="off" /></label>
-    <label>Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password" /><small id="lwa_client_secret_hint"></small></label>
-    <label><input id="clear_lwa_client_secret" type="checkbox" /> Remove saved Amazon client secret</label>
-    <button id="saveAmazon" type="submit">Save Amazon settings</button><output id="saved"></output>
+    <label class="ma-field">Amazon client ID<input id="lwa_client_id" autocomplete="off" /></label>
+    <label class="ma-field">Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password" /><small id="lwa_client_secret_hint"></small></label>
+    <label class="ma-check"><input id="clear_lwa_client_secret" type="checkbox" /> Remove saved Amazon client secret</label>
+    <div class="ma-actions"><button class="ma-button" id="saveAmazon" type="submit">Save Amazon settings</button><output id="saved"></output></div>
   </form>
-  <p>
-    <button id="connect" disabled>Connect</button><output id="connectMessage" class="notice" aria-live="polite"></output><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a>
-  </p>
+  <div class="ma-actions">
+    <button class="ma-button ma-primary" id="connect" disabled>Connect</button><output id="connectMessage" class="notice" aria-live="polite"></output><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a>
+  </div>
   <p><a href="/status">Test audio delivery on the status page →</a></p>
 </section>
-<p class="step-nav"><a href="/setup/step/1">← Back: Application settings</a><a href="/setup/step/3">Next: Skill setup →</a></p>
+{% endblock %}
+{% block setup_actions %}
+<a class="ma-button ma-primary" href="/setup/step/3">Next: Skill setup →</a>
 {% endblock %}
 {% block page_js %}
 <script>
