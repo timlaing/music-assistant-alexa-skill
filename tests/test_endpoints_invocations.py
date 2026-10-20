@@ -63,14 +63,17 @@ def test_invocations_page_handles_missing_fields(client, logs):
 
 
 def test_status_invocations_count_endpoint(client, logs):
+    from endpoints import status
+
     assert client.get("/status/invocations", headers=AUTH).json == {
         "count": 0,
-        "invocations_html": '<span class="muted">No recent invocations</span>',
+        "invocations_html": status.RECENT_ACTIVITY_EMPTY,
     }
     logs.append({"incoming": {}, "response": "{}", "ts": 1.0})
     payload = client.get("/status/invocations", headers=AUTH).json
     assert payload["count"] == 1
-    assert "View 1 invocations" in payload["invocations_html"]
+    assert "ma-timeline" in payload["invocations_html"]
+    assert "Alexa request" in payload["invocations_html"]
 
 
 def test_render_entry_prefers_time_then_incoming_timestamp():
@@ -100,9 +103,9 @@ def test_format_time_shapes():
     assert invocations._format_time(None) == "(no timestamp)"
     assert invocations._format_time("2026-01-02T03:04:05Z") == datetime(
         2026, 1, 2, 3, 4, 5
-    ).astimezone().strftime("%H:%M:%S %Y-%m-%d")
+    ).astimezone().strftime("%H:%M:%S")
     # Naive ISO strings are treated as local time.
-    assert invocations._format_time("2026-01-02T03:04:05") == "03:04:05 2026-01-02"
+    assert invocations._format_time("2026-01-02T03:04:05") == "03:04:05"
     # Unparseable strings fall back to the escaped raw value.
     assert invocations._format_time("not-a-time") == "not-a-time"
     # Non-numeric timestamps render via str().

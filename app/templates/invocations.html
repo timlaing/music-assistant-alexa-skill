@@ -1,7 +1,8 @@
 {% extends 'base.html' %}
 {% block title %}Invocations{% endblock %}
 {% block heading %}Invocations{% endblock %}
-{% block page_actions %}<a class="ma-link" href="/status">Back to status</a>{% endblock %}
+{% block description %}Inspect recent Alexa requests and their results.{% endblock %}
+{% block page_actions %}{% include '_refresh_button.html' %}{% endblock %}
 {% block content %}
 <section class="ma-panel">
   <div class="ma-panelhead"><h2>Recent requests</h2></div>
@@ -32,10 +33,20 @@ function rememberPreContext(t){
 document.addEventListener('click', function(e){
     var t = e.target;
     if(t.classList && t.classList.contains('intent-toggle')){
-        var pair = t.parentNode.nextElementSibling;
+        var id = t.getAttribute('aria-controls');
+        var pair = id ? document.getElementById(id) : null;
         if(!pair) return;
-        pair.style.display = (pair.style.display === 'none' || pair.style.display === '') ? 'block' : 'none';
-        t.setAttribute('aria-expanded', pair.style.display === 'block' ? 'true' : 'false');
+        var show = t.getAttribute('aria-expanded') !== 'true';
+        // Collapse any other open detail so only one payload shows at a time.
+        document.querySelectorAll('.intent-toggle[aria-expanded="true"]').forEach(function(other){
+            if(other !== t){
+                other.setAttribute('aria-expanded','false');
+                var otherPair = document.getElementById(other.getAttribute('aria-controls'));
+                if(otherPair) otherPair.style.display = 'none';
+            }
+        });
+        pair.style.display = show ? 'block' : 'none';
+        t.setAttribute('aria-expanded', show ? 'true' : 'false');
         lastClickedIntentPair = pair;
         lastClickedPre = null;
         return;

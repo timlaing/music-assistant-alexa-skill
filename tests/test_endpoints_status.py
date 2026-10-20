@@ -197,7 +197,8 @@ def test_deployment_status_html_not_ready_and_settings_error(monkeypatch):
         state={"deployed_settings": None},
     )
     monkeypatch.setattr(status, "manager", lambda: instance)
-    assert "Deploying…" in status._deployment_status_html()
+    # Unverified deployments render no summary line on the status page.
+    assert status._deployment_status_html() == ""
 
     # settings() raising DeploymentError must not break the fragment.
     def bad_settings():
@@ -205,8 +206,33 @@ def test_deployment_status_html_not_ready_and_settings_error(monkeypatch):
 
     instance.state["deployed_settings"] = {"endpoint": "https://cfg.example.com"}
     monkeypatch.setattr(status, "settings", bad_settings)
-    html = status._deployment_status_html()
-    assert "Deploying…" in html
+    assert status._deployment_status_html() == ""
+
+
+def test_skill_row_html_states(client, monkeypatch):
+    # Connected + settings match -> approved "Deployed" row.
+    instance = SimpleNamespace(
+        public_status=lambda: {"connected": True, "phase": "complete"},
+        state={"deployed_settings": {"endpoint": "https://cfg.example.com"}},
+    )
+    monkeypatch.setattr(status, "manager", lambda: instance)
+    monkeypatch.setattr(
+        status, "settings", lambda: {"endpoint": "https://cfg.example.com"}
+    )
+    with app.test_request_context("/status"):
+        html = status._skill_row_html()
+    assert "Music Assistant" in html
+    assert "Deployed" in html
+    assert "Development skill · " in html
+    # Settings changed after the deploy -> out of date.
+    monkeypatch.setattr(status, "settings", lambda: {"endpoint": "https://other"})
+    with app.test_request_context("/status"):
+        assert "Out of date" in status._skill_row_html()
+    # Never linked to Amazon -> not deployed.
+    disconnected = SimpleNamespace(public_status=lambda: {"connected": False}, state={})
+    monkeypatch.setattr(status, "manager", lambda: disconnected)
+    with app.test_request_context("/status"):
+        assert "Not deployed" in status._skill_row_html()
 
 
 def test_skill_ask_html_branches(client, monkeypatch):
@@ -220,7 +246,7 @@ def test_skill_ask_html_branches(client, monkeypatch):
         status, "_deployment_status_html", lambda: "DEPLOYMENT-FRAGMENT"
     )
     with app.test_request_context("/status"):
-        assert status._skill_ask_html() == "DEPLOYMENT-FRAGMENT"
+        assert status._skill_ask_html().find("DEPLOYMENT-FRAGMENT") != -1
 
     # Not connected; ask CLI absent -> muted note.
     disconnected = SimpleNamespace(public_status=lambda: {"connected": False}, state={})
@@ -251,10 +277,10 @@ def test_render_metadata_html_branches(client):
         html = status._render_metadata_html(
             {"audioSources": "https://x/song.mp3", "primaryText": "Song"}
         )
-        assert "green" in html
+        assert '<pre class="ma-code"' in html
         assert "Song" in html
         html = status._render_metadata_html({})
-        assert "no data loaded yet" in html
+        assert "No track metadata received yet." in html
 
 
 def test_metadata_status_html_error_branch(monkeypatch):
@@ -271,21 +297,140 @@ def test_metadata_status_html_error_branch(monkeypatch):
 
 def test_store_html_idle_and_ready(client):
     with app.test_request_context("/status"):
-        assert "idle" in status._store_html({}, "Music Assistant API")
+        idle = status._store_html({}, "Music Assistant API")
+        assert "No stream has been sent yet." in idle
+        assert "Waiting" in idle
         html = status._store_html({"streamUrl": "https://x/song.mp3"}, "Alexa API")
-        assert "ready" in html
-        assert "https://x/song.mp3" in html
+        assert "Active" in html
+        # Only the summary row remains; the payload diagnostics were removed.
+        assert "Payload diagnostics" not in html
+        assert "https://x/song.mp3" not in html
 
 
-def test_invocations_link_and_count(client):
+def test_diagnostics_download_is_sanitized(client, monkeypatch):
+    monkeypatch.setattr(
+        status,
+        "_ma_status_probe",
+        lambda: {"configured": True, "server_version": "2.0.0", "players": []},
+    )
+    response = client.get("/status/diagnostics", headers=AUTH)
+    assert response.status_code == 200
+    assert response.mimetype == "application/json"
+    disposition = response.headers["Content-Disposition"]
+    assert disposition.startswith('attachment; filename="ma-alexa-skill-diagnostics-')
+    assert disposition.endswith('.json"')
+    body = response.get_data(as_text=True)
+    data = json.loads(body)
+    for section in (
+        "generated_at",
+        "app",
+        "settings",
+        "deployment",
+        "music_assistant",
+        "stores",
+        "recent_invocations",
+    ):
+        assert section in data
+    assert data["music_assistant"]["server_version"] == "2.0.0"
+    assert data["settings"]["callback_url"].endswith(
+        "/ma-alexa-skill/setup/oauth/callback"
+    )
+    # Secrets never appear in the bundle — only presence booleans.
+    assert "test-password" not in body
+    assert "api_password" not in data["settings"]["values"]
+    assert "ma_api_token" not in data["settings"]["values"]
+    assert isinstance(data["settings"]["secrets_set"]["api_password"], bool)
+    # Domains and usernames are masked; URL paths survive for structure.
+    assert "streams.example.com" not in body
+    assert data["settings"]["values"]["api_username"] == "<redacted>"
+    assert "test-user" not in body
+    assert data["settings"]["callback_url"] == (
+        "https://<host-1>/ma-alexa-skill/setup/oauth/callback"
+    )
+    # The footer offers the download next to "Report an issue".
+    page = client.get("/status", headers=AUTH).get_data(as_text=True)
+    assert 'href="/status/diagnostics"' in page
+
+
+def test_diagnostics_redacts_hosts_usernames_and_ips():
+    redacted = status._diagnostics_redact(
+        {
+            "callback": "https://ha.example.com/ma-alexa-skill/setup/oauth/callback",
+            "same_host": "http://ha.example.com:8095/music/x.mp3",
+            "bare": "ma.internal",
+            "ip_note": "connect to 192.168.1.50 please",
+            "mail": "owner@example.com",
+            "api_username": "tim-user",
+            "serialNumber": "C0AA11BB22",
+            "userId": "amzn1.ask.account.XX",
+            "deviceAccountId": "AX11",
+            "version": "2.0.0",
+            "stamp": "2026-10-20T22:28:28+00:00",
+            "players": [{"name": "Office Echo", "state": "playing"}],
+        }
+    )
+    body = json.dumps(redacted)
+    for leaked in (
+        "ha.example.com",
+        "192.168.1.50",
+        "owner@example.com",
+        "tim-user",
+        "C0AA11BB22",
+        "amzn1.ask.account",
+        "AX11",
+    ):
+        assert leaked not in body
+    # Stable mapping: the same host collapses to one placeholder (port and
+    # query dropped, path kept).
+    assert redacted["callback"] == (
+        "https://<host-1>/ma-alexa-skill/setup/oauth/callback"
+    )
+    assert redacted["same_host"] == "http://<host-1>/music/x.mp3"
+    assert redacted["bare"].startswith("<host-")
+    assert redacted["ip_note"] == "connect to <ip-1> please"
+    assert redacted["mail"] == "<email-1>"
+    assert redacted["api_username"] == "<redacted>"
+    assert redacted["serialNumber"] == "<redacted>"
+    assert redacted["userId"] == "<redacted>"
+    assert redacted["deviceAccountId"] == "<redacted>"
+    # Versions, timestamps and player names are not hostnames — untouched.
+    assert redacted["version"] == "2.0.0"
+    assert redacted["stamp"] == "2026-10-20T22:28:28+00:00"
+    assert redacted["players"] == [{"name": "Office Echo", "state": "playing"}]
+
+
+def test_diagnostics_bundle_records_errors_instead_of_failing(client, monkeypatch):
     with app.test_request_context("/status"):
-        assert status._invocations_link_html(0) == status.NO_RECENT_INVOCATIONS_HTML
-        assert "View 3 invocations" in status._invocations_link_html(3)
+        data = status._diagnostics_bundle()
+    # No MA credentials in the test env -> reported, not raised.
+    assert data["music_assistant"] == {"configured": False}
+    assert "phase" in data["deployment"]
+
+    # A failing MA read becomes an error entry, not a failed download.
+    async def boom(server_url, token):
+        raise RuntimeError("MA unreachable")
+
+    monkeypatch.setattr(status, "get_env_secret", lambda name: "set")
+    monkeypatch.setattr(status, "_read_ma_status", boom)
+    with app.test_request_context("/status"):
+        data = status._diagnostics_bundle()
+    assert data["music_assistant"] == {
+        "configured": True,
+        "error": "RuntimeError: MA unreachable",
+    }
+
+
+def test_activity_fragment_and_count(client):
+    with app.test_request_context("/status"):
+        assert status._activity_fragment() == status.RECENT_ACTIVITY_EMPTY
         assert status._invocations_count() == 0
-    app.config["INTENT_LOGS"] = [{"incoming": {}}]
+    app.config["INTENT_LOGS"] = [{"incoming": {}, "response": "{}", "ts": 1.0}]
     try:
         with app.test_request_context("/status"):
             assert status._invocations_count() == 1
+            fragment = status._activity_fragment()
+        assert "ma-timeline" in fragment
+        assert "Alexa request" in fragment
     finally:
         app.config["INTENT_LOGS"] = []
 
@@ -300,12 +445,13 @@ def test_status_sub_endpoints(client):
 def test_status_ma_and_alexa_show_pushed_streams(client):
     shared_store.set_ma({"streamUrl": "https://x/now-playing.mp3", "title": "T"})
     payload = client.get("/status/ma", headers=AUTH).json["ma_api_html"]
-    assert "ready" in payload
-    assert "now-playing.mp3" in payload
+    assert "Active" in payload
+    # Summary row only; the payload diagnostics were removed.
+    assert "now-playing.mp3" not in payload
     shared_store.set_alexa({"streamUrl": "https://x/alexa.mp3"})
     payload = client.get("/status/alexa", headers=AUTH).json["alexa_api_html"]
-    assert "ready" in payload
-    assert "alexa.mp3" in payload
+    assert "Active" in payload
+    assert "alexa.mp3" not in payload
 
 
 def test_status_html_page(client):
@@ -313,7 +459,18 @@ def test_status_html_page(client):
     assert response.status_code == 200
     assert response.mimetype == "text/html"
     body = response.get_data(as_text=True)
-    assert "Skill running" in body
+    # Approved hero + panels + readiness banner.
+    assert "Service overview" in body
+    assert "Your Alexa integration at a glance." in body
+    assert "data-ma-refresh" in body
+    assert "status-banner" in body
+    assert "Connectivity" in body
+    assert "Echo playback" in body
+    assert "Music Assistant" in body
+    assert "Checking account status" in body  # Amazon account row fills via the poller
+    assert "Playback" in body
+    assert "Echo Show display" in body
+    assert "Recent activity" in body
     assert "ma-nav" in body
     assert '<a href="/status" aria-current="page">' in body
     for other in ("/setup", "/devices", "/invocations", "/simulator"):
@@ -357,7 +514,7 @@ def test_status_json_variants(client, selector):
     )
     assert response.status_code == 200
     payload = response.json
-    assert payload["skill_html"] == '<span class="led green"></span> Skill running'
+    assert "Music Assistant" in payload["skill_html"]
     assert set(payload) == {
         "skill_html",
         "skill_ask_html",
@@ -397,6 +554,12 @@ def test_status_urls_reports_reachability_snapshot(client, monkeypatch):
     assert payload["checked_at"] == 123.0
     assert payload["checks"][0]["label"] == "Stream host"
     assert payload["urls_html"] == "<div>urls-fragment</div>"
+    # Readiness banner fields for the client-side poller.
+    assert payload["summary_kind"] == "warning"
+    assert payload["summary_title"]
+    assert payload["summary_description"]
+    assert payload["summary_icon"].startswith("<svg")
+    assert "Stream host: reachable" in payload["conn_diag_html"]
 
 
 def test_compute_metadata_html_rewrites_image_hosts(monkeypatch):
@@ -429,4 +592,4 @@ def test_compute_metadata_html_swallows_hostname_errors(client, monkeypatch):
     monkeypatch.setattr(skill_util, "get_ma_hostname", boom)
     with app.test_request_context("/status"):
         html = status._compute_metadata_html()
-    assert "APL Metadata Refresh" in html
+    assert '<pre class="ma-code"' in html

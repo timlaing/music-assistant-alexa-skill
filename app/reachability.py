@@ -11,6 +11,7 @@ from flask import current_app
 from markupsafe import escape
 from public_urls import public_base, rewrite_url
 from shared_store import get_ma
+from ui_markup import row as markup_row
 
 
 def targets():
@@ -183,17 +184,34 @@ def snapshot():
     return checker.snapshot()
 
 
+# Approved row titles (the Connectivity panel renames one probe label).
+_ROW_TITLE = {"Public audio delivery": "Audio delivery"}
+
+# Probe status -> (pill label, pill kind).
+_PILL = {
+    "reachable": ("Reachable", "success"),
+    "warning": ("Warning", "warning"),
+    "failed": ("Failed", "error"),
+    "unconfigured": ("Not configured", "warning"),
+}
+
+
 def html(result):
+    """Approved row markup for the Connectivity panel (plus the test-tone player)."""
     parts = []
-    colors = {
-        "reachable": "green",
-        "warning": "yellow",
-        "failed": "red",
-        "unconfigured": "yellow",
-    }
     for check in result["checks"]:
+        label, kind = _PILL.get(check["status"], (check["status"], "neutral"))
+        description = escape(check["message"])
+        url = check.get("url")
+        if url and check["status"] != "reachable":
+            description = f'{description} <span class="muted">{escape(url)}</span>'
         parts.append(
-            f'<div><span class="led {colors[check["status"]]}"></span> {escape(check["label"])}: {escape(check["message"])} <span class="muted">{escape(check.get("url", ""))}</span></div>'
+            markup_row(
+                _ROW_TITLE.get(check["label"], check["label"]),
+                description,
+                label,
+                kind,
+            )
         )
         if (
             check.get("kind") == "testaudio"
@@ -201,9 +219,75 @@ def html(result):
             and check.get("url")
         ):
             parts.append(
-                f'<div><audio controls preload="none" src="{escape(check["url"])}"></audio> <span class="muted">Play the test tone through the same public route an Echo uses.</span></div>'
+                f'<div><audio controls preload="none" src="{escape(check["url"])}"></audio> '
+                f'<span class="muted">Play the test tone through the same public route an Echo uses.</span></div>'
             )
-    if result["checking"]:
-        parts.append("<div>Checking public URLs…</div>")
-    parts.append(f'<div class="muted">{escape(result["perspective"])}</div>')
+    # No transient "checking" line here: it would grow/shrink the panel on
+    # every probe cycle. The in-progress/complete state lives in diagnostics.
     return "".join(parts)
+
+
+def diagnostics(result):
+    """Plain-text block for the approved "Connection diagnostics" disclosure."""
+    if not result["checks"] and not result["checking"]:
+        return "Reachability checks have not run yet."
+    lines = []
+    for check in result["checks"]:
+        outcome = (
+            f"HTTP {check['http_status']}"
+            if "http_status" in check
+            else check["status"]
+        )
+        line = f"{check['label']}: {outcome} — {check['message']}"
+        if check.get("url"):
+            line += f" ({check['url']})"
+        lines.append(line)
+    # Persistent status line (in progress / complete) so the checking state is
+    # always visible here without resizing the Connectivity panel above.
+    lines.append(
+        "Status: checks in progress…"
+        if result["checking"]
+        else "Status: checks complete"
+    )
+    lines.append(result["perspective"])
+    return "\n".join(lines)
+
+
+def summary(result):
+    """Readiness banner state derived from the reachability checks."""
+    checks = {check["label"]: check["status"] for check in result["checks"]}
+    skill = checks.get("Skill endpoint")
+    audio = checks.get("Public audio delivery")
+    if result["checking"] and not result["checked_at"]:
+        return {
+            "kind": "neutral",
+            "title": "Checking public reachability…",
+            "description": "Running the add-on reachability checks.",
+        }
+    if skill == "reachable" and audio == "reachable":
+        return {
+            "kind": "good",
+            "title": "Service is ready for an Echo test",
+            "description": (
+                "The add-on and public audio route are reachable. "
+                "Play a track on your Echo to verify end-to-end playback."
+            ),
+        }
+    if skill in (None, "unconfigured") or audio in (None, "unconfigured"):
+        return {
+            "kind": "warning",
+            "title": "Public URLs need attention",
+            "description": (
+                "Set your public skill URL in Setup so reachability checks "
+                "and the Echo test can run."
+            ),
+        }
+    attention = [check for check in result["checks"] if check["status"] != "reachable"]
+    return {
+        "kind": "error",
+        "title": "Not ready for an Echo test",
+        "description": (
+            f"{len(attention)} of {len(result['checks'])} reachability checks "
+            "need attention. Review Connectivity below."
+        ),
+    }

@@ -1,5 +1,10 @@
 /* Reference shell behaviour only. Application API/actions remain in their existing modules. */
 (() => {
+  // Refresh buttons re-run the server-side computation (full page reload).
+  document.addEventListener('click', (event) => {
+    const trigger = event.target?.closest?.('[data-ma-refresh]');
+    if (trigger) window.location.reload();
+  });
   const root = document.getElementById('ma-app');
   const trigger = root?.querySelector('.ma-menu');
   const nav = root?.querySelector('#main-navigation');

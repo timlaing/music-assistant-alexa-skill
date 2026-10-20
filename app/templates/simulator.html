@@ -1,36 +1,56 @@
 {% extends 'base.html' %}
 {% block title %}Simulator{% endblock %}
 {% block heading %}Simulator{% endblock %}
+{% block description %}Try an Alexa intent and inspect its request and response.{% endblock %}
 {% block content %}
-<p class="muted">This simulator UI allows sending test IntentRequests to the skill.</p>
 <section class="ma-panel">
   <div class="ma-panelhead"><h2>Test request</h2></div>
   <div class="ma-testcontrols">
     <label class="ma-field">Intent<select id="intent"></select></label>
-    <div>
-      <p class="ma-small ma-muted"><strong>Selected intent:</strong> <span id="selected-intent" class="muted">(none)</span></p>
-      <div class="ma-targets">
-        <label class="ma-target"><input type="radio" name="target" value="local" id="target-local" checked /> Local service</label>
-        <label class="ma-target"><input type="radio" name="target" value="hostname" /> <span id="hostname-label">SKILL_HOSTNAME</span></label>
-      </div>
-    </div>
+    <label class="ma-field">Language<select id="language">
+      <option value="en-GB" selected>English (UK) · en-GB</option>
+      <option value="en-US">English (US) · en-US</option>
+      <option value="de-DE">German (Germany) · de-DE</option>
+      <option value="en-AU">English (Australia) · en-AU</option>
+      <option value="en-CA">English (Canada) · en-CA</option>
+      <option value="en-IN">English (India) · en-IN</option>
+      <option value="es-ES">Spanish (Spain) · es-ES</option>
+      <option value="es-MX">Spanish (Mexico) · es-MX</option>
+      <option value="fr-CA">French (Canada) · fr-CA</option>
+      <option value="fr-FR">French (France) · fr-FR</option>
+      <option value="it-IT">Italian (Italy) · it-IT</option>
+      <option value="nl-NL">Dutch (Netherlands) · nl-NL</option>
+      <option value="pt-BR">Portuguese (Brazil) · pt-BR</option>
+    </select></label>
   </div>
-  <div class="ma-actions"><button class="ma-button ma-primary" id="send">Send Intent</button></div>
+  <div class="ma-targets">
+    <label class="ma-target"><input type="radio" name="target" value="local" id="target-local" checked /> Local service</label>
+    <label class="ma-target"><input type="radio" name="target" value="hostname" /> Public endpoint</label>
+  </div>
+  <details class="ma-detail">
+    <summary>Endpoint details</summary>
+    <div class="ma-small ma-muted">Public endpoint: <span id="hostname-label">SKILL_HOSTNAME</span></div>
+  </details>
+  <div class="ma-actions"><button class="ma-button ma-primary" id="send"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Send test intent</button><span class="ma-muted ma-small" id="target-status">Local service selected</span></div>
+  <div class="ma-note">A simulator response verifies request handling. Actual Echo playback still needs a device test.</div>
 </section>
 <div class="ma-editors">
   <section class="ma-panel">
     <div class="ma-panelhead"><h2>Request payload</h2></div>
-    <label class="ma-field">Editable payload that will be sent to the skill (JSON)<textarea id="payload" class="ma-editor" spellcheck="false">{
+    <p class="ma-small ma-muted">Editable JSON sent with this test.</p>
+    <p class="ma-small ma-error" id="payload-error" hidden></p>
+    <textarea id="payload" class="ma-editor" aria-label="Request JSON" spellcheck="false">{
   "version": "1.0",
   "request": {
     "type": "IntentRequest",
     "intent": { "name": "" }
   }
-}</textarea></label>
+}</textarea>
   </section>
   <section class="ma-panel">
     <div class="ma-panelhead"><h2>Response</h2></div>
-    <div id="response" class="ma-editor"></div>
+    <p class="ma-small ma-muted ma-response-status" id="response-status">Send a test to view its response.</p>
+    <div id="response" class="ma-editor" aria-live="polite">No response yet.</div>
     <div id="audio-controls" class="ma-actions" style="display:none;margin-top:12px">
       <button id="btn-play" class="ma-button" title="Play/Pause">⏯</button>
       <div id="now-playing" class="ma-small ma-muted">(no audio)</div>
@@ -42,13 +62,22 @@
 {% block scripts %}
 <script type="module">
     const skillHostname = __SKILL_HOSTNAME__ || '';
-    // Show configured hostname in the toggle label (or fallback text)
+    // Show the configured public hostname in the endpoint details
     try{
       const hl = document.getElementById('hostname-label');
-      if(hl) hl.textContent = (skillHostname || 'SKILL_HOSTNAME') + ' (SKILL_HOSTNAME)';
+      if(hl) hl.textContent = skillHostname || 'Not configured (set SKILL_HOSTNAME)';
     }catch(e){
-      // best-effort: the toggle label is cosmetic; leave the fallback text if the DOM lookup fails
+      // best-effort: the endpoint detail is cosmetic; leave the fallback text if the DOM lookup fails
     }
+    // Keep the selected-target status text in sync with the radio buttons
+    document.querySelectorAll('input[name="target"]').forEach((radio)=>{
+      radio.addEventListener('change', ()=>{
+        const st = document.getElementById('target-status');
+        if(st) st.textContent = radio.value === 'local' && radio.checked
+          ? 'Local service selected'
+          : (radio.checked ? 'Public endpoint selected' : st.textContent);
+      });
+    });
     async function loadIntents(){
       const res = await fetch('/simulator/api');
       const j = await res.json();
@@ -57,10 +86,12 @@
       (j.intents||[]).forEach(it=>{
         const opt = document.createElement('option');
         opt.value = it.name;
-        opt.textContent = it.name + (it.samples && it.samples.length? ' — sample: '+it.samples[0] : '');
+        const intentName = (it.name || '').replace(/^AMAZON\./, '');
+        const samples = it.samples || [];
+        const humanName = samples.length ? samples[0] : intentName.replace(/Intent$/, '');
+        opt.textContent = humanName + ' - ' + intentName;
         sel.appendChild(opt);
       });
-      updateSelected();
       // populate payload for first selection
       if(sel.options.length){
         const first = sel.options[sel.selectedIndex].value;
@@ -79,25 +110,46 @@
       }
     }
 
-    function updateSelected(){
-      const sel = document.getElementById('intent');
-      const label = document.getElementById('selected-intent');
-      if(sel && label){
-        const opt = sel.options[sel.selectedIndex];
-        label.textContent = opt ? opt.value : '(none)';
+    // Rewrite only request.locale in the payload textarea (preserves manual edits).
+    // Returns true on success; false when JSON is invalid or it has no request object.
+    function applyLocaleToPayload(locale){
+      const ta = document.getElementById('payload');
+      const errEl = document.getElementById('payload-error');
+      let obj = null;
+      try{
+        obj = JSON.parse(ta.value);
+      }catch(e){
+        if(errEl){ errEl.hidden = false; errEl.textContent = 'Payload JSON is not valid — fix it before changing the language.'; }
+        return false;
       }
+      if(!obj || typeof obj !== 'object' || !obj.request || typeof obj.request !== 'object'){
+        if(errEl){ errEl.hidden = false; errEl.textContent = 'Payload has no request object — cannot set the language.'; }
+        return false;
+      }
+      obj.request.locale = locale;
+      ta.value = JSON.stringify(obj, null, 2);
+      if(errEl){ errEl.hidden = true; errEl.textContent = ''; }
+      return true;
     }
 
-    document.getElementById('intent').addEventListener('change', updateSelected);
+    // Keep the payload locale in step with the select after each payload load.
+    function syncPayloadLocale(){
+      const langEl = document.getElementById('language');
+      if(langEl) applyLocaleToPayload(langEl.value);
+    }
+
+    document.getElementById('language').addEventListener('change', (e)=>{
+      applyLocaleToPayload(e.target.value);
+    });
 
     document.getElementById('intent').addEventListener('change', async (e)=>{
       const name = e.target.value;
       await loadPayload(name);
+      syncPayloadLocale();
     });
 
     document.getElementById('send').addEventListener('click', async ()=>{
       const intent = document.getElementById('intent').value;
-      updateSelected();
       const use = document.querySelector('input[name="target"]:checked').value;
       if(use === 'hostname' && !skillHostname){
         alert('SKILL_HOSTNAME not configured on server');
@@ -116,13 +168,17 @@
       const body = { intent: intent, use: use };
       if(override) body.override_payload = override;
       const respEl = document.getElementById('response');
+      const statusEl = document.getElementById('response-status');
       respEl.textContent = 'Sending...';
+      if(statusEl) statusEl.textContent = 'Sending test intent…';
       try{
         const r = await fetch('/simulator/send', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
         const j = await r.json();
+        if(statusEl) statusEl.textContent = 'Response · HTTP ' + (j && j.status_code !== undefined ? j.status_code : r.status);
         // Render response into the single response box. Do not clear it after rendering.
         renderResponse(j);
       }catch(e){
+        if(statusEl) statusEl.textContent = 'Request failed: ' + e;
         respEl.textContent = String(e);
       }
     });
@@ -426,12 +482,29 @@
       updateNowPlaying();
     }
 
+    // Reflect the payload's own request.locale in the Language select.
+    function initLanguageFromPayload(){
+      const ta = document.getElementById('payload');
+      const langEl = document.getElementById('language');
+      if(!ta || !langEl) return;
+      try{
+        const loc = JSON.parse(ta.value).request.locale;
+        if(loc && Array.from(langEl.options).some(o=>o.value===loc)) langEl.value = loc;
+      }catch(e){ /* payload not yet valid; leave select as-is */ }
+    }
+
     // Initial intent load (top-level await, equivalent to the previous fire-and-forget
     // promise chain: every statement above still runs synchronously first).
     try{
       await loadIntents();
     }catch(e){
       // best-effort: the page stays usable with an empty intent list
+    }
+    // Align the Language select with the loaded payload's locale.
+    try{
+      initLanguageFromPayload();
+    }catch(e){
+      // best-effort: language select defaults are cosmetic
     }
 </script>
 {% endblock %}

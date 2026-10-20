@@ -501,6 +501,24 @@ def test_setup_wizard_step_pages_render(client, deployment):
     assert client.get("/setup/step/x", headers=AUTH).status_code == 404
 
 
+def test_setup_readiness_banners_render(client, deployment):
+    from app import app
+
+    manager, _ = deployment
+    app.extensions["skill_deployment"] = manager
+    # Connected Amazon -> step 2 readiness banner.
+    body = client.get("/setup/step/2", headers=AUTH).get_data(as_text=True)
+    assert "Amazon account connected" in body
+    # A prepared review that is not yet deployed -> step 4 banner.
+    manager.prepare("vendor", SKILL, False)
+    body = client.get("/setup/step/4", headers=AUTH).get_data(as_text=True)
+    assert "Ready for your review" in body
+    # After a deploy the review is consumed and the banner is gone.
+    deploy(manager)
+    body = client.get("/setup/step/4", headers=AUTH).get_data(as_text=True)
+    assert "Ready for your review" not in body
+
+
 def test_wizard_steps_track_prepare_and_deploy_lifecycle(deployment, client):
     from app import app
 
@@ -514,7 +532,7 @@ def test_wizard_steps_track_prepare_and_deploy_lifecycle(deployment, client):
     deploy(manager)
     page = client.get("/setup/step/4", headers=AUTH).get_data(as_text=True)
     # Step 4 stays green after deploy consumes the review.
-    assert 'class="ma-stepnum led green" data-badge="4"' in page
+    assert 'class="ma-stepnum done" data-badge="4"' in page
 
 
 def test_first_incomplete_step_prefers_earliest_gap():
@@ -1055,8 +1073,10 @@ def test_status_preserves_connected_deployment_with_invalid_current_settings(
     response = client.get("/status/ask", headers=AUTH)
     assert response.status_code == 200
     html = response.json["skill_ask_html"]
-    assert "Previously verified deployment" in html
-    assert "led yellow" in html
+    # Invalid current settings must not break the fragment; the deployment
+    # summary line is no longer part of the status page.
+    assert "Amazon account" in html
+    assert "Previously verified deployment" not in html
     assert "ASK check error" not in html
 
 

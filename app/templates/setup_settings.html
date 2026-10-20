@@ -2,7 +2,7 @@
 {% block title %}Application settings — Alexa skill setup{% endblock %}
 {% block heading %}Application settings{% endblock %}
 {% block intro %}
-<p>Save your connection settings here. Saving does not deploy changes to Amazon; review and deploy on the last step.</p>
+<p>Connect Music Assistant to your Alexa integration.</p>
 {% endblock %}
 {% block setup_content %}
 <section id="applicationSettings" class="ma-panel">
@@ -10,44 +10,40 @@
   <form id="settingsForm">
     <label class="ma-field"
       >Public audio URL<input id="ma_hostname" type="url" placeholder="https://streams.example.com" /><small
-        >Public HTTPS address for Music Assistant streams and artwork.</small
+        >Public HTTPS address for streams and artwork.</small
       ></label
     >
     <section class="ma-formsection" aria-labelledby="credentials-heading">
-      <h3 id="credentials-heading">Credentials</h3>
-      <p>Music Assistant needs this username and password to authenticate with the Alexa API. Use Show current API password to copy the saved password into the provider.</p>
+      <h3 id="credentials-heading">API credentials</h3>
+      <p class="ma-muted ma-small">Use these credentials in Music Assistant’s Alexa provider.</p>
+      <label class="ma-field">API username<input id="api_username" autocomplete="off" placeholder="music-assistant" /></label>
       <label class="ma-field"
-        >API username<input id="api_username" autocomplete="off" /><small
-          >Enter these credentials in Music Assistant’s Alexa provider. Changing them requires updating that provider.</small
-        ></label
-      >
-      <label class="ma-field"
-        >Replace API password<input id="api_password" type="password" autocomplete="new-password" /><small id="api_password_hint"></small
+        >Replace API password<input id="api_password" type="password" autocomplete="new-password" placeholder="Saved · leave blank to keep" /><small id="api_password_hint"></small
       ></label
       >
-      <div class="ma-actions"><button class="ma-button" id="showPassword" type="button">Show current API password</button><output id="currentPassword" hidden></output></div>
+      <div class="ma-actions"><button class="ma-button" id="showPassword" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg> Show saved password</button><output id="currentPassword" hidden></output></div>
     </section>
     <details class="ma-detail">
-      <summary>Advanced settings</summary>
+      <summary>Advanced connection settings</summary>
       <label class="ma-field"
-        >Music Assistant control API URL<input id="ma_api_url" type="url" placeholder="http://homeassistant:8095" /><small
+        >Music Assistant API URL<input id="ma_api_url" type="url" placeholder="http://music-assistant:8095" /><small
           >Optional local connection for mapped voice controls.</small
         ></label
       >
       <label class="ma-field"
-        >Music Assistant access token<input id="ma_api_token" type="password" autocomplete="new-password" /><small id="ma_api_token_hint"></small
+        >Music Assistant access token<input id="ma_api_token" type="password" autocomplete="new-password" placeholder="Saved · leave blank to keep" /><small id="ma_api_token_hint"></small
       ></label
       >
       <label class="ma-check"><input id="clear_ma_api_token" type="checkbox" /> Remove saved Music Assistant token</label>
       <label class="ma-check"><input id="skip_url_validation" type="checkbox" /> Skip stream URL validation</label>
       <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
     </details>
-    <div class="ma-actions"><button class="ma-button" id="saveSettings" type="submit">Save settings</button><output id="saved"></output></div>
   </form>
 </section>
 {% endblock %}
 {% block setup_actions %}
-<a class="ma-button ma-primary" href="/setup/step/2">Next: Connect to Amazon →</a>
+<button class="ma-button" id="saveSettings" type="submit" form="settingsForm">Save settings</button>
+<a class="ma-button ma-primary" href="/setup/step/2">Continue</a>
 {% endblock %}
 {% block page_js %}
 <script>
@@ -86,7 +82,7 @@
         },
         el("clear_ma_api_token").checked ? ["ma_api_token"] : [],
       );
-      el("saved").textContent = "Saved. Continue to the next step.";
+      window.toast("Saved. Continue to the next step.");
     });
   };
   el("showPassword").onclick = () =>

@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from locale_names import LOCALE_NAMES
+
 from cryptography import x509
 
 DEFAULTS = {
@@ -245,6 +247,7 @@ class SettingsStore:
             "locales": sorted(
                 path.stem for path in (Path(__file__).parent / "models").glob("*.json")
             ),
+            "locale_names": LOCALE_NAMES,
         }
 
     def save(self, payload):

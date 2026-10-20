@@ -1,16 +1,19 @@
 {% extends 'setup_base.html' %}
-{% block title %}Review and deploy — Alexa skill setup{% endblock %}
-{% block heading %}Review and deploy{% endblock %}
+{% from '_components.html' import banner as readiness %}
+{% block title %}Review &amp; deploy — Alexa skill setup{% endblock %}
+{% block heading %}Review &amp; deploy{% endblock %}
 {% block intro %}
-<p id="emptyReview">Nothing to review yet. Choose your account and personal skill on the <a href="/setup/step/3">previous step</a>, then select Review settings.</p>
+<p>Confirm exactly what will change before deployment.</p>
 {% endblock %}
 {% block setup_content %}
+<p id="emptyReview">Nothing to review yet. Choose your account and personal skill on the <a href="/setup/step/3">previous step</a>, then select Review settings.</p>
 <section id="approval" class="ma-panel" hidden>
+  {% if done[1] and done[2] and done[3] and not done[4] %}{{ readiness('Ready for your review', 'Your changes have not been deployed. Review the details below before continuing.') }}{% endif %}
   <div class="ma-panelhead"><h2>Deployment summary</h2></div>
   <dl id="details"></dl>
   <p>This replaces the selected locale’s voice model with Music Assistant’s model, preserving an existing invocation name, other locales and unrelated package files. It updates the HTTPS endpoint and regional endpoints, enables AudioPlayer, applies your APL preference and enables development testing.</p>
   <p id="newWarning" hidden>Creating a skill adds a new personal skill to this Amazon developer account.</p>
-  <details class="ma-detail"><summary>Configuration to be sent to Amazon</summary><pre id="manifest"></pre></details>
+  <details class="ma-detail"><summary>View configuration</summary><pre id="manifest"></pre></details>
 </section>
 <output id="message" aria-live="polite" hidden></output>
 <section id="reconciliation" class="ma-panel" hidden>
@@ -33,7 +36,7 @@
 <p>After Amazon confirms deployment, test playback on your Echo. Your Echo must use this Amazon account and the configured locale. No publication or certification is requested.</p>
 {% endblock %}
 {% block setup_actions %}
-<button class="ma-button ma-primary" id="deploy" hidden>Deploy approved settings</button>
+<button class="ma-button ma-primary" id="deploy" hidden>Deploy reviewed settings</button>
 {% endblock %}
 {% block page_js %}
 <script>
@@ -47,10 +50,15 @@
 
   function showReview(review, status) {
     const ready = review && status.phase === "ready";
-    el("approval").hidden =
-      !ready && !["running", "complete", "failed", "interrupted"].includes(status.phase);
+    // Summary appears only when a review exists; the "Nothing to review yet"
+    // line only when no review is staged and no outcome is being reported.
+    // (Outcome phases are narrated by the #message live region.)
+    const reporting = ["running", "complete", "failed", "interrupted"].includes(
+      status.phase,
+    );
+    el("approval").hidden = !review;
     el("deploy").hidden = !ready;
-    el("emptyReview").hidden = Boolean(review);
+    el("emptyReview").hidden = Boolean(review) || reporting;
     if (!ready) return;
     el("details").replaceChildren();
     detail(

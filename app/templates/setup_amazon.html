@@ -1,35 +1,41 @@
 {% extends 'setup_base.html' %}
+{% from '_components.html' import banner as readiness %}
 {% block title %}Connect to Amazon — Alexa skill setup{% endblock %}
 {% block heading %}Connect to Amazon{% endblock %}
 {% block intro %}
-<p>Create a Login with Amazon (LWA) security profile once, using the Amazon developer account that owns your personal skill.</p>
-<ol>
-  <li>Save your public audio URL on the <a href="/setup/step/1">previous step</a> so the callback URL below is correct.</li>
-  <li>Open the <a href="https://developer.amazon.com/loginwithamazon/console/site/lwa/overview.html" target="_blank" rel="noopener noreferrer">Login with Amazon developer console ↗</a>. Choose <strong>Create a New Security Profile</strong>, enter a name (for example Music Assistant), a description and the required privacy notice URL, then save.</li>
-  <li>Open the profile’s gear menu → <strong>Web Settings → Edit</strong>. Add the exact callback below to <strong>Allowed Return URLs</strong>, then save. Use Allowed Return URLs, rather than Allowed Origins or the Home Assistant ingress address.</li>
-  <li>Copy the profile’s <strong>Client ID</strong> and <strong>Client Secret</strong> into the fields below. Select <strong>Save Amazon settings</strong>, then <strong>Connect</strong>.</li>
-</ol>
+<p>Manage the developer account used by your personal skill.</p>
 {% endblock %}
 {% block setup_content %}
+{% if done[2] %}{{ readiness('Amazon account connected', 'Your account is ready. You only need to reconnect if your account or public hostname changes.') }}{% endif %}
 <section id="amazonConnection" class="ma-panel">
   <div class="ma-panelhead"><h2>Amazon connection</h2></div>
   <form id="amazonForm">
-    <label class="ma-field">Amazon callback URL<input id="callback" readonly /><small>Copy this exact URL into your Amazon security profile’s Allowed Return URLs.</small></label>
-    <p id="callbackHint">The callback must be publicly reachable over HTTPS through your /ma-alexa-skill/ proxy route. Amazon sign-in opens in a separate window; return here when it completes. If you change the public hostname, update the profile’s Allowed Return URLs and reconnect.</p>
-    <p><a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html#configure-an-lwa-security-profile-to-use-with-smapi" target="_blank" rel="noopener noreferrer">Amazon’s security profile instructions ↗</a>. This app supplies its own callback above; the ASK CLI localhost callback examples in that guide are for CLI use.</p>
-    <label class="ma-field">Amazon client ID<input id="lwa_client_id" autocomplete="off" /></label>
-    <label class="ma-field">Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password" /><small id="lwa_client_secret_hint"></small></label>
-    <label class="ma-check"><input id="clear_lwa_client_secret" type="checkbox" /> Remove saved Amazon client secret</label>
-    <div class="ma-actions"><button class="ma-button" id="saveAmazon" type="submit">Save Amazon settings</button><output id="saved"></output></div>
+    <label class="ma-field">Callback URL<input id="callback" readonly /><small>Add this address to Allowed Return URLs in Amazon.</small></label>
+    <div class="ma-actions">
+      <button class="ma-button" id="copyCallback" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg> Copy callback URL</button>
+      <button class="ma-button" id="connect" type="button" disabled>Connect</button>
+    </div>
+    <details class="ma-detail"{% if not done[2] %} open{% endif %}>
+      <summary>Register or change your Amazon application</summary>
+      <ol>
+        <li>Save your public audio URL on the <a href="/setup/step/1">previous step</a> so the callback URL above is correct.</li>
+        <li>Create a Login with Amazon security profile in the <a href="https://developer.amazon.com/loginwithamazon/console/site/lwa/overview.html" target="_blank" rel="noopener noreferrer">LWA developer console ↗</a>, then add the callback URL to <strong>Allowed Return URLs</strong> under <strong>Web Settings → Edit</strong>. Use Allowed Return URLs, rather than Allowed Origins or the Home Assistant ingress address.</li>
+        <li>Enter the client ID and secret below, then select <strong>Save settings</strong> and <strong>Connect</strong>.</li>
+      </ol>
+      <label class="ma-field">Amazon client ID<input id="lwa_client_id" autocomplete="off" /></label>
+      <label class="ma-field">Amazon client secret<input id="lwa_client_secret" type="password" autocomplete="new-password" /><small id="lwa_client_secret_hint"></small></label>
+      <label class="ma-check"><input id="clear_lwa_client_secret" type="checkbox" /> Remove saved Amazon client secret</label>
+    </details>
+    <p><a href="https://developer.amazon.com/en-US/docs/alexa/smapi/get-access-token-smapi.html#configure-lwa-security-profile" target="_blank" rel="noopener noreferrer">Amazon’s security profile instructions ↗</a>. This app supplies its own callback above; the ASK CLI localhost callback examples in that guide are for CLI use.</p>
   </form>
-  <div class="ma-actions">
-    <button class="ma-button ma-primary" id="connect" disabled>Connect</button><output id="connectMessage" class="notice" aria-live="polite"></output><a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a>
-  </div>
-  <p><a href="/status">Test audio delivery on the status page →</a></p>
 </section>
 {% endblock %}
 {% block setup_actions %}
-<a class="ma-button ma-primary" href="/setup/step/3">Next: Skill setup →</a>
+<button class="ma-button" id="saveAmazon" type="submit" form="amazonForm">Save settings</button>
+<a class="ma-button ma-primary" href="/setup/step/3">Continue</a>
+{% endblock %}
+{% block bottom_link %}
+<a id="amazonSignin" target="_blank" rel="noopener noreferrer" hidden>Continue to Amazon sign-in ↗</a>
 {% endblock %}
 {% block page_js %}
 <script>
@@ -46,18 +52,19 @@
     const busyNow = busy(status);
     el("saveAmazon").disabled = busyNow;
     el("connect").disabled = busyNow || !csrf;
+    el("connect").textContent = status.connected
+      ? "Reconnect account"
+      : "Connect";
     if (status.connected) {
       el("amazonSignin").hidden = true;
       el("amazonSignin").removeAttribute("href");
-      el("connectMessage").textContent = "✓ Amazon account connected.";
-      el("connectMessage").classList.add("success");
+      window.toast("✓ Amazon account connected.");
       return;
     }
-    el("connectMessage").classList.remove("success");
-    if (!pending && !el("amazonSignin").hasAttribute("href")) {
-      el("connectMessage").textContent =
-        status.configuration_error || "Save your Amazon settings, then connect.";
-    }
+    // Only surface a configuration problem; otherwise leave the toast alone so
+    // a fresh "Saved." message isn't cleared by the poll.
+    if (!pending && !el("amazonSignin").hasAttribute("href") && status.configuration_error)
+      window.toast(status.configuration_error, "error");
   };
   el("amazonForm").onsubmit = (event) => {
     event.preventDefault();
@@ -69,14 +76,34 @@
         },
         el("clear_lwa_client_secret").checked ? ["lwa_client_secret"] : [],
       );
-      el("saved").textContent = "Saved.";
+      window.toast("Saved.");
     });
+  };
+  el("copyCallback").onclick = () => {
+    const input = el("callback");
+    const report = (message) => window.toast(message);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard
+        .writeText(input.value)
+        .then(() => report("Callback URL copied."))
+        .catch(() => {
+          input.select();
+          report(
+            "Clipboard unavailable — the URL is selected. Copy it manually.",
+          );
+        });
+      return;
+    }
+    input.select();
+    report("Clipboard unavailable — the URL is selected. Copy it manually.");
   };
   el("connect").onclick = () => {
     const current = window.setupStatus || {};
     if (current.configuration_error) {
-      el("connectMessage").textContent =
-        current.configuration_error + " Enter and save these settings.";
+      window.toast(
+        current.configuration_error + " Enter and save these settings.",
+        "error",
+      );
       return;
     }
     let popup = null;
@@ -88,18 +115,18 @@
     }
     el("amazonSignin").hidden = true;
     el("amazonSignin").removeAttribute("href");
-    el("connectMessage").textContent = "Preparing Amazon sign-in…";
+    window.toast("Preparing Amazon sign-in…");
     action(async () => {
       try {
         const body = await api("/setup/oauth/start", {});
         el("amazonSignin").href = body.url;
         el("amazonSignin").hidden = false;
-        el("connectMessage").textContent =
-          "Complete sign-in in the Amazon window, then return here. If it did not open, use the link below.";
+        window.toast(
+          "Complete sign-in in the Amazon window, then return here. If it did not open, use the link below.",
+        );
         if (popup) popup.location.assign(body.url);
       } catch (error) {
         if (popup) popup.close();
-        el("connectMessage").textContent = error.message;
         throw error;
       }
     });

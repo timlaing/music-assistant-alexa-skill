@@ -3,12 +3,21 @@
 {% block heading %}Set up your personal Alexa skill{% endblock %}
 {% block content_class %} ma-form{% endblock %}
 {% block content %}
-{% set step_labels = ['Application settings', 'Connect to Amazon', 'Skill setup', 'Review and deploy'] %}
-{% set back_names = ['status', 'Application settings', 'Connect to Amazon', 'Skill setup'] %}
+{% set step_labels = ['Application', 'Amazon account', 'Personal skill', 'Review & deploy'] %}
+{%- set first = namespace(value=4, found=false) %}
+{%- for n in [1, 2, 3, 4] %}
+{%- if not first.found and not done[n] %}{% set first.value = n %}{% set first.found = true %}{% endif %}
+{%- endfor %}
 <nav class="ma-stepper" aria-label="Setup steps">
   {%- for label in step_labels %}
-  <a class="ma-step" href="/setup/step/{{ loop.index }}"{% if step == loop.index %} aria-current="step"{% endif %}>
-    <span class="ma-stepnum led{% if done[loop.index] %} green{% endif %}" data-badge="{{ loop.index }}">{{ loop.index }}</span><span class="ma-steplabel">{{ label }}</span></a>
+  {%- set n = loop.index %}
+  {%- if n <= first.value or n == step %}
+  <a class="ma-step" href="/setup/step/{{ n }}"{% if step == n %} aria-current="step"{% endif %}>
+    <span class="ma-stepnum{% if done[n] %} done{% endif %}" data-badge="{{ n }}">{{ n }}</span><span class="ma-steplabel">{{ label }}</span></a>
+  {%- else %}
+  <span class="ma-step is-locked" aria-disabled="true">
+    <span class="ma-stepnum" data-badge="{{ n }}">{{ n }}</span><span class="ma-steplabel">{{ label }}</span></span>
+  {%- endif %}
   {%- endfor %}
 </nav>
 <p class="ma-small ma-muted">Step {{ step }} of 4 · {{ step_labels[step - 1] }}</p>
@@ -17,12 +26,14 @@
 {% block setup_content %}{% endblock %}
 <div class="ma-bottom">
   {%- if step > 1 %}
-  <a class="ma-button" href="/setup/step/{{ step - 1 }}">← Back: {{ back_names[step - 1] }}</a>
+  <a class="ma-button" href="/setup/step/{{ step - 1 }}">Back</a>
   {%- else %}
-  <a class="ma-button" href="/status">← Back to status</a>
+  <a class="ma-button" href="/status">Back to status</a>
   {%- endif %}
   <div class="ma-actions">{% block setup_actions %}{% endblock %}</div>
 </div>
+<div class="ma-toast" role="status" id="toast"></div>
+{% block bottom_link %}{% endblock %}
 {% endblock %}
 {% block scripts %}
 <script>
@@ -84,6 +95,8 @@
       formRevision = body.revision;
       if (typeof window.renderSettings === "function")
         window.renderSettings(body);
+      // A freshly (re)rendered form matches the saved state.
+      window.formDirty = false;
     }
   }
 
@@ -122,7 +135,7 @@
     };
     document.querySelectorAll("[data-badge]").forEach((badge) => {
       badge.className =
-        "ma-stepnum led" + (done[badge.dataset.badge] ? " green" : "");
+        "ma-stepnum" + (done[badge.dataset.badge] ? " done" : "");
     });
     window.setupStatus = status;
     if (typeof window.onSetupStatus === "function")
@@ -134,6 +147,37 @@
     box.textContent = text || "";
     box.hidden = !text;
   };
+
+  // Bottom status toast (mirrors the reference template's .ma-toast): a single
+  // box under the action buttons that reports the last save/connect outcome.
+  window.toast = (text, kind) => {
+    const box = el("toast");
+    box.textContent = text || "";
+    box.classList.toggle("is-error", kind === "error");
+  };
+
+  // Unsaved-changes tracking: any form edit marks the page dirty; a successful
+  // save or the initial render marks it clean again.
+  window.formDirty = false;
+  const markDirty = () => {
+    window.formDirty = true;
+  };
+  document.addEventListener("input", (e) => {
+    if (e.target.closest("form")) markDirty();
+  });
+  document.addEventListener("change", (e) => {
+    if (e.target.closest("form")) markDirty();
+  });
+  // "Continue" leaves the step: prompt first when there are unsaved edits.
+  document.querySelectorAll(".ma-actions a[href]").forEach((link) => {
+    link.addEventListener("click", (e) => {
+      if (
+        window.formDirty &&
+        !window.confirm("You have unsaved changes. Continue without saving?")
+      )
+        e.preventDefault();
+    });
+  });
 
   function tick() {
     if (pending || refreshing) return;

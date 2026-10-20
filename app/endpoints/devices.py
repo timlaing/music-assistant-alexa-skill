@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import unquote, urlparse
 
 from flask import (
     Blueprint,
@@ -11,6 +12,7 @@ from flask import (
 )
 from markupsafe import escape
 from page_nav import nav_html
+from shared_store import get_ma
 from skill import device_mapping
 
 devices_bp = Blueprint("devices_bp", __name__)
@@ -67,6 +69,26 @@ def _format_ts(ts):
         return str(ts)
 
 
+def _ma_stream_player_name():
+    """Player name parsed from the current Music Assistant stream URL path.
+
+    MA stream URLs look like ``/source/{hash}/{Player Name}/{file}``; the parent
+    directory segment (URL-decoded) is the player's display name. Returns an
+    empty string when no stream is available.
+    """
+    try:
+        ma = get_ma() or {}
+        url = ma.get("streamUrl") or ma.get("url") or ""
+        if not url:
+            return ""
+        parts = [p for p in urlparse(url).path.split("/") if p]
+        if len(parts) >= 2:
+            return unquote(parts[-2])
+        return unquote(parts[-1]) if parts else ""
+    except Exception:
+        return ""
+
+
 @devices_bp.route("/devices", methods=["GET"])
 def devices_page():
     mapping = device_mapping.load_mapping()
@@ -77,18 +99,21 @@ def devices_page():
         key=lambda d: -(seen.get(d, {}).get("last_seen") or 0),
     )
 
+    default_player = _ma_stream_player_name()
     devices = []
     for device_id in all_device_ids:
         info = seen.get(device_id, {})
-        current_player = mapping.get(device_id, "")
+        saved_player = mapping.get(device_id, "")
         devices.append(
             {
                 "device_id": device_id,
                 "short_id": device_id[-12:],
                 "last_seen": _format_ts(info.get("last_seen")),
                 "last_request": info.get("last_request") or "(not seen this session)",
-                "player_id": current_player,
-                "mapped": bool(current_player),
+                # Pre-fill the MA player name parsed from the current stream URL
+                # route component when no mapping has been saved yet.
+                "player_id": saved_player or default_player,
+                "mapped": bool(saved_player),
             }
         )
 

@@ -106,8 +106,14 @@ def test_auth_health_and_idle_status(client):
     assert client.get("/alexa/intents").status_code == 401
     assert client.get("/ma/latest-url", headers=AUTH).status_code == 404
     assert client.get("/alexa/intents", headers=AUTH).status_code == 200
-    assert "idle" in client.get("/status/ma", headers=AUTH).json["ma_api_html"]
-    assert "idle" in client.get("/status/alexa", headers=AUTH).json["alexa_api_html"]
+    assert (
+        "No stream has been sent yet."
+        in client.get("/status/ma", headers=AUTH).json["ma_api_html"]
+    )
+    assert (
+        "Ready for the first playback request."
+        in client.get("/status/alexa", headers=AUTH).json["alexa_api_html"]
+    )
     response = client.post("/", json=event())
     assert response.status_code != 200  # Missing Alexa signature must not be accepted.
 

@@ -1,138 +1,121 @@
 {% extends 'base.html' %}
+{% block title %}Service overview{% endblock %}
+{% block heading %}Service overview{% endblock %}
+{% block description %}Your Alexa integration at a glance.{% endblock %}
+{% block page_actions %}{% include '_refresh_button.html' %}{% endblock %}
 {% block content %}
+{{ banner_html | safe }}
 <div class="ma-grid">
-    <section class="ma-panel" aria-labelledby="reachability-heading">
-        <div class="ma-panelhead"><h2 id="reachability-heading">Public URL reachability</h2></div>
-        <div class="row" id="urls-row">__URLS_HTML__</div>
+    <section class="ma-panel" aria-labelledby="connectivity-heading">
+        <div class="ma-panelhead"><h2 id="connectivity-heading">Connectivity</h2></div>
+        <div id="urls-row">{{ urls_html | safe }}</div>
+        <div class="ma-row">
+            <div><strong>Echo playback</strong><p>Waiting for a physical device test.</p></div>
+            <span class="ma-state"><span class="ma-dot" aria-hidden="true"></span>Not tested</span>
+        </div>
+        <details class="ma-detail">
+            <summary>Connection diagnostics</summary>
+            <pre class="ma-code" id="conn-diag">{{ conn_diag }}</pre>
+        </details>
     </section>
     <section class="ma-panel" aria-labelledby="skill-heading">
         <div class="ma-panelhead"><h2 id="skill-heading">Alexa skill</h2></div>
-        <div class="row">__SKILL_HTML__</div>
-        <div class="row" id="skill-ask-row">__SKILL_ASK_HTML__</div>
-        <a class="ma-link" href="/setup">Set up personal Alexa skill →</a>
+        <div id="skill-row">{{ skill_html | safe }}</div>
+        <div id="skill-ask-row">{{ skill_ask_html | safe }}</div>
+        <a class="ma-link" href="/setup">Manage skill <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></a>
     </section>
 </div>
 <div class="ma-grid">
     <section class="ma-panel" aria-labelledby="playback-heading">
-        <div class="ma-panelhead"><h2 id="playback-heading">Playback APIs</h2></div>
-        <div class="row" id="api-row">__MA_API_HTML__</div>
-        <div class="row" id="alexa-row">__ALEXA_API_HTML__</div>
+        <div class="ma-panelhead"><h2 id="playback-heading">Playback</h2></div>
+        <div id="api-row">{{ ma_api_html | safe }}</div>
+        <div id="alexa-row">{{ alexa_api_html | safe }}</div>
     </section>
     <section class="ma-panel" aria-labelledby="display-heading">
-        <div class="ma-panelhead"><h2 id="display-heading">Echo Show display</h2></div>
-        <div class="row" id="metadata-row">__METADATA_HTML__</div>
+        <div class="ma-panelhead">
+            <h2 id="display-heading">Echo Show display</h2>
+            <span class="ma-state {{ 'ma-ok' if apl_enabled else 'ma-warning' }}"><span class="ma-dot" aria-hidden="true"></span>{{ 'Enabled' if apl_enabled else 'Disabled' }}</span>
+        </div>
+        <p class="ma-muted">{{ 'Artwork and playback controls are enabled.' if apl_enabled else 'Artwork and playback controls are disabled for this add-on.' }}</p>
+        <div class="ma-note">The current track will appear here when playback starts.</div>
+        <details class="ma-detail">
+            <summary>Metadata diagnostics</summary>
+            <div id="metadata-row">{{ metadata_html | safe }}</div>
+        </details>
     </section>
 </div>
 <section class="ma-panel" aria-labelledby="activity-heading">
-    <div class="ma-panelhead"><h2 id="activity-heading">Recent activity</h2></div>
-    <div class="row" id="invocations-row">__INVOCATIONS_HTML__</div>
+    <div class="ma-panelhead">
+        <h2 id="activity-heading">Recent activity</h2>
+        <a class="ma-link" href="/invocations">View activity <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></a>
+    </div>
+    <div id="invocations-row">{{ activity_html | safe }}</div>
 </section>
 {% endblock %}
 {% block scripts %}
 <script>
+// Only rewrite a fragment when its markup actually changed, so live
+// elements (like the test-tone player) are not reset by every poll.
+function setFragment(id, html){
+    var el = document.getElementById(id);
+    if(el && html != null && el.innerHTML !== html){ el.innerHTML = html; }
+}
+
 (function pollUrls(){
     fetch('/status/urls').then(r=>r.json()).then(j=>{
-        document.getElementById('urls-row').innerHTML = j.urls_html;
+        setFragment('urls-row', j.urls_html);
+        var diag = document.getElementById('conn-diag');
+        if(diag && j.conn_diag_html != null && diag.textContent !== j.conn_diag_html){
+            diag.textContent = j.conn_diag_html;
+        }
+        var banner = document.getElementById('status-banner');
+        // Rebuild whenever kind, title OR description changes (stale counts otherwise).
+        var summaryKey = (j.summary_kind || '') + ':' + (j.summary_title || '') + ':' + (j.summary_description || '');
+        if(banner && j.summary_title && banner.dataset.summary !== summaryKey){
+            banner.dataset.summary = summaryKey;
+            banner.dataset.kind = j.summary_kind;
+            banner.innerHTML = '<span class="ma-icon">' + j.summary_icon + '</span>'
+                + '<div><strong>' + j.summary_title + '</strong><p>' + j.summary_description + '</p></div>';
+        }
         setTimeout(pollUrls, j.checking ? 2000 : 15000);
     }).catch(()=>setTimeout(pollUrls, 10000));
 })();
 // Fetch MA and Alexa checks independently so each row updates when ready
 (function pollMa(){
     fetch('/status/ma').then(r=>r.json()).then(j=>{
-        try{ const maEl = document.getElementById('api-row'); if(maEl && j.ma_api_html){ maEl.innerHTML = j.ma_api_html; } }catch(e){
-            // best-effort: row refresh is optional; keep polling if this update fails
-        }
+        setFragment('api-row', j.ma_api_html);
         setTimeout(pollMa, 3000);
     }).catch(()=>{ setTimeout(pollMa, 5000); });
 })();
 
 (function pollAlexa(){
     fetch('/status/alexa').then(r=>r.json()).then(j=>{
-        try{ const alexaEl = document.getElementById('alexa-row'); if(alexaEl && j.alexa_api_html){ alexaEl.innerHTML = j.alexa_api_html; } }catch(e){
-            // best-effort: row refresh is optional; keep polling if this update fails
-        }
+        setFragment('alexa-row', j.alexa_api_html);
         setTimeout(pollAlexa, 3000);
     }).catch(()=>{ setTimeout(pollAlexa, 5000); });
 })();
 
 (function pollMetadata(){
     fetch('/status/metadata').then(r=>r.json()).then(j=>{
-        try{ const metadataEl = document.getElementById('metadata-row'); if(metadataEl && j.metadata_html){ metadataEl.innerHTML = j.metadata_html; } }catch(e){
-            // best-effort: row refresh is optional; keep polling if this update fails
-        }
+        setFragment('metadata-row', j.metadata_html);
         setTimeout(pollMetadata, 3000);
     }).catch(()=>{ setTimeout(pollMetadata, 5000); });
 })();
 
 (function pollAsk(){
     fetch('/status/ask').then(r=>r.json()).then(j=>{
-        try{ const askEl = document.getElementById('skill-ask-row'); if(askEl && j.skill_ask_html){ askEl.innerHTML = j.skill_ask_html; } }catch(e){
-            // best-effort: Ask checks are slower and optional; keep polling if this update fails
-        }
+        setFragment('skill-ask-row', j.skill_ask_html);
         // Ask checks are slower; poll less frequently
         setTimeout(pollAsk, 5000);
     }).catch(()=>{ setTimeout(pollAsk, 10000); });
 })();
 
-// Poll invocations count so the invocation row updates live
+// Poll the activity timeline so new invocations show up live
 (function pollInvocations(){
     fetch('/status/invocations').then(r=>r.json()).then(j=>{
-        try{ const invEl = document.getElementById('invocations-row'); if(invEl && j.invocations_html){ invEl.innerHTML = j.invocations_html; } }catch(e){
-            // best-effort: invocation count refresh is optional; keep polling if this update fails
-        }
+        setFragment('invocations-row', j.invocations_html);
         setTimeout(pollInvocations, 3000);
     }).catch(()=>{ setTimeout(pollInvocations, 5000); });
 })();
-
-// Delegated click handler to toggle intent payload/response pairs
-document.addEventListener('click', function(e){
-    try{
-        var t = e.target || e.srcElement;
-        if(t && t.closest){
-            var box = t.closest('pre.status-box');
-            if(box && box.focus){
-                box.focus();
-            }
-        }
-        if(t && t.classList && t.classList.contains('intent-toggle')){
-            var pair = t.nextElementSibling;
-            if(pair && pair.classList && pair.classList.contains('intent-pair')){
-                pair.style.display = (pair.style.display === 'none' || pair.style.display === '') ? 'block' : 'none';
-            }
-        }
-    }catch(err){
-        // best-effort: click handling is optional; ignore malformed event targets
-    }
-});
-
-// Limit Ctrl/Cmd+A selection to the focused status box.
-document.addEventListener('keydown', function(e){
-    try{
-        var isSelectAll = (e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A');
-        if(!isSelectAll){ return; }
-
-        var sel = window.getSelection ? window.getSelection() : null;
-        var pre = null;
-
-        if(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('status-box')){
-            pre = document.activeElement;
-        } else if(sel && sel.anchorNode){
-            var anchor = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
-            if(anchor && anchor.closest){
-                pre = anchor.closest('pre.status-box');
-            }
-        }
-
-        if(pre && sel && document.createRange){
-            e.preventDefault();
-            var range = document.createRange();
-            range.selectNodeContents(pre);
-            sel.removeAllRanges();
-            sel.addRange(range);
-        }
-    }catch(err){
-        // best-effort: select-all handling is optional; ignore failures so the default still works
-    }
-});
 </script>
 {% endblock %}

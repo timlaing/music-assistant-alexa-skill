@@ -219,19 +219,60 @@ def test_checks_cached_and_status_does_not_block(monkeypatch):
 
 
 def test_status_html_preserves_markup_and_escapes_values():
-    from reachability import html
+    from markupsafe import escape
 
-    rendered = html(
-        {
-            "checks": [{"label": "<script>", "status": "failed", "message": "Failed"}],
-            "checking": False,
-            "perspective": "<img src=x>",
-        }
+    from reachability import diagnostics, html
+
+    result = {
+        "checks": [{"label": "<script>", "status": "failed", "message": "Failed"}],
+        "checking": False,
+        "perspective": "<img src=x>",
+    }
+    rendered = html(result)
+    assert "&lt;script&gt;" in rendered  # row title is escaped
+    assert "&lt;div" not in rendered  # markup stays intact
+    diag = str(escape(diagnostics(result)))
+    assert "&lt;img" in diag  # perspective is escaped at render time
+    assert "&lt;div" not in diag
+
+
+def test_summary_readiness_states():
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "checks": [], "perspective": "p"}
+    ready = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+        ],
     )
-    assert '<div class="muted">' in rendered
-    assert "&lt;script&gt;" in rendered
-    assert "&lt;img" in rendered
-    assert "&lt;div" not in rendered
+    state = summary(ready)
+    assert state["kind"] == "good"
+    assert state["title"] == "Service is ready for an Echo test"
+    failing = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "failed", "message": "DNS"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+        ],
+    )
+    assert summary(failing)["kind"] == "error"
+    assert "1 of 2" in summary(failing)["description"]
+    unconfigured = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "unconfigured", "message": "n/a"},
+            {
+                "label": "Public audio delivery",
+                "status": "unconfigured",
+                "message": "n/a",
+            },
+        ],
+    )
+    assert summary(unconfigured)["kind"] == "warning"
+    checking = dict(base, checked_at=None, checking=True, checks=[])
+    assert summary(checking)["kind"] == "neutral"
 
 
 @pytest.mark.parametrize(

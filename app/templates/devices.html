@@ -1,19 +1,19 @@
 {% extends 'base.html' %}
 {% block title %}Device mappings{% endblock %}
 {% block heading %}Device mappings{% endblock %}
+{% block description %}Choose which Music Assistant player each Echo controls.{% endblock %}
+{% block page_actions %}{% include '_refresh_button.html' %}{% endblock %}
 {% block content %}
-<p class="muted">Alexa does not expose a friendly device name to Custom Skills, only an opaque per-device id.
-Trigger any voice command (e.g. "next") from each Echo you want to control MA from, reload this page,
-then pair each device id with its Music Assistant player_id (the name shown in MA, e.g. "Studio").
-Next/Previous/StartOver and Pause/Stop/Resume are routed to mapped MA players.</p>
+<div class="ma-note" style="margin:0 0 22px">To discover another Echo, say “Alexa, ask Music Assistant for help” on that device, then refresh this page.</div>
 <div class="ma-devices">
   {% for device in devices %}
   <article class="ma-device">
     <div class="ma-panelhead">
-      <h2><code title="{{ device.device_id }}">…{{ device.short_id }}</code></h2>
+      <span class="ma-deviceicon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg></span>
       <span class="ma-state {{ 'ma-ok' if device.mapped else 'ma-warning' }}"><span class="ma-dot" aria-hidden="true"></span>{{ 'Mapped' if device.mapped else 'Needs mapping' }}</span>
     </div>
-    <p class="ma-small ma-muted">Last seen {{ device.last_seen }} · {{ device.last_request }}</p>
+    <h2>Echo …{{ device.short_id }}</h2>
+    <p class="ma-small ma-muted">Device {{ device.device_id }} · Seen {{ device.last_seen }}</p>
     <form method="POST" action="/devices">
       <input type="hidden" name="device_id" value="{{ device.device_id }}" />
       <label class="ma-field">Music Assistant player
@@ -21,6 +21,10 @@ Next/Previous/StartOver and Pause/Stop/Resume are routed to mapped MA players.</
       </label>
       <div class="ma-actions"><button class="ma-button ma-primary" type="submit">Save mapping</button></div>
     </form>
+    <details class="ma-detail">
+      <summary>Device details</summary>
+      <div class="ma-small ma-muted">Last request: {{ device.last_request }}<br>Device identifier: {{ device.device_id }}</div>
+    </details>
   </article>
   {% else %}
   <div class="ma-note"><p>No devices seen yet. Trigger an intent from each Echo, then reload this page.</p></div>

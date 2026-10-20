@@ -1,19 +1,20 @@
 {% extends 'setup_base.html' %}
-{% block title %}Skill setup — Alexa skill setup{% endblock %}
-{% block heading %}Skill setup{% endblock %}
+{% block title %}Choose your skill — Alexa skill setup{% endblock %}
+{% block heading %}Choose your skill{% endblock %}
 {% block intro %}
-<p>Save these skill settings, then review and deploy to apply them to Amazon.</p>
+<p>Select the personal skill your Echo devices will use.</p>
 {% endblock %}
 {% block setup_content %}
 <section id="skillSetup" class="ma-panel">
   <div class="ma-panelhead"><h2>Personal skill</h2></div>
   <form id="skillForm">
-    <label class="ma-field">Alexa locale<select id="locale"></select></label>
-    <label class="ma-check"><input id="enable_apl" type="checkbox" /> Enable Echo Show artwork and controls</label>
+    <label class="ma-field">Alexa language<select id="locale"></select></label>
+    <label class="ma-check"><input id="enable_apl" type="checkbox" /> Show artwork and controls on Echo Show</label>
+    <div class="ma-note">This updates the selected personal skill. Other skills are unaffected.</div>
     <details class="ma-detail">
       <summary>Advanced skill settings</summary>
       <label class="ma-field"
-        >Public skill endpoint override<input id="skill_hostname" type="url" /><small
+        >Public endpoint override<input id="skill_hostname" type="url" /><small
           >Optional. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override only when your skill uses another public endpoint.</small
         ></label
       >
@@ -33,20 +34,20 @@
         <button class="ma-button" id="clearCertificate" type="button">Remove saved certificate</button>
       </div>
     </details>
-    <div class="ma-actions"><button class="ma-button" id="saveSkill" type="submit">Save skill settings</button><output id="saved"></output></div>
   </form>
   <output id="message" aria-live="polite" hidden></output>
-  <div id="selection" hidden>
+  <div id="selection">
     <h3>Choose your personal skill</h3>
     <label class="ma-field">Developer account<select id="vendors"><option value="">Choose account…</option></select></label>
     <label class="ma-field">Skill<select id="skills"><option value="">Choose skill…</option></select></label>
     <p>The skill ID identifies which skill is updated, even when names are identical. Only development custom skills are shown. Other skills are never deleted.</p>
-    <div class="ma-actions"><button class="ma-button" id="reload">Refresh skill list</button><button class="ma-button ma-primary" id="review">Review settings</button><button class="ma-button" id="resume" hidden>Resume accepted import</button></div>
+    <div class="ma-actions"><button class="ma-button" id="reload">Refresh skill list</button><button class="ma-button" id="resume" hidden>Resume accepted import</button></div>
   </div>
 </section>
 {% endblock %}
 {% block setup_actions %}
-<a class="ma-button ma-primary" href="/setup/step/4">Next: Review and deploy →</a>
+<button class="ma-button" id="saveSkill" type="submit" form="skillForm">Save settings</button>
+<button class="ma-button ma-primary" id="review">Review settings</button>
 {% endblock %}
 {% block page_js %}
 <script>
@@ -86,7 +87,11 @@
   window.renderSettings = (body) => {
     certificatePem = body.values.skill_certificate_pem || "";
     el("locale").replaceChildren();
-    body.locales.forEach((locale) => option(el("locale"), locale, locale));
+    body.locales.forEach((locale) => {
+      const name = (body.locale_names || {})[locale];
+      const label = name ? name + " · " + locale : locale;
+      option(el("locale"), locale, label);
+    });
     el("locale").value = body.values.locale;
     el("enable_apl").checked = body.values.enable_apl;
     el("skill_hostname").value = body.values.skill_hostname;
@@ -101,14 +106,10 @@
     el("review").disabled = busyNow || Boolean(status.import_unknown);
     el("resume").hidden = !status.can_resume;
     el("resume").disabled = busyNow;
-    el("selection").hidden = !status.connected;
-    window.stepMessage(
-      status.configuration_error ||
-        status.message ||
-        (status.connected
-          ? "Choose your developer account and personal skill."
-          : "Connect Amazon to get started."),
-    );
+    // No default instruction here: the section heading and fieldset already
+    // label the picker, and the template shows no permanent note on this step.
+    // Only surface a real status/error (accounts failed to load, etc.).
+    window.stepMessage(status.configuration_error || status.message || "");
     if (status.connected && !accountsLoaded) {
       const body = await api("/setup/accounts");
       body.vendors.forEach((v) =>
@@ -155,8 +156,7 @@
         },
         [],
       );
-      el("saved").textContent =
-        "Saved. Review and deploy separately to update Amazon.";
+      window.toast("Saved. Review and deploy separately to update Amazon.");
     });
   };
   el("vendors").onchange = () => action(loadSkills);
