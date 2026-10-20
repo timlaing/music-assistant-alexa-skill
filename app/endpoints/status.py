@@ -612,6 +612,57 @@ def status_urls():
     )
 
 
+def _provider_error(cfg):
+    """Last provider error as a plain message (dict/object/string tolerant)."""
+    error = getattr(cfg, "last_error", None)
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        return error.get("message") or str(error)
+    return str(getattr(error, "message", None) or error)
+
+
+def _provider_status(configs):
+    """Provider status list plus the alexa provider's configuration.
+
+    Config values come from config/providers?include_values=True: passwords
+    are SECURE_STRING entries that Music Assistant substitutes server-side,
+    and the diagnostics redact pass masks username/email-like keys anyway.
+    """
+    instances = []
+    alexa = []
+    for cfg in configs:
+        instances.append(
+            {
+                "domain": getattr(cfg, "domain", None),
+                "enabled": bool(getattr(cfg, "enabled", False)),
+                "status": str(getattr(cfg, "status", "") or ""),
+                "last_error": _provider_error(cfg),
+            }
+        )
+        if getattr(cfg, "domain", None) != "alexa":
+            continue
+        values = getattr(cfg, "values", None) or {}
+        alexa.append(
+            {
+                "instance_id": getattr(cfg, "instance_id", None),
+                "name": getattr(cfg, "name", None),
+                "enabled": bool(getattr(cfg, "enabled", False)),
+                "status": str(getattr(cfg, "status", "") or ""),
+                "last_error": _provider_error(cfg),
+                "config": {
+                    key: getattr(entry, "value", None) for key, entry in values.items()
+                },
+                "secure_keys": [
+                    key
+                    for key, entry in values.items()
+                    if str(getattr(entry, "type", "")) == "secure_string"
+                ],
+            }
+        )
+    return {"instances": instances, "alexa": alexa}
+
+
 async def _read_ma_status(server_url, token):
     import aiohttp
     from music_assistant_client import MusicAssistantClient
@@ -623,6 +674,14 @@ async def _read_ma_status(server_url, token):
     ):
         info = await client.server_info()
         players = await client.players.get_players()
+        try:
+            provider_configs = await client.config.get_provider_configs(
+                include_values=True
+            )
+        except Exception as exc:
+            providers = {"error": f"{type(exc).__name__}: {exc}"}
+        else:
+            providers = _provider_status(provider_configs)
     return {
         "configured": True,
         "server_version": getattr(info, "version", None),
@@ -635,6 +694,7 @@ async def _read_ma_status(server_url, token):
             }
             for player in players
         ],
+        "providers": providers,
     }
 
 
@@ -660,13 +720,24 @@ _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _HOST_RE = re.compile(
     r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}\b"
 )
-_REDACTED_KEYS = {
-    "api_username",
+_SENSITIVE_KEY_PARTS = (
+    "password",
+    "secret",
+    "token",
     "username",
-    "user_id",
-    "userid",
-    "lwa_client_id",
-}
+    "serial",
+    "accountid",
+    "login",
+    "email",
+)
+_SENSITIVE_KEYS = {"user_id", "userid", "lwa_client_id"}
+
+
+def _is_sensitive_key(key):
+    lowered = (key or "").lower()
+    return lowered in _SENSITIVE_KEYS or any(
+        part in lowered for part in _SENSITIVE_KEY_PARTS
+    )
 
 
 def _diagnostics_redact(value):
@@ -706,12 +777,7 @@ def _diagnostics_redact(value):
         if isinstance(item, list):
             return [walk(entry, key) for entry in item]
         if isinstance(item, str):
-            lowered = (key or "").lower()
-            if (
-                lowered in _REDACTED_KEYS
-                or "serial" in lowered
-                or "accountid" in lowered
-            ):
+            if _is_sensitive_key(key):
                 return "<redacted>"
             return strip_text(item)
         return item

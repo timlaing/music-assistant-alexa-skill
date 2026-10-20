@@ -399,6 +399,51 @@ def test_diagnostics_redacts_hosts_usernames_and_ips():
     assert redacted["players"] == [{"name": "Office Echo", "state": "playing"}]
 
 
+def test_provider_status_extracts_alexa_config():
+    configs = [
+        SimpleNamespace(
+            domain="alexa",
+            name="Alexa",
+            enabled=True,
+            status="loaded",
+            last_error=None,
+            instance_id="abc123",
+            values={
+                "username": SimpleNamespace(type="string", value="owner@example.com"),
+                "password": SimpleNamespace(
+                    type="secure_string", value="this_value_is_encrypted"
+                ),
+                "verbose_logging": SimpleNamespace(type="boolean", value=False),
+            },
+        ),
+        SimpleNamespace(
+            domain="spotify",
+            name="Spotify",
+            enabled=False,
+            status="errored",
+            last_error=SimpleNamespace(error_code=500, message="login failed"),
+            instance_id="def456",
+            values={},
+        ),
+    ]
+    overview = status._provider_status(configs)
+    assert overview["instances"][0] == {
+        "domain": "alexa",
+        "enabled": True,
+        "status": "loaded",
+        "last_error": None,
+    }
+    assert overview["instances"][1]["last_error"] == "login failed"
+    masked = status._diagnostics_redact(overview)
+    alexa = masked["alexa"][0]
+    assert alexa["instance_id"] == "abc123"
+    # Username and password never leave; harmless options pass through.
+    assert alexa["config"]["username"] == "<redacted>"
+    assert alexa["config"]["password"] == "<redacted>"
+    assert alexa["config"]["verbose_logging"] is False
+    assert alexa["secure_keys"] == ["password"]
+
+
 def test_diagnostics_bundle_records_errors_instead_of_failing(client, monkeypatch):
     with app.test_request_context("/status"):
         data = status._diagnostics_bundle()
