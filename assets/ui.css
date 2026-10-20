@@ -161,3 +161,11 @@
 #ma-app .ma-stepnum.led.green {color:light-dark(#ffffff,#101820);}
 #ma-app #error:not([hidden]) {padding:12px 14px;border-radius:8px;background:light-dark(#fcecef,#4a2430);color:light-dark(#a52b36,#ffabb6);}
 #ma-app #message:not([hidden]) {display:block;padding:12px 14px;border-radius:8px;background:var(--ma-accent-bg);color:var(--ma-text);}
+#ma-app code {font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--ma-soft);padding:2px 5px;border-radius:4px;font-size:.9em;}
+#ma-app .ma-invocation {padding:14px 0;border-bottom:1px solid var(--ma-line);}
+#ma-app .ma-invocation:last-child {border-bottom:0;}
+#ma-app .invocation-header {display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
+#ma-app .invocation-header h3 {margin:0;}
+#ma-app .intent-pair {display:none;margin-top:12px;}
+#ma-app .intent-pair div + div {margin-top:12px;}
+#ma-app .intent-pair strong {display:block;margin-bottom:6px;color:var(--ma-secondary);font-size:12px;font-weight:600;}

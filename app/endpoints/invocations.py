@@ -1,7 +1,6 @@
-from flask import Blueprint, Response, current_app
+from flask import Blueprint, Response, current_app, render_template
 from markupsafe import escape
 from page_nav import nav_html
-from pathlib import Path
 import json
 from datetime import datetime, timezone
 
@@ -113,11 +112,11 @@ def _render_entry(entry_id, entry):
 
     # Collapsible structure: header (with toggle) followed by hidden intent-pair
     item_html = (
-        f"<div class='invocation'><div class='invocation-header'><h3>Invocation {entry_id} - {display_time} - {display_name}</h3>"
-        f"<button class='intent-toggle' aria-expanded='false' style='margin-left:12px'>Show</button></div>"
+        f"<div class='ma-invocation'><div class='invocation-header'><h3>Invocation {entry_id} - {display_time} - {display_name}</h3>"
+        f"<button class='intent-toggle' type='button' aria-expanded='false'>Show</button></div>"
     )
     item_html += (
-        f"<div class='intent-pair' style='display:none; margin-top:8px'><div><strong>Payload</strong>"
+        f"<div class='intent-pair' style='display:none'><div><strong>Payload</strong>"
         f"<pre class='payload'>{escape(pretty_payload)}</pre></div>"
         f"<div><strong>Response</strong><pre class='response'>{escape(pretty_response)}</pre></div></div>"
     )
@@ -127,11 +126,10 @@ def _render_entry(entry_id, entry):
 
 def _invocations_response(body):
     try:
-        tpl_path = Path(__file__).parent.parent / "templates" / "invocations.html"
-        tpl = tpl_path.read_text()
-        tpl = tpl.replace("__NAV__", nav_html("invocations"))
-        tpl = tpl.replace("__INVOCATIONS_BODY__", body)
-        return Response(tpl, status=200, mimetype="text/html")
+        page = render_template("invocations.html")
+        page = page.replace("__NAV__", nav_html("invocations"))
+        page = page.replace("__INVOCATIONS_BODY__", body)
+        return Response(page, status=200, mimetype="text/html")
     except Exception:
         html = f"""<!doctype html>
             <html>
@@ -151,5 +149,11 @@ def invocations():
         _render_entry(len(intent_logs) - idx, entry)
         for idx, entry in enumerate(reversed(intent_logs))
     ]
-    body = "\n".join(body_items) or '<div class="muted">No invocations logged</div>'
+    if body_items:
+        body = (
+            f"<div class='ma-toolbar'><span class='ma-muted'>"
+            f"{len(body_items)} invocations logged</span></div>" + "\n".join(body_items)
+        )
+    else:
+        body = '<div class="muted">No invocations logged</div>'
     return _invocations_response(body)

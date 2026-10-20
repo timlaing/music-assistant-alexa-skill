@@ -1,21 +1,29 @@
-<!doctype html>
-            <html lang="en">
-            <head>
-                <meta charset="utf-8">
-                <title>Device Mapping</title>
-                <style>
-                body { font-family: Arial, Helvetica, sans-serif; padding: 20px; }
-                .muted { color:#666; font-size:0.9em; max-width: 700px; }
-                table { border-collapse: collapse; margin-top: 16px; }
-                th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
-                th { background: #f0f0f0; }
-                .mapping-form { display: flex; gap: 6px; align-items: center; }
-                .mapping-form input[type=text] { padding: 4px; }
-                </style>
-            </head>
-            <body>
-                __NAV__
-                <h1>Alexa Device &rarr; Music Assistant Player Mapping</h1>
-                __DEVICES_BODY__
-            </body>
-            </html>
+{% extends 'base.html' %}
+{% block title %}Device mappings{% endblock %}
+{% block heading %}Device mappings{% endblock %}
+{% block content %}
+<p class="muted">Alexa does not expose a friendly device name to Custom Skills, only an opaque per-device id.
+Trigger any voice command (e.g. "next") from each Echo you want to control MA from, reload this page,
+then pair each device id with its Music Assistant player_id (the name shown in MA, e.g. "Studio").
+Next/Previous/StartOver and Pause/Stop/Resume are routed to mapped MA players.</p>
+<div class="ma-devices">
+  {% for device in devices %}
+  <article class="ma-device">
+    <div class="ma-panelhead">
+      <h2><code title="{{ device.device_id }}">…{{ device.short_id }}</code></h2>
+      <span class="ma-state {{ 'ma-ok' if device.mapped else 'ma-warning' }}"><span class="ma-dot" aria-hidden="true"></span>{{ 'Mapped' if device.mapped else 'Needs mapping' }}</span>
+    </div>
+    <p class="ma-small ma-muted">Last seen {{ device.last_seen }} · {{ device.last_request }}</p>
+    <form method="POST" action="/devices">
+      <input type="hidden" name="device_id" value="{{ device.device_id }}" />
+      <label class="ma-field">Music Assistant player
+        <input type="text" name="player_id" value="{{ device.player_id }}" placeholder="MA player_id" />
+      </label>
+      <div class="ma-actions"><button class="ma-button ma-primary" type="submit">Save mapping</button></div>
+    </form>
+  </article>
+  {% else %}
+  <div class="ma-note"><p>No devices seen yet. Trigger an intent from each Echo, then reload this page.</p></div>
+  {% endfor %}
+</div>
+{% endblock %}

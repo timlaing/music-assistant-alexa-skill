@@ -1,24 +1,14 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Invocations</title>
-  <style>
-        pre{white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:4px}
-        .muted{color:#666}
-        button{padding:6px 10px}
-        .invocation{border-bottom:1px solid #efefef;padding:10px 0}
-        .invocation-header{display:flex;align-items:center;gap:8px}
-        .intent-pair{display:none}
-        .intent-toggle{background:#fff;border:1px solid #ddd;border-radius:4px;cursor:pointer}
-  </style>
-</head>
-<body>
-  __NAV__
-  <h1>Invocations</h1>
-  <p><a href="/status">Back to status</a></p>
+{% extends 'base.html' %}
+{% block title %}Invocations{% endblock %}
+{% block heading %}Invocations{% endblock %}
+{% block page_actions %}<a class="ma-link" href="/status">Back to status</a>{% endblock %}
+{% block content %}
+<section class="ma-panel">
+  <div class="ma-panelhead"><h2>Recent requests</h2></div>
   <div id="invocations-list">__INVOCATIONS_BODY__</div>
-
+</section>
+{% endblock %}
+{% block scripts %}
 <script>
 var lastClickedIntentPair = null;
 var lastClickedPre = null;
@@ -45,6 +35,7 @@ document.addEventListener('click', function(e){
         var pair = t.parentNode.nextElementSibling;
         if(!pair) return;
         pair.style.display = (pair.style.display === 'none' || pair.style.display === '') ? 'block' : 'none';
+        t.setAttribute('aria-expanded', pair.style.display === 'block' ? 'true' : 'false');
         lastClickedIntentPair = pair;
         lastClickedPre = null;
         return;
@@ -83,6 +74,4 @@ document.addEventListener('keydown', function(e){
     }
 });
 </script>
-
-</body>
-</html>
+{% endblock %}
