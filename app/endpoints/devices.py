@@ -111,11 +111,7 @@ def devices_page():
             )
         else:
             items = "<li>No devices seen yet.</li>"
-        html = (
-            "<!doctype html><html><head><meta charset='utf-8'>"
-            "<title>Device mappings</title></head><body><h1>Device mappings</h1>"
-            f"<ul>{items}</ul></body></html>"
-        )
+        html = f"<!doctype html><html><head><meta charset='utf-8'><title>Device mappings</title></head><body><h1>Device mappings</h1><ul>{items}</ul></body></html>"
         return Response(html, status=200, mimetype="text/html")
 
 
