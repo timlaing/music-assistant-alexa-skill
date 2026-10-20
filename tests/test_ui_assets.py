@@ -52,6 +52,20 @@ def test_asset_traversal_is_not_served(client):
     assert client.get("/assets/missing.css", headers=AUTH).status_code == 404
 
 
+def test_assets_revalidate_on_each_use(client):
+    response = client.get("/assets/ui.css", headers=AUTH)
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-cache"
+    assert "Last-Modified" in response.headers
+    # Conditional revalidation must yield 304 for an unchanged asset so a
+    # deployed update is picked up on the next page load, not a day later.
+    cached = client.get(
+        "/assets/ui.css",
+        headers={**AUTH, "If-Modified-Since": response.headers["Last-Modified"]},
+    )
+    assert cached.status_code == 304
+
+
 def test_assets_allowed_through_ingress_but_not_bypassed(client, monkeypatch):
     monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
     # Untrusted direct access is refused just like the pages themselves.

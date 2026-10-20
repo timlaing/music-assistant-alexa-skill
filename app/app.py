@@ -386,7 +386,11 @@ ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 
 @app.route("/assets/<path:filename>", methods=["GET"])
 def ui_assets(filename):
-    return send_from_directory(ASSETS_DIR, filename, max_age=86400)
+    response = send_from_directory(ASSETS_DIR, filename, conditional=True)
+    # Revalidate on every use (cheap 304s when unchanged) so an upgraded image
+    # can never pair stale cached styles/scripts with newer markup.
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.before_request

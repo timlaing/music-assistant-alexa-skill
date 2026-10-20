@@ -315,7 +315,9 @@ def test_status_html_page(client):
     body = response.get_data(as_text=True)
     assert "Skill running" in body
     assert "ma-nav" in body
-    assert 'aria-current="page"' in body
+    assert '<a href="/status" aria-current="page">' in body
+    for other in ("/setup", "/devices", "/invocations", "/simulator"):
+        assert f'<a href="{other}" aria-current' not in body
     assert "__NAV__" not in body
     assert "__SKILL_HTML__" not in body
     assert "__MA_API_HTML__" not in body

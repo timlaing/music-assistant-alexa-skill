@@ -33,6 +33,21 @@ def test_devices_page_empty(client):
     assert "No devices seen yet" in response.get_data(as_text=True)
 
 
+def test_devices_page_fallback_keeps_mapping_forms(client, logs, monkeypatch):
+    logs.append({"incoming": _payload("device-123"), "ts": time.time()})
+
+    def broken_template(*args, **kwargs):
+        raise RuntimeError("template unavailable")
+
+    monkeypatch.setattr(devices, "render_template", broken_template)
+    response = client.get("/devices", headers=AUTH)
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "<form method='POST' action='/devices'" in body
+    assert "name='device_id' value='device-123'" in body
+    assert "name='player_id'" in body
+
+
 def test_devices_page_lists_seen_and_mapped_devices(client, logs):
     device_mapping.set_player_for_device("amzn1.ask.device.abcdef123456", "Studio")
     logs.append(

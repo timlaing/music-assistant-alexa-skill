@@ -97,15 +97,20 @@ def devices_page():
         page = page.replace("__NAV__", nav_html("devices"))
         return Response(page, status=200, mimetype="text/html")
     except Exception:
-        items = (
-            "".join(
+        if devices:
+            items = "".join(
                 f"<li><code>{escape(device['short_id'])}</code> — "
                 f"{escape(device['last_seen'])} — {escape(device['last_request'])} — "
-                f"{escape(device['player_id'])}</li>"
+                f"<form method='POST' action='/devices' style='display:inline'>"
+                f"<input type='hidden' name='device_id' "
+                f"value='{escape(device['device_id'])}'>"
+                f"<input type='text' name='player_id' "
+                f"value='{escape(device['player_id'])}' placeholder='MA player_id'>"
+                "<button type='submit'>Save</button></form></li>"
                 for device in devices
             )
-            or "<li>No devices seen yet.</li>"
-        )
+        else:
+            items = "<li>No devices seen yet.</li>"
         html = (
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<title>Device mappings</title></head><body><h1>Device mappings</h1>"
