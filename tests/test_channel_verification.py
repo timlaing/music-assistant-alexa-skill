@@ -1,9 +1,10 @@
-"""Tests for the read-only Music Assistant channel verification (V1–V6)."""
+"""Tests for the read-only Music Assistant channel verification (V1–V11)."""
 
 import asyncio
 import json
 import time
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import shared_store
 import verification
@@ -113,9 +114,11 @@ def test_v2a_setup_keys_states():
 
 
 def test_v2b_push_base_states():
+    base = _store()["push_base"]
     check = verification._v2b_push_base(_store())
     assert check["state"] == "pass"
-    assert "ha.example.com" in check["detail"]
+    assert base in check["detail"]  # the detail quotes the recorded base
+    assert urlsplit(base).hostname == "ha.example.com"  # parsed, not substring
     assert verification._v2b_push_base({"streamUrl": "x"})["state"] == "unknown"
 
 
@@ -152,7 +155,8 @@ def test_v3_v4_reachable_and_auth(monkeypatch):
     )
     v3, v4 = verification._v3_v4_fetch(_store())
     assert (v3["state"], v4["state"]) == ("fail", "unknown")
-    assert "ha.example.com" in v3["detail"] or "ConnectTimeout" in v3["detail"]
+    failed_url = f"{_store()['push_base'].rstrip('/')}/ma/latest-url"
+    assert failed_url in v3["detail"] or "ConnectTimeout" in v3["detail"]
 
 
 def test_v3_v4_no_credentials_and_no_target(monkeypatch):
@@ -243,6 +247,13 @@ def test_v7_invocations_states():
         verification._v7_invocations([{"incoming": {}, "ts": "junk"}])["state"]
         == "unknown"
     )
+    # Out-of-order completion: the newest request finished FIRST (appended at
+    # index 0) — selection must use the timestamp, not logs[-1].
+    out_of_order = [
+        {"incoming": {}, "ts": time.time() - 60},
+        {"incoming": {}, "ts": time.time() - 3 * 86400},
+    ]
+    assert verification._v7_invocations(out_of_order)["state"] == "pass"
 
 
 # --- V8: stream host vs configured MA hostname ------------------------------
@@ -258,11 +269,10 @@ def test_v8_stream_host_states(monkeypatch):
         {"streamUrl": "https://streams.example.com/music/live.mp3"}
     )
     assert match["state"] == "pass"
-    mismatch = verification._v8_stream_host(
-        {"streamUrl": "https://cdn.example.com/x.mp3"}
-    )
+    cdn_url = "https://cdn.example.com/x.mp3"
+    mismatch = verification._v8_stream_host({"streamUrl": cdn_url})
     assert mismatch["state"] == "fail"
-    assert "cdn.example.com" in mismatch["detail"]
+    assert urlsplit(cdn_url).hostname in mismatch["detail"]  # parsed, not substring
     # MA_HOSTNAME empty: pushes are stored without validation
     monkeypatch.setattr(verification, "get_setting", lambda name, default="": "")
     unvalidated = verification._v8_stream_host(
@@ -343,7 +353,7 @@ def test_v10_alexa_link_states(monkeypatch):
     assert verification._v10_alexa_link(access_only)["state"] == "warning"
     good = verification._v10_alexa_link(_link_state())
     assert good["state"] == "pass"
-    assert "renews automatically" in good["detail"]
+    assert "not revalidated" in good["detail"]  # honest: no Amazon call made
     assert "sekrit" not in good["detail"]  # token values never carried out
     expired = verification._v10_alexa_link(
         _link_state(tokens={"access_token": "a", "refresh_token": "r", "expires": 1.0})
@@ -525,7 +535,11 @@ def test_status_verify_endpoint(client, monkeypatch):
         "v10",
         "v11",
     ]
-    assert data["summary"]["kind"] in {"good", "warning", "error", "neutral"}
+    # The fixture has no alexa players (v6+v9 fail) and the conftest
+    # self-fetch stub blocks v3 — pin the exact outcome so a silent
+    # all-pass regression cannot slip through.
+    assert data["summary"]["kind"] == "error"
+    assert data["summary"]["counts"]["fail"] == 3  # v3 fetch, v6+v9 fleet
     assert 'class="ma-row"' in data["checks_html"]
     assert "players" in data
 
@@ -571,12 +585,15 @@ def _fake_client(monkeypatch, send_command, get_provider_configs=None, get_value
     """Install a fake MusicAssistantClient: server_info is an attribute set on
     connect() (not a coroutine) and players come from the players/all command
     (client.players.players is only filled by start_listening(), which the
-    skill never runs)."""
+    skill never runs). Returns the fake class so tests can assert call args."""
     import music_assistant_client
     from unittest.mock import AsyncMock
 
     class _FakeClient:
+        instances = []
+
         def __init__(self, *args, **kwargs):
+            _FakeClient.instances.append(self)
             self.server_info = SimpleNamespace(server_version="3.4.7")
             self.config = SimpleNamespace(
                 get_provider_configs=AsyncMock(return_value=get_provider_configs or []),
@@ -594,6 +611,7 @@ def _fake_client(monkeypatch, send_command, get_provider_configs=None, get_value
             return self._send_command(command)
 
     monkeypatch.setattr(music_assistant_client, "MusicAssistantClient", _FakeClient)
+    return _FakeClient
 
 
 def test_read_ma_status_reads_players_from_command(monkeypatch):
@@ -659,9 +677,14 @@ def test_read_channel_state_parses_players_and_setup_keys(monkeypatch):
             },
         ]
 
-    _fake_client(
+    fake_cls = _fake_client(
         monkeypatch,
         players,
+        get_provider_configs=[
+            # The provider instance ID can differ from its domain — the setup
+            # lookup must use this discovered ID, not a hard-coded "alexa".
+            SimpleNamespace(domain="alexa", instance_id="abc123"),
+        ],
         get_value={"api_url": "x", "api_username": "y", "api_password": "z"},
     )
     channel = asyncio.run(
@@ -670,6 +693,12 @@ def test_read_channel_state_parses_players_and_setup_keys(monkeypatch):
     assert channel["configured"] is True
     assert channel["server_version"] == "3.4.7"
     assert channel["setup_keys"] == ["api_password", "api_url", "api_username"]
+    lookup = fake_cls.instances[-1].config.get_provider_config_value
+    assert lookup.await_args.kwargs == {
+        "instance_id": "abc123",
+        "key": "setup_data",
+        "default": None,
+    }
     assert [p["player_id"] for p in channel["alexa_players"]] == ["echo-1", "echo-2"]
     assert channel["alexa_players"][0]["state"] == "playing"
     assert channel["alexa_players"][0]["available"] is True

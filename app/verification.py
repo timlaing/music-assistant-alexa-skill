@@ -79,9 +79,11 @@ async def _read_channel_state(server_url, token):
     from music_assistant_client import MusicAssistantClient
 
     async with (
+        # Timeout first: `async with` enters left to right, so the deadline
+        # must start before the client connects (handshake included).
+        asyncio.timeout(MA_TIMEOUT_SECONDS),
         aiohttp.ClientSession() as session,
         MusicAssistantClient(server_url, session, token=token) as client,
-        asyncio.timeout(MA_TIMEOUT_SECONDS),
     ):
         # server_info is a property set by connect(), not a coroutine.
         info = client.server_info
@@ -95,25 +97,31 @@ async def _read_channel_state(server_url, token):
         )
 
         # V2a: key presence only — setup_data values are encrypted at rest and
-        # never carried out of this function.
+        # never carried out of this function. The provider instance ID can
+        # differ from its domain, so use the discovered config's ID; with no
+        # alexa config at all, skip the lookup (V1 already reports that).
         setup_keys = None
         setup_error = None
-        try:
-            setup = await client.config.get_provider_config_value(
-                instance_id="alexa", key="setup_data", default=None
-            )
-        except Exception as exc:
-            if "not found" in str(exc):
-                setup_keys = []  # provider setup has never run
-            else:
-                setup_error = f"{type(exc).__name__}: {exc}"
+        if alexa_cfg is None:
+            pass  # setup_keys stays None → V2a "not read", V1 fails instead
         else:
-            if isinstance(setup, dict):
-                setup_keys = sorted(setup)
-            elif setup is None:
-                setup_keys = []  # no setup data recorded at all
+            instance_id = getattr(alexa_cfg, "instance_id", None) or "alexa"
+            try:
+                setup = await client.config.get_provider_config_value(
+                    instance_id=instance_id, key="setup_data", default=None
+                )
+            except Exception as exc:
+                if "not found" in str(exc):
+                    setup_keys = []  # provider setup has never run
+                else:
+                    setup_error = f"{type(exc).__name__}: {exc}"
             else:
-                setup_error = f"unexpected setup_data type {type(setup).__name__}"
+                if isinstance(setup, dict):
+                    setup_keys = sorted(setup)
+                elif setup is None:
+                    setup_keys = []  # no setup data recorded at all
+                else:
+                    setup_error = f"unexpected setup_data type {type(setup).__name__}"
 
         players_raw = await client.send_command("players/all")
         players = []
@@ -464,20 +472,22 @@ def _v6_now_playing(channel, store):
 
 def _entry_age(entry):
     """Seconds since an invocation entry, else None if no usable timestamp."""
-    ts = entry.get("ts") if isinstance(entry, dict) else None
-    if isinstance(ts, (int, float)):
-        return max(0.0, time.time() - float(ts))
-    incoming = entry.get("incoming") if isinstance(entry, dict) else None
-    stamp = None
-    if isinstance(incoming, dict):
-        stamp = (incoming.get("request") or {}).get("timestamp")
-    if isinstance(stamp, str) and stamp.endswith("Z") and "T" in stamp:
+    if not isinstance(entry, dict):
+        return None
+    from endpoints.invocations import _entry_timestamp
+
+    stamp = _entry_timestamp(entry, entry.get("incoming"))
+    if isinstance(stamp, (int, float)):
+        return max(0.0, time.time() - float(stamp))
+    if isinstance(stamp, str):
         try:
-            moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
-            )
+            # fromisoformat handles the Alexa Z form and explicit offsets;
+            # naive values are assumed UTC (Alexa timestamps are UTC).
+            moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
         except ValueError:
             return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
         return max(0.0, time.time() - moment.timestamp())
     return None
 
@@ -491,17 +501,20 @@ def _v7_invocations(logs):
             "No requests have reached the skill yet — talk to Alexa or play "
             "something to record one.",
         )
-    age = _entry_age(logs[-1])
-    if age is None:
+    # Entries are appended when a request FINISHES, so out-of-order completion
+    # means logs[-1] is not necessarily the newest request — pick by age.
+    usable = [(age, entry) for entry in logs if (age := _entry_age(entry)) is not None]
+    if not usable:
         return _check(
             "v7",
             "Skill invocations",
             "unknown",
             "The last invocation has no usable timestamp.",
         )
+    age, latest = min(usable, key=lambda pair: pair[0])
     from endpoints.invocations import _entry_name
 
-    name = _entry_name(logs[-1].get("incoming")) or "request"
+    name = _entry_name(latest.get("incoming")) or "request"
     label = _age_label(age)
     if age <= FRESH_INTENT_SECONDS:
         return _check(
@@ -649,13 +662,14 @@ def _v10_alexa_link(state):
             "Amazon account link",
             "pass",
             f"Amazon connected; access token valid for about {hours} more hours "
-            "(renews automatically).",
+            "(refresh token stored — renewal not revalidated by this check).",
         )
     return _check(
         "v10",
         "Amazon account link",
         "pass",
-        "Amazon connected; the access token renews automatically on next use.",
+        "Amazon connected; refresh token stored (renewal is not revalidated "
+        "by this check — a revoked token fails only when it is next used).",
     )
 
 
@@ -709,7 +723,7 @@ def _summary(checks):
 
 
 def run_checks():
-    """Run V1–V6. Never raises — every failure becomes a check state."""
+    """Run V1–V11. Never raises — every failure becomes a check state."""
     try:
         return _run_checks()
     except Exception as exc:  # pragma: no cover - defensive

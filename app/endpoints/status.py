@@ -398,7 +398,10 @@ def _activity_items():
     from endpoints.invocations import _entry_name, _entry_timestamp
 
     logs = current_app.config.get("INTENT_LOGS", []) or []
-    for entry in list(logs)[-5:]:
+    # Walk ALL entries (not just the last few): appends happen on completion,
+    # so a newest-by-timestamp entry can sit outside a trailing window. The
+    # full list is bounded by the logger's maxlen, and is sorted below.
+    for entry in logs:
         if not isinstance(entry, dict):
             continue
         incoming = entry.get("incoming") or entry.get("payload")
@@ -678,9 +681,11 @@ async def _read_ma_status(server_url, token):
     from music_assistant_client import MusicAssistantClient
 
     async with (
+        # Timeout FIRST so `async with` (which enters left to right) covers
+        # the connection handshake too, not just the later commands.
+        asyncio.timeout(8),
         aiohttp.ClientSession() as session,
         MusicAssistantClient(server_url, session, token=token) as client,
-        asyncio.timeout(8),
     ):
         # server_info is a property set by connect(), not a coroutine. The
         # players cache (client.players.players) is only filled by
@@ -743,6 +748,8 @@ _SENSITIVE_KEY_PARTS = (
     "accountid",
     "login",
     "email",
+    "deviceid",
+    "personid",
 )
 _SENSITIVE_KEYS = {"user_id", "userid", "lwa_client_id"}
 

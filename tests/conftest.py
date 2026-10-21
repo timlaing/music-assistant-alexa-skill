@@ -29,9 +29,23 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_APL", "false")
     monkeypatch.delenv("MA_API_URL", raising=False)
     monkeypatch.delenv("MA_API_TOKEN", raising=False)
-    # Verification self-fetches SKILL_HOSTNAME when no push is stored; keep
-    # the ambient shell value out of tests so no test ever hits the network.
     monkeypatch.delenv("SKILL_HOSTNAME", raising=False)
+    # SKILL_HOSTNAME falls back to MA_HOSTNAME via effective_skill_endpoint, so
+    # delenv alone still leaves a fetchable URL — stub the verification
+    # self-fetch so no test ever hits the network (test-level patches of
+    # _self_fetch override this stub).
+    import verification
+
+    monkeypatch.setattr(
+        verification,
+        "_self_fetch",
+        lambda base: {
+            "url": f"{base.rstrip('/')}/ma/latest-url",
+            "status": None,
+            "error": "stubbed in tests",
+            "auth": False,
+        },
+    )
     monkeypatch.setenv("SKILL_DEPLOYMENT_PATH", str(tmp_path / "skill-deployment.json"))
     from app import app
 

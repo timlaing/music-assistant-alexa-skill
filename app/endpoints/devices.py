@@ -99,7 +99,10 @@ def devices_page():
         key=lambda d: -(seen.get(d, {}).get("last_seen") or 0),
     )
 
-    default_player = _ma_stream_player_name()
+    # The stream URL's player segment is a display NAME, not a player ID, and
+    # a single stream snapshot cannot be associated with a specific Echo —
+    # show it as a page-level hint only and never prefill player_id with it.
+    stream_hint = _ma_stream_player_name()
     devices = []
     for device_id in all_device_ids:
         info = seen.get(device_id, {})
@@ -110,15 +113,13 @@ def devices_page():
                 "short_id": device_id[-12:],
                 "last_seen": _format_ts(info.get("last_seen")),
                 "last_request": info.get("last_request") or "(not seen this session)",
-                # Pre-fill the MA player name parsed from the current stream URL
-                # route component when no mapping has been saved yet.
-                "player_id": saved_player or default_player,
+                "player_id": saved_player,
                 "mapped": bool(saved_player),
             }
         )
 
     try:
-        page = render_template("devices.html", devices=devices)
+        page = render_template("devices.html", devices=devices, stream_hint=stream_hint)
         page = page.replace("__NAV__", nav_html("devices"))
         return Response(page, status=200, mimetype="text/html")
     except Exception:

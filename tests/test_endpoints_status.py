@@ -365,6 +365,8 @@ def test_diagnostics_redacts_hosts_usernames_and_ips():
             "serialNumber": "C0AA11BB22",
             "userId": "amzn1.ask.account.XX",
             "deviceAccountId": "AX11",
+            "deviceId": "amzn1.ask.device.DD11",
+            "personId": "amzn1.ask.person.PP11",
             "version": "2.0.0",
             "stamp": "2026-10-20T22:28:28+00:00",
             "players": [{"name": "Office Echo", "state": "playing"}],
@@ -379,6 +381,8 @@ def test_diagnostics_redacts_hosts_usernames_and_ips():
         "C0AA11BB22",
         "amzn1.ask.account",
         "AX11",
+        "amzn1.ask.device",
+        "amzn1.ask.person",
     ):
         assert leaked not in body
     # Stable mapping: the same host collapses to one placeholder (port and
@@ -394,6 +398,8 @@ def test_diagnostics_redacts_hosts_usernames_and_ips():
     assert redacted["serialNumber"] == "<redacted>"
     assert redacted["userId"] == "<redacted>"
     assert redacted["deviceAccountId"] == "<redacted>"
+    assert redacted["deviceId"] == "<redacted>"
+    assert redacted["personId"] == "<redacted>"
     # Versions, timestamps and player names are not hostnames — untouched.
     assert redacted["version"] == "2.0.0"
     assert redacted["stamp"] == "2026-10-20T22:28:28+00:00"

@@ -98,11 +98,13 @@ def test_render_entry_supports_payload_key_alias_and_json_string_response():
 
 
 def test_format_time_shapes():
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     assert invocations._format_time(None) == "(no timestamp)"
+    # _format_time parses Z as UTC, so the expectation must be UTC too — a
+    # naive datetime would be interpreted as local time on non-UTC hosts.
     assert invocations._format_time("2026-01-02T03:04:05Z") == datetime(
-        2026, 1, 2, 3, 4, 5
+        2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc
     ).astimezone().strftime("%H:%M:%S")
     # Naive ISO strings are treated as local time.
     assert invocations._format_time("2026-01-02T03:04:05") == "03:04:05"

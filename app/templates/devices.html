@@ -5,6 +5,9 @@
 {% block page_actions %}{% include '_refresh_button.html' %}{% endblock %}
 {% block content %}
 <div class="ma-note" style="margin:0 0 22px">To discover another Echo, say “Alexa, ask Music Assistant for help” on that device, then refresh this page.</div>
+{% if stream_hint %}
+<div class="ma-note" style="margin:0 0 22px">The current Music Assistant stream is playing on <strong>{{ stream_hint }}</strong>. If that is this Echo's player, pick it below — the hint is a display name, not the player ID.</div>
+{% endif %}
 <div class="ma-devices">
   {% for device in devices %}
   <article class="ma-device">

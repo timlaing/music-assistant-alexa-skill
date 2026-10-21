@@ -48,6 +48,10 @@
       : "Not set.";
     el("clear_lwa_client_secret").checked = false;
   };
+  // Show the connected toast only on the transition into the connected
+  // state: repeated polls of an already-connected account must not replace
+  // a fresh "Saved." or sign-in guidance toast.
+  let wasConnected = false;
   window.onSetupStatus = (status) => {
     const busyNow = busy(status);
     el("saveAmazon").disabled = busyNow;
@@ -58,9 +62,11 @@
     if (status.connected) {
       el("amazonSignin").hidden = true;
       el("amazonSignin").removeAttribute("href");
-      window.toast("✓ Amazon account connected.");
+      if (!wasConnected) window.toast("✓ Amazon account connected.");
+      wasConnected = true;
       return;
     }
+    wasConnected = false;
     // Only surface a configuration problem; otherwise leave the toast alone so
     // a fresh "Saved." message isn't cleared by the poll.
     if (!pending && !el("amazonSignin").hasAttribute("href") && status.configuration_error)

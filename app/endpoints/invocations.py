@@ -135,7 +135,7 @@ def _entry_device(incoming):
             .get("device", {})
             .get("deviceId")
         )
-        return device_id or None
+        return device_id if isinstance(device_id, str) and device_id else None
     except Exception:
         return None
 
