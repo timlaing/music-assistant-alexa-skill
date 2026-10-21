@@ -612,6 +612,15 @@ def status_urls():
     )
 
 
+@status_bp.route("/status/verify", methods=["GET"])
+def status_verify():
+    """Run the read-only Music Assistant channel checks (V1–V6)."""
+    from verification import checks_html, run_checks
+
+    result = run_checks()
+    return jsonify({**result, "checks_html": checks_html(result)})
+
+
 def _provider_error(cfg):
     """Last provider error as a plain message (dict/object/string tolerant)."""
     error = getattr(cfg, "last_error", None)
@@ -672,8 +681,12 @@ async def _read_ma_status(server_url, token):
         MusicAssistantClient(server_url, session, token=token) as client,
         asyncio.timeout(8),
     ):
-        info = await client.server_info()
-        players = await client.players.get_players()
+        # server_info is a property set by connect(), not a coroutine. The
+        # players cache (client.players.players) is only filled by
+        # start_listening(), which this skill never runs — players must come
+        # from the players/all command or the list is always empty.
+        info = client.server_info
+        players = await client.send_command("players/all")
         try:
             provider_configs = await client.config.get_provider_configs(
                 include_values=True
@@ -684,13 +697,13 @@ async def _read_ma_status(server_url, token):
             providers = _provider_status(provider_configs)
     return {
         "configured": True,
-        "server_version": getattr(info, "version", None),
+        "server_version": getattr(info, "server_version", None),
         "players": [
             {
-                "player_id": player.player_id,
-                "name": player.name,
-                "state": str(getattr(player, "state", "")),
-                "available": bool(getattr(player, "available", False)),
+                "player_id": player.get("player_id"),
+                "name": player.get("name"),
+                "state": str(player.get("playback_state") or ""),
+                "available": bool(player.get("available")),
             }
             for player in players
         ],
@@ -785,6 +798,16 @@ def _diagnostics_redact(value):
     return walk(value)
 
 
+def _verification_section():
+    """Read-only channel verification for the bundle (failures recorded as data)."""
+    try:
+        from verification import run_checks
+
+        return run_checks()
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def _diagnostics_bundle():
     """Sanitized diagnostic snapshot for bug reports.
 
@@ -807,6 +830,7 @@ def _diagnostics_bundle():
         },
         "settings": store().public(),
         "music_assistant": _ma_status_probe(),
+        "verification": _verification_section(),
         "stores": {
             "music_assistant": shared_store.get_ma(),
             "alexa": shared_store.get_alexa(),

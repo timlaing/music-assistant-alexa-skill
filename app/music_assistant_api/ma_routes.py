@@ -42,6 +42,11 @@ def register_routes(bp):
                 "artist": payload.get("artist"),
                 "album": payload.get("album"),
                 "imageUrl": image_url,
+                # The scheme://host Music Assistant actually pushed from — the
+                # observable truth of its configured api_url. host_url (not
+                # url_root) excludes the /ma mount prefix. Redacted to a
+                # host placeholder in the diagnostics bundle.
+                "push_base": request.host_url.rstrip("/"),
             }
         )
         return jsonify({"status": "ok", "version": version})

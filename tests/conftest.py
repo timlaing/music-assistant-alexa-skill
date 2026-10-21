@@ -29,6 +29,9 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_APL", "false")
     monkeypatch.delenv("MA_API_URL", raising=False)
     monkeypatch.delenv("MA_API_TOKEN", raising=False)
+    # Verification self-fetches SKILL_HOSTNAME when no push is stored; keep
+    # the ambient shell value out of tests so no test ever hits the network.
+    monkeypatch.delenv("SKILL_HOSTNAME", raising=False)
     monkeypatch.setenv("SKILL_DEPLOYMENT_PATH", str(tmp_path / "skill-deployment.json"))
     from app import app
 

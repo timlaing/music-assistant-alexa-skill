@@ -44,6 +44,14 @@
         </details>
     </section>
 </div>
+<section class="ma-panel" aria-labelledby="verify-heading">
+    <div class="ma-panelhead">
+        <h2 id="verify-heading">Music Assistant channel</h2>
+        <button class="ma-button" type="button" id="run-checks">Run checks</button>
+    </div>
+    <p class="ma-muted">Verifies that the Alexa provider in Music Assistant reaches this skill and pushes the right stream data. Read-only: nothing is changed and no playback is started.</p>
+    <div id="verify-results"><p class="ma-muted">No checks have been run yet.</p></div>
+</section>
 <section class="ma-panel" aria-labelledby="activity-heading">
     <div class="ma-panelhead">
         <h2 id="activity-heading">Recent activity</h2>
@@ -116,6 +124,24 @@ function setFragment(id, html){
         setFragment('invocations-row', j.invocations_html);
         setTimeout(pollInvocations, 3000);
     }).catch(()=>{ setTimeout(pollInvocations, 5000); });
+})();
+
+// Run the read-only Music Assistant channel checks on demand
+(function(){
+    var button = document.getElementById('run-checks');
+    var results = document.getElementById('verify-results');
+    if(!button || !results){ return; }
+    button.addEventListener('click', function(){
+        button.disabled = true;
+        results.innerHTML = '<p class="ma-muted">Running checks\u2026</p>';
+        fetch('/status/verify').then(r=>r.json()).then(j=>{
+            results.innerHTML = j.checks_html || '';
+            button.disabled = false;
+        }).catch(()=>{
+            results.innerHTML = '<p class="ma-small ma-error">Checks could not be run.</p>';
+            button.disabled = false;
+        });
+    });
 })();
 </script>
 {% endblock %}

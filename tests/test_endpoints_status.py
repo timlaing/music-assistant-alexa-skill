@@ -327,6 +327,7 @@ def test_diagnostics_download_is_sanitized(client, monkeypatch):
         "settings",
         "deployment",
         "music_assistant",
+        "verification",
         "stores",
         "recent_invocations",
     ):
