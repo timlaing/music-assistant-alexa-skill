@@ -614,7 +614,8 @@ def status_urls():
 
 @status_bp.route("/status/verify", methods=["GET"])
 def status_verify():
-    """Run the read-only Music Assistant channel checks (V1–V6)."""
+    """Run the read-only Music Assistant channel checks (provider, pushes,
+    playback, invocations, Amazon link, public reachability)."""
     from verification import checks_html, run_checks
 
     result = run_checks()

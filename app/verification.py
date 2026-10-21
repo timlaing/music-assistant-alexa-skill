@@ -2,7 +2,7 @@
 
 Answers "is the Alexa player (Music Assistant's alexa provider) correctly
 configured to talk to this skill, and does it send correct information?"
-with six flow-free checks — Music Assistant is only ever READ (never
+with flow-free checks — Music Assistant is only ever READ (never
 written to, no flow started), and the only outbound request is a GET
 against the skill's own /ma/latest-url endpoint:
 
@@ -15,6 +15,15 @@ against the skill's own /ma/latest-url endpoint:
   V4   basic auth           the same fetch is accepted (401 = rejected)
   V5   push freshness       how long ago the last push arrived
   V6   now playing          what MA says is playing vs the last pushed stream
+  V7   skill invocations    the last request that reached the skill (the
+                            Alexa -> skill leg; MA pushes arrive here too)
+  V8   stream host          stored stream host vs the configured MA hostname
+                            (unvalidated mode is flagged, not assumed fine)
+  V9   player inventory     which alexa players MA has, with states/availability
+  V10  Amazon account link  stored LWA refresh/access token health (read-only;
+                            token values are never carried out)
+  V11  public reachability  folds the cached add-on reachability results into
+                            the summary (reuses the existing probe cache)
 
 Failures become check states, never exceptions.
 """
@@ -22,16 +31,19 @@ Failures become check states, never exceptions.
 import asyncio
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import shared_store
 from app_settings import get_setting
 from env_secrets import get_env_secret
 from markupsafe import escape
+from public_urls import public_base
 from ui_markup import row
 
 FETCH_TIMEOUT_SECONDS = 5
 MA_TIMEOUT_SECONDS = 8
 FRESH_PUSH_SECONDS = 3600
+FRESH_INTENT_SECONDS = 86400
 
 _PILL = {
     "pass": ("Passed", "success"),
@@ -114,6 +126,8 @@ async def _read_channel_state(server_url, token):
                     "player_id": item.get("player_id"),
                     "name": item.get("name"),
                     "state": str(item.get("playback_state") or ""),
+                    "available": bool(item.get("available")),
+                    "powered": item.get("powered"),
                     "title": media.get("title") if isinstance(media, dict) else None,
                     "artist": media.get("artist") if isinstance(media, dict) else None,
                 }
@@ -448,6 +462,237 @@ def _v6_now_playing(channel, store):
     )
 
 
+def _entry_age(entry):
+    """Seconds since an invocation entry, else None if no usable timestamp."""
+    ts = entry.get("ts") if isinstance(entry, dict) else None
+    if isinstance(ts, (int, float)):
+        return max(0.0, time.time() - float(ts))
+    incoming = entry.get("incoming") if isinstance(entry, dict) else None
+    stamp = None
+    if isinstance(incoming, dict):
+        stamp = (incoming.get("request") or {}).get("timestamp")
+    if isinstance(stamp, str) and stamp.endswith("Z") and "T" in stamp:
+        try:
+            moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return None
+        return max(0.0, time.time() - moment.timestamp())
+    return None
+
+
+def _v7_invocations(logs):
+    if not logs:
+        return _check(
+            "v7",
+            "Skill invocations",
+            "unknown",
+            "No requests have reached the skill yet — talk to Alexa or play "
+            "something to record one.",
+        )
+    age = _entry_age(logs[-1])
+    if age is None:
+        return _check(
+            "v7",
+            "Skill invocations",
+            "unknown",
+            "The last invocation has no usable timestamp.",
+        )
+    from endpoints.invocations import _entry_name
+
+    name = _entry_name(logs[-1].get("incoming")) or "request"
+    label = _age_label(age)
+    if age <= FRESH_INTENT_SECONDS:
+        return _check(
+            "v7", "Skill invocations", "pass", f"Last request ({name}) arrived {label}."
+        )
+    return _check(
+        "v7",
+        "Skill invocations",
+        "warning",
+        f"Last request ({name}) arrived {label} — nothing has reached the skill "
+        "recently.",
+    )
+
+
+def _v8_stream_host(store):
+    stream = (store.get("streamUrl") or "").strip()
+    if not stream:
+        return _check("v8", "Stream host", "unknown", "No stream has been stored yet.")
+    try:
+        source = urlsplit(stream)
+    except ValueError:
+        source = None
+    stored_host = (source.netloc or "").lower() if source else ""
+    base = get_setting("MA_HOSTNAME", "").strip()
+    if not base:
+        return _check(
+            "v8",
+            "Stream host",
+            "warning",
+            "MA_HOSTNAME is not configured — pushes are stored without host "
+            f"validation (stored host: {stored_host or 'unknown'}).",
+        )
+    try:
+        base_host = urlsplit(public_base(base)).netloc.lower()
+    except ValueError:
+        return _check(
+            "v8",
+            "Stream host",
+            "unknown",
+            f"The configured MA hostname is not a valid public URL ({base}).",
+        )
+    if stored_host and stored_host == base_host:
+        return _check(
+            "v8",
+            "Stream host",
+            "pass",
+            f"Stored stream host {stored_host} matches the configured MA hostname.",
+        )
+    return _check(
+        "v8",
+        "Stream host",
+        "fail",
+        f"Stored stream host {stored_host or 'unknown'} does not match the "
+        f"configured MA hostname ({base_host}) — the stored stream may not be "
+        "the one Music Assistant pushes.",
+    )
+
+
+def _v9_players(channel):
+    if not channel.get("configured") or channel.get("error"):
+        return _check(
+            "v9",
+            "Alexa players",
+            "unknown",
+            "Not available — Music Assistant state is unavailable.",
+        )
+    players = channel.get("alexa_players") or []
+    if not players:
+        return _check(
+            "v9",
+            "Alexa players",
+            "fail",
+            "No Alexa players are registered in Music Assistant.",
+        )
+    states = {}
+    unavailable = 0
+    for player in players:
+        state = player.get("state") or "unknown"
+        states[state] = states.get(state, 0) + 1
+        if player.get("available") is False:
+            unavailable += 1
+    state_summary = ", ".join(
+        f"{count} {state}" for state, count in sorted(states.items())
+    )
+    names = [player.get("name") or player.get("player_id") or "?" for player in players]
+    shown = ", ".join(names[:6]) + (
+        f" (+{len(names) - 6} more)" if len(names) > 6 else ""
+    )
+    detail = f"{len(players)} registered ({state_summary}): {shown}."
+    if unavailable:
+        detail += f" {unavailable} unavailable."
+    return _check("v9", "Alexa players", "info", detail)
+
+
+def _v10_alexa_link(state):
+    """Amazon LWA link health from the deployment state (tokens never shown)."""
+    if not isinstance(state, dict):
+        return _check(
+            "v10",
+            "Amazon account link",
+            "unknown",
+            "No deployment state yet — connect Amazon in Setup.",
+        )
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict) or not tokens.get("refresh_token"):
+        if isinstance(tokens, dict) and tokens.get("access_token"):
+            return _check(
+                "v10",
+                "Amazon account link",
+                "warning",
+                "An access token is stored but no refresh token — it cannot "
+                "renew; reconnect in Setup.",
+            )
+        return _check(
+            "v10",
+            "Amazon account link",
+            "unknown",
+            "Amazon is not connected yet — finish the Setup connect step.",
+        )
+    try:
+        from skill_deployment import config_key
+
+        current_key = config_key()
+    except Exception as exc:
+        return _check(
+            "v10",
+            "Amazon account link",
+            "unknown",
+            f"OAuth configuration unreadable: {type(exc).__name__}: {exc}",
+        )
+    stored_key = state.get("client_key")
+    if stored_key and current_key and stored_key != current_key:
+        return _check(
+            "v10",
+            "Amazon account link",
+            "warning",
+            "The stored Amazon link belongs to a different Login with Amazon "
+            "client — reconnect in Setup.",
+        )
+    expires = tokens.get("expires")
+    if isinstance(expires, (int, float)) and expires >= time.time():
+        hours = max(1, int((expires - time.time()) / 3600))
+        return _check(
+            "v10",
+            "Amazon account link",
+            "pass",
+            f"Amazon connected; access token valid for about {hours} more hours "
+            "(renews automatically).",
+        )
+    return _check(
+        "v10",
+        "Amazon account link",
+        "pass",
+        "Amazon connected; the access token renews automatically on next use.",
+    )
+
+
+def _v11_reachability(snap):
+    """Fold the cached add-on reachability results into one check."""
+    if not isinstance(snap, dict):
+        return _check(
+            "v11", "Public reachability", "unknown", "Reachability data unavailable."
+        )
+    if not snap.get("checks"):
+        if snap.get("checking"):
+            return _check(
+                "v11",
+                "Public reachability",
+                "unknown",
+                "Reachability checks are still running.",
+            )
+        return _check(
+            "v11",
+            "Public reachability",
+            "unknown",
+            "No public URLs are configured — nothing to check.",
+        )
+    from reachability import summary
+
+    result = summary(snap)
+    kind = {"good": "pass", "warning": "warning", "error": "fail"}.get(
+        result.get("kind"), "unknown"
+    )
+    return _check(
+        "v11",
+        "Public reachability",
+        kind,
+        f"{result.get('title')} — {result.get('description')}",
+    )
+
+
 def _summary(checks):
     counts = {"pass": 0, "fail": 0, "warning": 0, "unknown": 0, "info": 0}
     for check in checks:
@@ -482,6 +727,40 @@ def run_checks():
         }
 
 
+def _intent_logs():
+    """Logged Alexa invocations (empty outside a Flask app context)."""
+    try:
+        from flask import current_app
+
+        return list(current_app.config.get("INTENT_LOGS") or [])
+    except Exception:
+        return []
+
+
+def _deployment_state():
+    """Parsed deployment state file (read-only), else None."""
+    import json
+    import os
+
+    path = os.environ.get("SKILL_DEPLOYMENT_PATH", "/data/skill-deployment.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _reachability_snapshot():
+    """Cached reachability snapshot, else None outside a Flask app context."""
+    try:
+        from reachability import snapshot
+
+        return snapshot()
+    except Exception:
+        return None
+
+
 def _run_checks():
     store = shared_store.get_ma() or {}
     channel = _read_channel()
@@ -492,11 +771,19 @@ def _run_checks():
         *_v3_v4_fetch(store),
         _v5_freshness(store),
         _v6_now_playing(channel, store),
+        _v7_invocations(_intent_logs()),
+        _v8_stream_host(store),
+        _v9_players(channel),
+        _v10_alexa_link(_deployment_state()),
+        _v11_reachability(_reachability_snapshot()),
     ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "checks": checks,
         "summary": _summary(checks),
+        # Player inventory for the bundle (states + availability flags) so a
+        # downloaded diagnostics file shows the fleet without a live click.
+        "players": channel.get("alexa_players") or [],
     }
 
 

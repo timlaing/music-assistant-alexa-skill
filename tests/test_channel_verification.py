@@ -225,10 +225,172 @@ def test_v6_now_playing_states():
     ] == ("unknown")
 
 
+# --- V7: last skill invocation ---------------------------------------------
+
+
+def test_v7_invocations_states():
+    fresh = {"incoming": {}, "ts": time.time() - 120}
+    assert verification._v7_invocations([fresh])["state"] == "pass"
+    stale = {"incoming": {}, "ts": time.time() - 3 * 86400}
+    warning = verification._v7_invocations([stale])
+    assert warning["state"] == "warning"
+    assert "days ago" in warning["detail"]
+    # Alexa request timestamp fallback (ISO Z string)
+    iso = {"incoming": {"request": {"timestamp": "2026-10-21T12:00:00Z"}}}
+    assert verification._v7_invocations([iso])["state"] in ("pass", "warning")
+    assert verification._v7_invocations([])["state"] == "unknown"
+    assert (
+        verification._v7_invocations([{"incoming": {}, "ts": "junk"}])["state"]
+        == "unknown"
+    )
+
+
+# --- V8: stream host vs configured MA hostname ------------------------------
+
+
+def test_v8_stream_host_states(monkeypatch):
+    monkeypatch.setattr(
+        verification,
+        "get_setting",
+        lambda name, default="": "https://streams.example.com/music",
+    )
+    match = verification._v8_stream_host(
+        {"streamUrl": "https://streams.example.com/music/live.mp3"}
+    )
+    assert match["state"] == "pass"
+    mismatch = verification._v8_stream_host(
+        {"streamUrl": "https://cdn.example.com/x.mp3"}
+    )
+    assert mismatch["state"] == "fail"
+    assert "cdn.example.com" in mismatch["detail"]
+    # MA_HOSTNAME empty: pushes are stored without validation
+    monkeypatch.setattr(verification, "get_setting", lambda name, default="": "")
+    unvalidated = verification._v8_stream_host(
+        {"streamUrl": "https://streams.example.com/live.mp3"}
+    )
+    assert unvalidated["state"] == "warning"
+    assert verification._v8_stream_host({})["state"] == "unknown"
+    # MA_HOSTNAME present but not a valid public base (http, not https)
+    monkeypatch.setattr(
+        verification,
+        "get_setting",
+        lambda name, default="": "http://streams.example.com",
+    )
+    assert (
+        verification._v8_stream_host({"streamUrl": "https://x.example.com/a"})["state"]
+        == "unknown"
+    )
+
+
+# --- V9: player inventory ----------------------------------------------------
+
+
+def test_v9_players_states():
+    assert verification._v9_players({"configured": False})["state"] == "unknown"
+    assert verification._v9_players({"configured": True, "error": "x"})["state"] == (
+        "unknown"
+    )
+    assert verification._v9_players(_channel(alexa_players=[]))["state"] == "fail"
+    players = [
+        {"name": "Office Echo", "state": "idle", "available": True},
+        {"name": "Kitchen", "state": "playing", "available": True},
+        {"name": "Bedroom", "state": "idle", "available": False},
+    ]
+    info = verification._v9_players(_channel(alexa_players=players))
+    assert info["state"] == "info"
+    assert "3 registered" in info["detail"]
+    assert "2 idle, 1 playing" in info["detail"]
+    assert "1 unavailable" in info["detail"]
+    # Long fleets are capped in the listing
+    many = [{"name": f"Echo {i}", "state": "idle", "available": True} for i in range(9)]
+    capped = verification._v9_players(_channel(alexa_players=many))
+    assert "+3 more" in capped["detail"]
+
+
+# --- V10: Amazon account link -------------------------------------------------
+
+
+def _oauth_env(monkeypatch):
+    """config_key()/oauth_config() need all three LWA values."""
+    monkeypatch.setenv("LWA_CLIENT_ID", "demo-client-id")
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "demo-client-secret")
+    monkeypatch.setenv(
+        "LWA_REDIRECT_URI",
+        "https://skills.example.com/ma-alexa-skill/setup/oauth/callback",
+    )
+
+
+def _link_state(**overrides):
+    from skill_deployment import config_key
+
+    state = {
+        "client_key": config_key(),
+        "tokens": {
+            "access_token": "sekrit-access-token",
+            "refresh_token": "r",
+            "expires": time.time() + 7200,
+        },
+    }
+    state.update(overrides)
+    return state
+
+
+def test_v10_alexa_link_states(monkeypatch):
+    _oauth_env(monkeypatch)
+    assert verification._v10_alexa_link(None)["state"] == "unknown"
+    assert verification._v10_alexa_link({})["state"] == "unknown"
+    access_only = {"tokens": {"access_token": "a"}}
+    assert verification._v10_alexa_link(access_only)["state"] == "warning"
+    good = verification._v10_alexa_link(_link_state())
+    assert good["state"] == "pass"
+    assert "renews automatically" in good["detail"]
+    assert "sekrit" not in good["detail"]  # token values never carried out
+    expired = verification._v10_alexa_link(
+        _link_state(tokens={"access_token": "a", "refresh_token": "r", "expires": 1.0})
+    )
+    assert expired["state"] == "pass"  # refresh token present; renews on use
+    wrong_client = verification._v10_alexa_link(_link_state(client_key="other"))
+    assert wrong_client["state"] == "warning"
+
+
+# --- V11: reachability fold-in ------------------------------------------------
+
+
+def test_v11_reachability_states():
+    assert verification._v11_reachability(None)["state"] == "unknown"
+    checking = {"checked_at": None, "checking": True, "checks": []}
+    assert verification._v11_reachability(checking)["state"] == "unknown"
+    empty = {"checked_at": None, "checking": False, "checks": []}
+    assert verification._v11_reachability(empty)["state"] == "unknown"
+    good = {
+        "checked_at": time.time(),
+        "checking": False,
+        "checks": [
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Stream host", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+        ],
+    }
+    check = verification._v11_reachability(good)
+    assert check["state"] == "pass"
+    bad = {
+        "checked_at": time.time(),
+        "checking": False,
+        "checks": [
+            {"label": "Skill endpoint", "status": "failed", "message": "DNS"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+        ],
+    }
+    assert verification._v11_reachability(bad)["state"] == "fail"
+
+
 # --- composition -----------------------------------------------------------
 
 
 def test_run_checks_composes_all_checks(monkeypatch):
+    from skill_deployment import config_key
+
+    _oauth_env(monkeypatch)
     shared_store.set_ma(_store())
     monkeypatch.setattr(
         verification,
@@ -239,6 +401,8 @@ def test_run_checks_composes_all_checks(monkeypatch):
                     "player_id": "e",
                     "name": "Echo",
                     "state": "playing",
+                    "available": True,
+                    "powered": True,
                     "title": "Song",
                     "artist": "Artist",
                 }
@@ -247,6 +411,38 @@ def test_run_checks_composes_all_checks(monkeypatch):
     )
     monkeypatch.setattr(
         verification, "_self_fetch", lambda base: _fetched(base, status=200)
+    )
+    monkeypatch.setattr(
+        verification, "_intent_logs", lambda: [{"incoming": {}, "ts": time.time()}]
+    )
+    monkeypatch.setattr(
+        verification,
+        "_deployment_state",
+        lambda: {
+            "client_key": config_key(),
+            "tokens": {
+                "access_token": "a",
+                "refresh_token": "r",
+                "expires": time.time() + 3600,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        verification,
+        "_reachability_snapshot",
+        lambda: {
+            "checked_at": time.time(),
+            "checking": False,
+            "checks": [
+                {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+                {"label": "Stream host", "status": "reachable", "message": "ok"},
+                {
+                    "label": "Public audio delivery",
+                    "status": "reachable",
+                    "message": "ok",
+                },
+            ],
+        },
     )
     result = verification.run_checks()
     assert [c["id"] for c in result["checks"]] == [
@@ -257,11 +453,29 @@ def test_run_checks_composes_all_checks(monkeypatch):
         "v4",
         "v5",
         "v6",
+        "v7",
+        "v8",
+        "v9",
+        "v10",
+        "v11",
     ]
-    assert all(c["state"] == "pass" for c in result["checks"])
+    assert all(c["state"] in ("pass", "info") for c in result["checks"])
     assert result["summary"]["kind"] == "good"
-    assert result["summary"]["counts"]["pass"] == 7
+    assert result["summary"]["counts"]["pass"] == 11
+    assert result["summary"]["counts"]["info"] == 1
     assert result["generated_at"]
+    # F: the bundle carries the player inventory (states + availability).
+    assert result["players"] == [
+        {
+            "player_id": "e",
+            "name": "Echo",
+            "state": "playing",
+            "available": True,
+            "powered": True,
+            "title": "Song",
+            "artist": "Artist",
+        }
+    ]
 
 
 def test_run_checks_records_read_failures(monkeypatch):
@@ -305,9 +519,15 @@ def test_status_verify_endpoint(client, monkeypatch):
         "v4",
         "v5",
         "v6",
+        "v7",
+        "v8",
+        "v9",
+        "v10",
+        "v11",
     ]
     assert data["summary"]["kind"] in {"good", "warning", "error", "neutral"}
     assert 'class="ma-row"' in data["checks_html"]
+    assert "players" in data
 
 
 def test_status_page_has_run_checks_widget(client):
@@ -339,6 +559,7 @@ def test_diagnostics_redacts_verification_push_base(client, monkeypatch):
     data = json.loads(body)
     assert "verification" in data
     assert data["verification"]["checks"]
+    assert "players" in data["verification"]
     assert "192.168.1.50" not in body
     assert "<host-" in body
 
@@ -416,6 +637,7 @@ def test_read_channel_state_parses_players_and_setup_keys(monkeypatch):
                 "provider": "alexa",
                 "playback_state": "playing",
                 "available": True,
+                "powered": True,
                 "current_media": {"title": "Song", "artist": "Artist"},
             },
             {
@@ -431,7 +653,8 @@ def test_read_channel_state_parses_players_and_setup_keys(monkeypatch):
                 "name": "Kitchen",
                 "provider": "alexa",
                 "playback_state": "idle",
-                "available": True,
+                "available": False,
+                "powered": False,
                 "current_media": None,
             },
         ]
@@ -449,7 +672,9 @@ def test_read_channel_state_parses_players_and_setup_keys(monkeypatch):
     assert channel["setup_keys"] == ["api_password", "api_url", "api_username"]
     assert [p["player_id"] for p in channel["alexa_players"]] == ["echo-1", "echo-2"]
     assert channel["alexa_players"][0]["state"] == "playing"
+    assert channel["alexa_players"][0]["available"] is True
     assert channel["alexa_players"][0]["title"] == "Song"
     assert channel["alexa_players"][0]["artist"] == "Artist"
     assert channel["alexa_players"][1]["state"] == "idle"
+    assert channel["alexa_players"][1]["available"] is False
     assert channel["alexa_players"][1]["title"] is None
