@@ -82,6 +82,25 @@ def _origin(url):
     return (parts.scheme.lower(), (parts.hostname or "").lower(), port)
 
 
+def _origin_url(url):
+    """scheme://host[:port] form of a URL, or "" when unusable.
+
+    The API is served at the origin root (DispatcherMiddleware mounts it
+    at /ma), so self-fetch targets are always normalized to the origin —
+    any path in the configured value only carries the OAuth callback and
+    must not be probed.
+    """
+    origin = _origin(url)
+    if origin is None:
+        return ""
+    scheme, host, port = origin
+    if ":" in host:  # IPv6 literal from urlsplit needs its brackets back.
+        host = f"[{host}]"
+    default_port = 443 if scheme == "https" else 80
+    netloc = host if port == default_port else f"{host}:{port}"
+    return f"{scheme}://{netloc}"
+
+
 def _check(check_id, title, state, detail):
     return {"id": check_id, "title": title, "state": state, "detail": detail}
 
@@ -343,24 +362,27 @@ def _v2b_push_base(store):
 def _v3_v4_fetch(store):
     push_base = (store.get("push_base") or "").strip()
     skill_host = (get_setting("SKILL_HOSTNAME", "") or "").strip()
-    # Only trust the recorded push address when it shares its origin
-    # (scheme+host+port) with the configured skill hostname: /ma/push-url
-    # records the request-derived host, and the basic-auth credentials must
-    # never be sent to an origin the deployment did not configure.
-    use_push_base = (
-        bool(push_base)
-        and bool(skill_host)
-        and _origin(push_base) == _origin(skill_host)
-    )
-    base = push_base if use_push_base else skill_host
+    # Only trust the recorded push address when BOTH addresses are usable
+    # and share their origin (scheme+host+port): /ma/push-url records the
+    # request-derived host, and the basic-auth credentials must never be
+    # sent to an origin the deployment did not configure. Comparing raw
+    # origins would let two unusable values (None == None) select the
+    # unvalidated push address, so unusable values never match.
+    push_origin = _origin(push_base) if push_base else None
+    skill_origin = _origin(skill_host) if skill_host else None
+    use_push_base = push_origin is not None and push_origin == skill_origin
+    # Probe the normalized origin: the API is served at the origin root
+    # (/ma/latest-url), while any path in SKILL_HOSTNAME only carries the
+    # OAuth callback — and a 404 from that path would be a false pass.
+    base = push_base if use_push_base else _origin_url(skill_host)
     if not base:
         return [
             _check(
                 "v3",
                 _TITLE_ENDPOINT,
                 "unknown",
-                "No SKILL_HOSTNAME configured and no same-origin push "
-                "recorded — no URL to test.",
+                "No usable SKILL_HOSTNAME and no same-origin push recorded"
+                " — no URL to test.",
             ),
             _check("v4", _TITLE_AUTH, "unknown", "Not tested — no endpoint URL."),
         ]
@@ -392,39 +414,40 @@ def _v3_v4_fetch(store):
         "pass",
         f"GET {fetched['url']} answered HTTP {status} (via {via}).",
     )
+    return [v3, _v4_auth_check(status, fetched["auth"])]
+
+
+def _v4_auth_check(status, auth):
+    """Map the self-fetch HTTP status onto the V4 basic-auth check."""
     if status == 401:
-        v4 = _check(
+        return _check(
             "v4",
             _TITLE_AUTH,
             "fail",
             "The endpoint rejected the configured username/password (HTTP 401).",
         )
-    elif status in (200, 404):
-        if not fetched["auth"]:
-            v4 = _check(
-                "v4",
-                _TITLE_AUTH,
-                "unknown",
-                "No APP_USERNAME/APP_PASSWORD are configured — basic auth is "
-                "not enforced, nothing to verify.",
-            )
-        else:
-            note = "no stream stored yet" if status == 404 else "stream stored"
-            v4 = _check(
-                "v4",
-                _TITLE_AUTH,
-                "pass",
-                f"The endpoint accepted the configured credentials "
-                f"({note}, HTTP {status}).",
-            )
-    else:
-        v4 = _check(
+    if status not in (200, 404):
+        return _check(
             "v4",
             _TITLE_AUTH,
             "unknown",
             f"Unexpected HTTP {status} — credentials not verified.",
         )
-    return [v3, v4]
+    if not auth:
+        return _check(
+            "v4",
+            _TITLE_AUTH,
+            "unknown",
+            "No APP_USERNAME/APP_PASSWORD are configured — basic auth is "
+            "not enforced, nothing to verify.",
+        )
+    note = "no stream stored yet" if status == 404 else "stream stored"
+    return _check(
+        "v4",
+        _TITLE_AUTH,
+        "pass",
+        f"The endpoint accepted the configured credentials ({note}, HTTP {status}).",
+    )
 
 
 def _age_label(seconds):

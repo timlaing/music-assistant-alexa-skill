@@ -40,6 +40,7 @@ RECENT_ACTIVITY_EMPTY = '<p class="muted">No recent activity. Speak a command on
 CHECKING_URLS_HTML = '<span class="muted">Checking public URLs…</span>'
 CHECKING_ACCOUNT_HTML = '<span class="muted">Checking account status…</span>'
 CHECKING_MA_API_HTML = '<span class="muted">Checking Music Assistant API…</span>'
+METADATA_ERROR_HTML = '<p class="ma-small ma-error">Error loading metadata: {}</p>'
 CHECKING_ALEXA_API_HTML = '<span class="muted">Checking Alexa API…</span>'
 OPEN_SETUP_BUTTON = (
     " <button onclick=\"window.location='/setup'\" "
@@ -380,9 +381,7 @@ def _metadata_status_html():
 
         return _render_metadata_html(dict(skill_data.get_info()))
     except Exception as e:
-        return (
-            f'<p class="ma-small ma-error">Error loading metadata: {escape(str(e))}</p>'
-        )
+        return METADATA_ERROR_HTML.format(escape(str(e)))
 
 
 def _activity_items():
@@ -523,9 +522,7 @@ def _compute_metadata_html():
 
         return _render_metadata_html(metadata_info)
     except Exception as e:
-        return (
-            f'<p class="ma-small ma-error">Error loading metadata: {escape(str(e))}</p>'
-        )
+        return METADATA_ERROR_HTML.format(escape(str(e)))
 
 
 @status_bp.route("/status/metadata", methods=["GET"])

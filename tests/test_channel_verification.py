@@ -175,14 +175,17 @@ def test_v3_v4_only_trusts_same_origin_push_base(monkeypatch):
     monkeypatch.setattr(verification, "_self_fetch", _recording)
 
     # Cross-origin push_base (scheme+port differ) must not be probed with the
-    # basic-auth credentials — the configured skill hostname is used instead.
+    # basic-auth credentials — the configured skill hostname is used instead,
+    # normalized to its origin: only /ma/latest-url at the origin root is the
+    # API; any path (the default /ma-alexa-skill/ form carries the OAuth
+    # callback) would answer 404 and be a false pass.
     monkeypatch.setattr(
         verification,
         "get_setting",
-        lambda name, default="": "https://ha.example.com/skill/",
+        lambda name, default="": "https://ha.example.com/ma-alexa-skill/",
     )
     v3, _ = verification._v3_v4_fetch(_store())
-    assert seen == ["https://ha.example.com/skill/"]
+    assert seen == ["https://ha.example.com"]
     assert "configured skill hostname" in v3["detail"]
 
     # Same origin (scheme+host+port): the recorded push address is used.
@@ -195,6 +198,17 @@ def test_v3_v4_only_trusts_same_origin_push_base(monkeypatch):
     v3, _ = verification._v3_v4_fetch(_store())
     assert seen == ["http://ha.example.com:5000"]
     assert "address Music Assistant pushed from" in v3["detail"]
+
+    # Unusable on both sides (None == None) must never select the unvalidated
+    # push address — nothing is fetched at all.
+    seen.clear()
+    monkeypatch.setattr(
+        verification, "get_setting", lambda name, default="": "not-a-url"
+    )
+    v3, v4 = verification._v3_v4_fetch(_store(push_base="also-not-a-url"))
+    assert seen == []
+    assert v3["state"] == "unknown"
+    assert v4["state"] == "unknown"
 
     # No SKILL_HOSTNAME at all: nothing is trusted, nothing is fetched.
     seen.clear()
@@ -554,8 +568,10 @@ def test_checks_html_escapes_details_and_maps_pills():
         ]
     }
     html = verification.checks_html(result)
-    assert "ma-ok" in html and "ma-error" in html
-    assert "Passed" in html and "Failed" in html
+    assert "ma-ok" in html
+    assert "ma-error" in html
+    assert "Passed" in html
+    assert "Failed" in html
     assert "&lt;b&gt;safe&lt;/b&gt;" in html
     assert "<b>safe</b>" not in html
 
