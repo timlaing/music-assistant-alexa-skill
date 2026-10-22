@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import platform
 import re
 import shutil
@@ -28,6 +29,7 @@ from skill_deployment import DeploymentError, manager, settings
 from ui_markup import banner, banner_icon, row, timeline
 
 status_bp = Blueprint("status_bp", __name__)
+_log = logging.getLogger(__name__)
 
 TEST_AUDIO_FILE = Path(__file__).resolve().parents[2] / "assets" / "test-tone.mp3"
 
@@ -703,7 +705,10 @@ async def _read_ma_status(server_url, token):
                 include_values=True
             )
         except Exception as exc:
-            providers = {"error": f"{type(exc).__name__}: {exc}"}
+            # Class name only: exception messages must never reach a response
+            # (CWE-209 — py/stack-trace-exposure); full detail goes to the log.
+            _log.exception("MA provider config read failed")
+            providers = {"error": type(exc).__name__}
         else:
             providers = _provider_status(provider_configs)
     return {
@@ -735,7 +740,10 @@ def _ma_status_probe():
     try:
         return asyncio.run(_read_ma_status(server_url, token))
     except Exception as exc:
-        return {"configured": True, "error": f"{type(exc).__name__}: {exc}"}
+        # Class name only: exception messages must never reach a response
+        # (CWE-209 — py/stack-trace-exposure); full detail goes to the log.
+        _log.exception("MA status probe failed")
+        return {"configured": True, "error": type(exc).__name__}
 
 
 # The local part is bounded ({1,64}) so the regex runs in linear time on
@@ -822,7 +830,8 @@ def _verification_section():
 
         return run_checks()
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        _log.exception("verification checks failed to load")
+        return {"error": type(exc).__name__}
 
 
 def _diagnostics_bundle():
@@ -858,9 +867,10 @@ def _diagnostics_bundle():
         deployment, matches, ready = _deployment_facts()
         bundle["deployment"] = {**deployment, "settings_match": matches, "ready": ready}
     except Exception as exc:
-        # Type name only: exception *messages* flowing into a served response
+        # Class name only: exception *messages* flowing into a served response
         # are flagged as information exposure (py/stack-trace-exposure); the
         # class name is untainted and still identifies the failing area.
+        _log.exception("deployment facts unavailable")
         bundle["deployment"] = {
             "error": f"deployment facts unavailable ({type(exc).__name__})"
         }

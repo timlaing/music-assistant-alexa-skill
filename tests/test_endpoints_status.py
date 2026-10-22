@@ -458,7 +458,9 @@ def test_diagnostics_bundle_records_errors_instead_of_failing(client, monkeypatc
     assert data["music_assistant"] == {"configured": False}
     assert "phase" in data["deployment"]
 
-    # A failing MA read becomes an error entry, not a failed download.
+    # A failing MA read becomes an error entry, not a failed download. The
+    # entry carries the exception class name only — exception messages must
+    # not reach served responses (CWE-209); the message goes to the log.
     async def boom(server_url, token):
         raise RuntimeError("MA unreachable")
 
@@ -468,7 +470,7 @@ def test_diagnostics_bundle_records_errors_instead_of_failing(client, monkeypatc
         data = status._diagnostics_bundle()
     assert data["music_assistant"] == {
         "configured": True,
-        "error": "RuntimeError: MA unreachable",
+        "error": "RuntimeError",
     }
 
 
