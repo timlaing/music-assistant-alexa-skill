@@ -34,6 +34,8 @@ TEST_AUDIO_FILE = Path(__file__).resolve().parents[2] / "assets" / "test-tone.mp
 # Repeated display fragments kept as constants.
 TESTING_ENABLED = "testing enabled"
 TESTING_DISABLED = "testing not enabled"
+MA_DISPLAY_NAME = "Music Assistant"
+AMAZON_DISPLAY_NAME = "Amazon account"
 RECENT_ACTIVITY_EMPTY = '<p class="muted">No recent activity. Speak a command on your Echo to get started.</p>'
 CHECKING_URLS_HTML = '<span class="muted">Checking public URLs…</span>'
 CHECKING_ACCOUNT_HTML = '<span class="muted">Checking account status…</span>'
@@ -122,7 +124,7 @@ def _skill_row_html():
         deployment, matches, ready = _deployment_facts()
     except Exception as e:
         return row(
-            "Music Assistant",
+            MA_DISPLAY_NAME,
             f"Deployment status unavailable: {escape(str(e))}",
             "Unknown",
             "warning",
@@ -132,7 +134,7 @@ def _skill_row_html():
     # verified deployment (which is summarised under the account row).
     if not deployment.get("connected") and not deployment.get("skill_id"):
         return row(
-            "Music Assistant",
+            MA_DISPLAY_NAME,
             "The personal skill has not been linked to Amazon yet.",
             "Not deployed",
             "warning",
@@ -140,21 +142,21 @@ def _skill_row_html():
     locale = (get_setting("LOCALE", "") or "en-US").strip() or "en-US"
     if ready:
         return row(
-            "Music Assistant",
+            MA_DISPLAY_NAME,
             f"Development skill · {escape(LOCALE_NAMES.get(locale, locale))}",
             "Deployed",
             "success",
         )
     if deployment.get("phase") == "complete" and not matches:
         return row(
-            "Music Assistant",
+            MA_DISPLAY_NAME,
             "Settings changed since the last deployment.",
             "Out of date",
             "warning",
         )
     message = str(deployment.get("message") or "Deployment in progress.")
     label = "Deploying" if deployment.get("phase") == "running" else "Not deployed"
-    return row("Music Assistant", escape(message), label, "warning")
+    return row(MA_DISPLAY_NAME, escape(message), label, "warning")
 
 
 def _ask_testing_enabled(sid):
@@ -313,33 +315,36 @@ def _skill_ask_html():
         deployment, _matches, _ready = _deployment_facts()
         if deployment.get("connected"):
             account = row(
-                "Amazon account", "Personal developer account.", "Connected", "success"
+                AMAZON_DISPLAY_NAME,
+                "Personal developer account.",
+                "Connected",
+                "success",
             )
         elif shutil.which("ask") and skill_host:
             if has_functional_cli_config(profile="default"):
                 account = row(
-                    "Amazon account",
+                    AMAZON_DISPLAY_NAME,
                     "Personal developer account.",
                     "Connected",
                     "success",
                 )
             else:
                 account = row(
-                    "Amazon account",
+                    AMAZON_DISPLAY_NAME,
                     "ASK CLI credentials are not configured for profile default.",
                     "Not connected",
                     "warning",
                 )
         elif not shutil.which("ask"):
             account = row(
-                "Amazon account",
+                AMAZON_DISPLAY_NAME,
                 "ask CLI not available in container",
                 "Not available",
                 "warning",
             )
         else:
             account = row(
-                "Amazon account",
+                AMAZON_DISPLAY_NAME,
                 "SKILL_HOSTNAME not configured",
                 "Not configured",
                 "warning",
@@ -353,7 +358,10 @@ def _skill_ask_html():
         )
     except Exception as e:
         return row(
-            "Amazon account", f"ASK check error: {escape(str(e))}", "Unknown", "warning"
+            AMAZON_DISPLAY_NAME,
+            f"ASK check error: {escape(str(e))}",
+            "Unknown",
+            "warning",
         )
 
 
@@ -733,7 +741,11 @@ def _ma_status_probe():
         return {"configured": True, "error": f"{type(exc).__name__}: {exc}"}
 
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# The local part is bounded ({1,64}) so the regex runs in linear time on
+# adversarial inputs (long '%' runs) — CodeQL flags the unbounded form as
+# polynomial (ReDoS). Match semantics are otherwise identical to the old
+# pattern.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _HOST_RE = re.compile(

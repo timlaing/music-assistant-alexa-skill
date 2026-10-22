@@ -13,13 +13,15 @@ from public_urls import public_base, rewrite_url
 from shared_store import get_ma
 from ui_markup import row as markup_row
 
+_AUDIO_CHECK = "Public audio delivery"
+
 
 def targets():
     stream = get_setting("MA_HOSTNAME", "").strip()
     skill = get_setting("SKILL_HOSTNAME", "").strip()
     result = [("Skill endpoint", skill, "skill"), ("Stream host", stream, "host")]
     if skill:
-        result.append(("Public audio delivery", skill, "testaudio"))
+        result.append((_AUDIO_CHECK, skill, "testaudio"))
     latest = get_ma() or {}
     if latest.get("url"):
         try:
@@ -185,7 +187,7 @@ def snapshot():
 
 
 # Approved row titles (the Connectivity panel renames one probe label).
-_ROW_TITLE = {"Public audio delivery": "Audio delivery"}
+_ROW_TITLE = {_AUDIO_CHECK: "Audio delivery"}
 
 # Probe status -> (pill label, pill kind).
 _PILL = {
@@ -257,7 +259,7 @@ def summary(result):
     """Readiness banner state derived from the reachability checks."""
     checks = {check["label"]: check["status"] for check in result["checks"]}
     skill = checks.get("Skill endpoint")
-    audio = checks.get("Public audio delivery")
+    audio = checks.get(_AUDIO_CHECK)
     if result["checking"] and not result["checked_at"]:
         return {
             "kind": "neutral",

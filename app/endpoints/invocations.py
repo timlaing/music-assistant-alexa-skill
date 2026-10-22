@@ -180,7 +180,7 @@ def _render_record(entry_id, entry, detail_id):
     )
 
 
-def _render_detail(entry_id, entry, detail_id):
+def _render_detail(entry, detail_id):
     """Shared expandable payload/response block for one invocation.
 
     Hidden by default; the row/card Details button toggles it open. Renders the
@@ -211,7 +211,7 @@ def _invocations_body(intent_logs):
         detail_id = f"invocation-detail-{entry_id}"
         rows.append(_render_row(entry_id, entry, detail_id))
         cards.append(_render_record(entry_id, entry, detail_id))
-        details.append(_render_detail(entry_id, entry, detail_id))
+        details.append(_render_detail(entry, detail_id))
     toolbar = (
         f"<div class='ma-toolbar'><span class='ma-muted'>"
         f"{len(numbered)} invocations logged</span></div>"

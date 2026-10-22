@@ -53,6 +53,34 @@ _PILL = {
     "info": ("Info", "neutral"),
 }
 
+# Check titles — one definition each; every state branch of a check shares
+# its title.
+_TITLE_PROVIDER = "Alexa provider"
+_TITLE_SETUP = "Provider setup keys"
+_TITLE_ENDPOINT = "Endpoint reachable"
+_TITLE_AUTH = "Basic auth"
+_TITLE_FRESHNESS = "Push freshness"
+_TITLE_PLAYING = "Now playing"
+_TITLE_INVOCATIONS = "Skill invocations"
+_TITLE_STREAM = "Stream host"
+_TITLE_PLAYERS = "Alexa players"
+_TITLE_AMAZON = "Amazon account link"
+_TITLE_REACH = "Public reachability"
+
+
+def _origin(url):
+    """Normalized (scheme, host, port) of a URL, or None when unusable."""
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parts.scheme.lower() == "https" else 80
+    return (parts.scheme.lower(), (parts.hostname or "").lower(), port)
+
 
 def _check(check_id, title, state, detail):
     return {"id": check_id, "title": title, "state": state, "detail": detail}
@@ -73,6 +101,61 @@ def _last_error(cfg):
     return str(getattr(error, "message", None) or error)
 
 
+async def _read_providers(client):
+    """Provider configs plus a readable error string (or None)."""
+    try:
+        configs = await client.config.get_provider_configs(include_values=False)
+        return configs, None
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+
+
+async def _read_setup_keys(client, alexa_cfg):
+    """(keys, error) for V2a — key PRESENCE only; values never leave here.
+
+    The provider instance ID can differ from its domain, so the lookup uses
+    the discovered config's ID; with no alexa config at all the lookup is
+    skipped (V1 already reports that).
+    """
+    if alexa_cfg is None:
+        return None, None  # setup_keys None → V2a "not read", V1 fails instead
+    instance_id = getattr(alexa_cfg, "instance_id", None) or "alexa"
+    try:
+        setup = await client.config.get_provider_config_value(
+            instance_id=instance_id, key="setup_data", default=None
+        )
+    except Exception as exc:
+        if "not found" in str(exc):
+            return [], None  # provider setup has never run
+        return None, f"{type(exc).__name__}: {exc}"
+    if isinstance(setup, dict):
+        return sorted(setup), None
+    if setup is None:
+        return [], None  # no setup data recorded at all
+    return None, f"unexpected setup_data type {type(setup).__name__}"
+
+
+def _read_alexa_players(players_raw):
+    """Shape raw players/all dicts into the store's player records (V6/V9)."""
+    players = []
+    for item in players_raw:
+        if item.get("provider") != "alexa":
+            continue
+        media = item.get("current_media")
+        players.append(
+            {
+                "player_id": item.get("player_id"),
+                "name": item.get("name"),
+                "state": str(item.get("playback_state") or ""),
+                "available": bool(item.get("available")),
+                "powered": item.get("powered"),
+                "title": media.get("title") if isinstance(media, dict) else None,
+                "artist": media.get("artist") if isinstance(media, dict) else None,
+            }
+        )
+    return players
+
+
 async def _read_channel_state(server_url, token):
     """One MA connection for V1 (health), V2a (setup keys) and V6 (players)."""
     import aiohttp
@@ -87,59 +170,12 @@ async def _read_channel_state(server_url, token):
     ):
         # server_info is a property set by connect(), not a coroutine.
         info = client.server_info
-        try:
-            configs = await client.config.get_provider_configs(include_values=False)
-            providers_error = None
-        except Exception as exc:
-            configs, providers_error = [], f"{type(exc).__name__}: {exc}"
+        configs, providers_error = await _read_providers(client)
         alexa_cfg = next(
             (cfg for cfg in configs if getattr(cfg, "domain", None) == "alexa"), None
         )
-
-        # V2a: key presence only — setup_data values are encrypted at rest and
-        # never carried out of this function. The provider instance ID can
-        # differ from its domain, so use the discovered config's ID; with no
-        # alexa config at all, skip the lookup (V1 already reports that).
-        setup_keys = None
-        setup_error = None
-        if alexa_cfg is None:
-            pass  # setup_keys stays None → V2a "not read", V1 fails instead
-        else:
-            instance_id = getattr(alexa_cfg, "instance_id", None) or "alexa"
-            try:
-                setup = await client.config.get_provider_config_value(
-                    instance_id=instance_id, key="setup_data", default=None
-                )
-            except Exception as exc:
-                if "not found" in str(exc):
-                    setup_keys = []  # provider setup has never run
-                else:
-                    setup_error = f"{type(exc).__name__}: {exc}"
-            else:
-                if isinstance(setup, dict):
-                    setup_keys = sorted(setup)
-                elif setup is None:
-                    setup_keys = []  # no setup data recorded at all
-                else:
-                    setup_error = f"unexpected setup_data type {type(setup).__name__}"
-
-        players_raw = await client.send_command("players/all")
-        players = []
-        for item in players_raw:
-            if item.get("provider") != "alexa":
-                continue
-            media = item.get("current_media")
-            players.append(
-                {
-                    "player_id": item.get("player_id"),
-                    "name": item.get("name"),
-                    "state": str(item.get("playback_state") or ""),
-                    "available": bool(item.get("available")),
-                    "powered": item.get("powered"),
-                    "title": media.get("title") if isinstance(media, dict) else None,
-                    "artist": media.get("artist") if isinstance(media, dict) else None,
-                }
-            )
+        setup_keys, setup_error = await _read_setup_keys(client, alexa_cfg)
+        players = _read_alexa_players(await client.send_command("players/all"))
     return {
         "configured": True,
         "server_version": getattr(info, "server_version", None),
@@ -204,21 +240,21 @@ def _v1_provider(channel):
     if not channel.get("configured"):
         return _check(
             "v1",
-            "Alexa provider",
+            _TITLE_PROVIDER,
             "unknown",
             "Music Assistant API is not configured (MA_API_URL / MA_API_TOKEN).",
         )
     if channel.get("error"):
         return _check(
             "v1",
-            "Alexa provider",
+            _TITLE_PROVIDER,
             "fail",
             f"Music Assistant is unreachable: {channel['error']}",
         )
     if channel.get("providers_error"):
         return _check(
             "v1",
-            "Alexa provider",
+            _TITLE_PROVIDER,
             "fail",
             f"Provider list unreadable: {channel['providers_error']}",
         )
@@ -226,64 +262,60 @@ def _v1_provider(channel):
     if not alexa:
         return _check(
             "v1",
-            "Alexa provider",
+            _TITLE_PROVIDER,
             "fail",
             "The alexa provider is not configured in Music Assistant.",
         )
     if alexa.get("last_error"):
         return _check(
-            "v1", "Alexa provider", "fail", f"Provider error: {alexa['last_error']}"
+            "v1", _TITLE_PROVIDER, "fail", f"Provider error: {alexa['last_error']}"
         )
     if not alexa.get("enabled"):
-        return _check("v1", "Alexa provider", "fail", "The alexa provider is disabled.")
+        return _check("v1", _TITLE_PROVIDER, "fail", "The alexa provider is disabled.")
     if (alexa.get("status") or "").lower() != "loaded":
         return _check(
             "v1",
-            "Alexa provider",
+            _TITLE_PROVIDER,
             "fail",
             f"Provider status is '{alexa.get('status')}' (expected 'loaded').",
         )
-    return _check("v1", "Alexa provider", "pass", "Enabled, loaded, no errors.")
+    return _check("v1", _TITLE_PROVIDER, "pass", "Enabled, loaded, no errors.")
 
 
 def _v2a_setup_keys(channel):
     if not channel.get("configured"):
-        return _check(
-            "v2a", "Provider setup keys", "unknown", "Not tested — MA not configured."
-        )
+        return _check("v2a", _TITLE_SETUP, "unknown", "Not tested — MA not configured.")
     if channel.get("error"):
         return _check(
             "v2a",
-            "Provider setup keys",
+            _TITLE_SETUP,
             "unknown",
             "Not tested — Music Assistant is unreachable (see provider health).",
         )
     if channel.get("setup_error"):
         return _check(
             "v2a",
-            "Provider setup keys",
+            _TITLE_SETUP,
             "unknown",
             f"setup_data could not be read: {channel['setup_error']}",
         )
     keys = channel.get("setup_keys")
     if keys is None:
-        return _check(
-            "v2a", "Provider setup keys", "unknown", "setup_data was not read."
-        )
+        return _check("v2a", _TITLE_SETUP, "unknown", "setup_data was not read.")
     missing = [
         key for key in ("api_url", "api_username", "api_password") if key not in keys
     ]
     if missing:
         return _check(
             "v2a",
-            "Provider setup keys",
+            _TITLE_SETUP,
             "fail",
             f"setup_data is missing {', '.join(missing)} — re-run the provider "
             "setup in Music Assistant.",
         )
     return _check(
         "v2a",
-        "Provider setup keys",
+        _TITLE_SETUP,
         "pass",
         "api_url, api_username and api_password are set "
         "(values are encrypted in Music Assistant).",
@@ -311,20 +343,30 @@ def _v2b_push_base(store):
 def _v3_v4_fetch(store):
     push_base = (store.get("push_base") or "").strip()
     skill_host = (get_setting("SKILL_HOSTNAME", "") or "").strip()
-    base = push_base or skill_host
+    # Only trust the recorded push address when it shares its origin
+    # (scheme+host+port) with the configured skill hostname: /ma/push-url
+    # records the request-derived host, and the basic-auth credentials must
+    # never be sent to an origin the deployment did not configure.
+    use_push_base = (
+        bool(push_base)
+        and bool(skill_host)
+        and _origin(push_base) == _origin(skill_host)
+    )
+    base = push_base if use_push_base else skill_host
     if not base:
         return [
             _check(
                 "v3",
-                "Endpoint reachable",
+                _TITLE_ENDPOINT,
                 "unknown",
-                "No push recorded and no SKILL_HOSTNAME configured — no URL to test.",
+                "No SKILL_HOSTNAME configured and no same-origin push "
+                "recorded — no URL to test.",
             ),
-            _check("v4", "Basic auth", "unknown", "Not tested — no endpoint URL."),
+            _check("v4", _TITLE_AUTH, "unknown", "Not tested — no endpoint URL."),
         ]
     via = (
         "the address Music Assistant pushed from"
-        if push_base
+        if use_push_base
         else "the configured skill hostname"
     )
     fetched = _self_fetch(base)
@@ -332,13 +374,13 @@ def _v3_v4_fetch(store):
         return [
             _check(
                 "v3",
-                "Endpoint reachable",
+                _TITLE_ENDPOINT,
                 "fail",
                 f"GET {fetched['url']} failed via {via}: {fetched['error']}",
             ),
             _check(
                 "v4",
-                "Basic auth",
+                _TITLE_AUTH,
                 "unknown",
                 "Not tested — the endpoint was unreachable.",
             ),
@@ -346,14 +388,14 @@ def _v3_v4_fetch(store):
     status = fetched["status"]
     v3 = _check(
         "v3",
-        "Endpoint reachable",
+        _TITLE_ENDPOINT,
         "pass",
         f"GET {fetched['url']} answered HTTP {status} (via {via}).",
     )
     if status == 401:
         v4 = _check(
             "v4",
-            "Basic auth",
+            _TITLE_AUTH,
             "fail",
             "The endpoint rejected the configured username/password (HTTP 401).",
         )
@@ -361,7 +403,7 @@ def _v3_v4_fetch(store):
         if not fetched["auth"]:
             v4 = _check(
                 "v4",
-                "Basic auth",
+                _TITLE_AUTH,
                 "unknown",
                 "No APP_USERNAME/APP_PASSWORD are configured — basic auth is "
                 "not enforced, nothing to verify.",
@@ -370,7 +412,7 @@ def _v3_v4_fetch(store):
             note = "no stream stored yet" if status == 404 else "stream stored"
             v4 = _check(
                 "v4",
-                "Basic auth",
+                _TITLE_AUTH,
                 "pass",
                 f"The endpoint accepted the configured credentials "
                 f"({note}, HTTP {status}).",
@@ -378,7 +420,7 @@ def _v3_v4_fetch(store):
     else:
         v4 = _check(
             "v4",
-            "Basic auth",
+            _TITLE_AUTH,
             "unknown",
             f"Unexpected HTTP {status} — credentials not verified.",
         )
@@ -399,23 +441,23 @@ def _v5_freshness(store):
     timestamp = store.get("timestamp")
     if not timestamp:
         return _check(
-            "v5", "Push freshness", "unknown", "No stream push has been stored yet."
+            "v5", _TITLE_FRESHNESS, "unknown", "No stream push has been stored yet."
         )
     try:
         age = max(0.0, time.time() - float(timestamp))
     except (TypeError, ValueError):
         return _check(
             "v5",
-            "Push freshness",
+            _TITLE_FRESHNESS,
             "unknown",
             "The stored push timestamp is unreadable.",
         )
     label = _age_label(age)
     if age <= FRESH_PUSH_SECONDS:
-        return _check("v5", "Push freshness", "pass", f"The last push arrived {label}.")
+        return _check("v5", _TITLE_FRESHNESS, "pass", f"The last push arrived {label}.")
     return _check(
         "v5",
-        "Push freshness",
+        _TITLE_FRESHNESS,
         "warning",
         f"The last push arrived {label} — either nothing has played since, "
         "or pushes stopped.",
@@ -426,20 +468,20 @@ def _v6_now_playing(channel, store):
     if not channel.get("configured") or channel.get("error"):
         return _check(
             "v6",
-            "Now playing",
+            _TITLE_PLAYING,
             "unknown",
             "Not tested — Music Assistant state is unavailable.",
         )
     players = channel.get("alexa_players") or []
     if not players:
         return _check(
-            "v6", "Now playing", "fail", "Music Assistant reports no Alexa players."
+            "v6", _TITLE_PLAYING, "fail", "Music Assistant reports no Alexa players."
         )
     playing = [player for player in players if player.get("state") == "playing"]
     if not playing:
         return _check(
             "v6",
-            "Now playing",
+            _TITLE_PLAYING,
             "unknown",
             "Nothing is playing on an Alexa player right now — nothing to compare.",
         )
@@ -447,7 +489,7 @@ def _v6_now_playing(channel, store):
     if not store_title:
         return _check(
             "v6",
-            "Now playing",
+            _TITLE_PLAYING,
             "unknown",
             "Alexa is playing but the last push carried no title to compare.",
         )
@@ -456,14 +498,14 @@ def _v6_now_playing(channel, store):
             where = player.get("name") or player.get("player_id")
             return _check(
                 "v6",
-                "Now playing",
+                _TITLE_PLAYING,
                 "pass",
                 f"'{player.get('title')}' on {where} matches the last push.",
             )
     titles = ", ".join(f"'{p.get('title') or 'untitled'}'" for p in playing)
     return _check(
         "v6",
-        "Now playing",
+        _TITLE_PLAYING,
         "fail",
         f"Music Assistant is playing {titles} but the last push was "
         f"'{store.get('title')}'.",
@@ -496,7 +538,7 @@ def _v7_invocations(logs):
     if not logs:
         return _check(
             "v7",
-            "Skill invocations",
+            _TITLE_INVOCATIONS,
             "unknown",
             "No requests have reached the skill yet — talk to Alexa or play "
             "something to record one.",
@@ -507,7 +549,7 @@ def _v7_invocations(logs):
     if not usable:
         return _check(
             "v7",
-            "Skill invocations",
+            _TITLE_INVOCATIONS,
             "unknown",
             "The last invocation has no usable timestamp.",
         )
@@ -518,11 +560,11 @@ def _v7_invocations(logs):
     label = _age_label(age)
     if age <= FRESH_INTENT_SECONDS:
         return _check(
-            "v7", "Skill invocations", "pass", f"Last request ({name}) arrived {label}."
+            "v7", _TITLE_INVOCATIONS, "pass", f"Last request ({name}) arrived {label}."
         )
     return _check(
         "v7",
-        "Skill invocations",
+        _TITLE_INVOCATIONS,
         "warning",
         f"Last request ({name}) arrived {label} — nothing has reached the skill "
         "recently.",
@@ -532,7 +574,7 @@ def _v7_invocations(logs):
 def _v8_stream_host(store):
     stream = (store.get("streamUrl") or "").strip()
     if not stream:
-        return _check("v8", "Stream host", "unknown", "No stream has been stored yet.")
+        return _check("v8", _TITLE_STREAM, "unknown", "No stream has been stored yet.")
     try:
         source = urlsplit(stream)
     except ValueError:
@@ -542,7 +584,7 @@ def _v8_stream_host(store):
     if not base:
         return _check(
             "v8",
-            "Stream host",
+            _TITLE_STREAM,
             "warning",
             "MA_HOSTNAME is not configured — pushes are stored without host "
             f"validation (stored host: {stored_host or 'unknown'}).",
@@ -552,20 +594,20 @@ def _v8_stream_host(store):
     except ValueError:
         return _check(
             "v8",
-            "Stream host",
+            _TITLE_STREAM,
             "unknown",
             f"The configured MA hostname is not a valid public URL ({base}).",
         )
     if stored_host and stored_host == base_host:
         return _check(
             "v8",
-            "Stream host",
+            _TITLE_STREAM,
             "pass",
             f"Stored stream host {stored_host} matches the configured MA hostname.",
         )
     return _check(
         "v8",
-        "Stream host",
+        _TITLE_STREAM,
         "fail",
         f"Stored stream host {stored_host or 'unknown'} does not match the "
         f"configured MA hostname ({base_host}) — the stored stream may not be "
@@ -577,7 +619,7 @@ def _v9_players(channel):
     if not channel.get("configured") or channel.get("error"):
         return _check(
             "v9",
-            "Alexa players",
+            _TITLE_PLAYERS,
             "unknown",
             "Not available — Music Assistant state is unavailable.",
         )
@@ -585,7 +627,7 @@ def _v9_players(channel):
     if not players:
         return _check(
             "v9",
-            "Alexa players",
+            _TITLE_PLAYERS,
             "fail",
             "No Alexa players are registered in Music Assistant.",
         )
@@ -606,7 +648,7 @@ def _v9_players(channel):
     detail = f"{len(players)} registered ({state_summary}): {shown}."
     if unavailable:
         detail += f" {unavailable} unavailable."
-    return _check("v9", "Alexa players", "info", detail)
+    return _check("v9", _TITLE_PLAYERS, "info", detail)
 
 
 def _v10_alexa_link(state):
@@ -614,7 +656,7 @@ def _v10_alexa_link(state):
     if not isinstance(state, dict):
         return _check(
             "v10",
-            "Amazon account link",
+            _TITLE_AMAZON,
             "unknown",
             "No deployment state yet — connect Amazon in Setup.",
         )
@@ -623,14 +665,14 @@ def _v10_alexa_link(state):
         if isinstance(tokens, dict) and tokens.get("access_token"):
             return _check(
                 "v10",
-                "Amazon account link",
+                _TITLE_AMAZON,
                 "warning",
                 "An access token is stored but no refresh token — it cannot "
                 "renew; reconnect in Setup.",
             )
         return _check(
             "v10",
-            "Amazon account link",
+            _TITLE_AMAZON,
             "unknown",
             "Amazon is not connected yet — finish the Setup connect step.",
         )
@@ -641,7 +683,7 @@ def _v10_alexa_link(state):
     except Exception as exc:
         return _check(
             "v10",
-            "Amazon account link",
+            _TITLE_AMAZON,
             "unknown",
             f"OAuth configuration unreadable: {type(exc).__name__}: {exc}",
         )
@@ -649,7 +691,7 @@ def _v10_alexa_link(state):
     if stored_key and current_key and stored_key != current_key:
         return _check(
             "v10",
-            "Amazon account link",
+            _TITLE_AMAZON,
             "warning",
             "The stored Amazon link belongs to a different Login with Amazon "
             "client — reconnect in Setup.",
@@ -659,14 +701,14 @@ def _v10_alexa_link(state):
         hours = max(1, int((expires - time.time()) / 3600))
         return _check(
             "v10",
-            "Amazon account link",
+            _TITLE_AMAZON,
             "pass",
             f"Amazon connected; access token valid for about {hours} more hours "
             "(refresh token stored — renewal not revalidated by this check).",
         )
     return _check(
         "v10",
-        "Amazon account link",
+        _TITLE_AMAZON,
         "pass",
         "Amazon connected; refresh token stored (renewal is not revalidated "
         "by this check — a revoked token fails only when it is next used).",
@@ -676,20 +718,18 @@ def _v10_alexa_link(state):
 def _v11_reachability(snap):
     """Fold the cached add-on reachability results into one check."""
     if not isinstance(snap, dict):
-        return _check(
-            "v11", "Public reachability", "unknown", "Reachability data unavailable."
-        )
+        return _check("v11", _TITLE_REACH, "unknown", "Reachability data unavailable.")
     if not snap.get("checks"):
         if snap.get("checking"):
             return _check(
                 "v11",
-                "Public reachability",
+                _TITLE_REACH,
                 "unknown",
                 "Reachability checks are still running.",
             )
         return _check(
             "v11",
-            "Public reachability",
+            _TITLE_REACH,
             "unknown",
             "No public URLs are configured — nothing to check.",
         )
@@ -701,7 +741,7 @@ def _v11_reachability(snap):
     )
     return _check(
         "v11",
-        "Public reachability",
+        _TITLE_REACH,
         kind,
         f"{result.get('title')} — {result.get('description')}",
     )

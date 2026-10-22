@@ -12,6 +12,8 @@ from endpoints import status
 
 AUTH = {"Authorization": "Basic dGVzdC11c2VyOnRlc3QtcGFzc3dvcmQ="}
 
+CHECK_IDS = ["v1", "v2a", "v2b", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+
 
 def _channel(**overrides):
     channel = {
@@ -130,14 +132,16 @@ def test_v3_v4_reachable_and_auth(monkeypatch):
         verification, "_self_fetch", lambda base: _fetched(base, status=200)
     )
     v3, v4 = verification._v3_v4_fetch(_store())
-    assert (v3["state"], v4["state"]) == ("pass", "pass")
+    assert v3["state"] == "pass"
+    assert v4["state"] == "pass"
 
     # 404: reachable and authenticated, nothing stored yet
     monkeypatch.setattr(
         verification, "_self_fetch", lambda base: _fetched(base, status=404)
     )
     v3, v4 = verification._v3_v4_fetch(_store())
-    assert (v3["state"], v4["state"]) == ("pass", "pass")
+    assert v3["state"] == "pass"
+    assert v4["state"] == "pass"
     assert "404" in v4["detail"]
 
     # 401: reachable but credentials rejected
@@ -145,7 +149,8 @@ def test_v3_v4_reachable_and_auth(monkeypatch):
         verification, "_self_fetch", lambda base: _fetched(base, status=401)
     )
     v3, v4 = verification._v3_v4_fetch(_store())
-    assert (v3["state"], v4["state"]) == ("pass", "fail")
+    assert v3["state"] == "pass"
+    assert v4["state"] == "fail"
 
     # transport failure: unreachable, auth cannot be judged
     monkeypatch.setattr(
@@ -154,9 +159,50 @@ def test_v3_v4_reachable_and_auth(monkeypatch):
         lambda base: _fetched(base, error="ConnectTimeout: nope"),
     )
     v3, v4 = verification._v3_v4_fetch(_store())
-    assert (v3["state"], v4["state"]) == ("fail", "unknown")
-    failed_url = f"{_store()['push_base'].rstrip('/')}/ma/latest-url"
-    assert failed_url in v3["detail"] or "ConnectTimeout" in v3["detail"]
+    assert v3["state"] == "fail"
+    assert v4["state"] == "unknown"
+    assert "failed via" in v3["detail"]  # records which origin was probed
+    assert "ConnectTimeout: nope" in v3["detail"]
+
+
+def test_v3_v4_only_trusts_same_origin_push_base(monkeypatch):
+    seen = []
+
+    def _recording(base):
+        seen.append(base)
+        return _fetched(base, status=200)
+
+    monkeypatch.setattr(verification, "_self_fetch", _recording)
+
+    # Cross-origin push_base (scheme+port differ) must not be probed with the
+    # basic-auth credentials — the configured skill hostname is used instead.
+    monkeypatch.setattr(
+        verification,
+        "get_setting",
+        lambda name, default="": "https://ha.example.com/skill/",
+    )
+    v3, _ = verification._v3_v4_fetch(_store())
+    assert seen == ["https://ha.example.com/skill/"]
+    assert "configured skill hostname" in v3["detail"]
+
+    # Same origin (scheme+host+port): the recorded push address is used.
+    seen.clear()
+    monkeypatch.setattr(
+        verification,
+        "get_setting",
+        lambda name, default="": "http://ha.example.com:5000/skill/",
+    )
+    v3, _ = verification._v3_v4_fetch(_store())
+    assert seen == ["http://ha.example.com:5000"]
+    assert "address Music Assistant pushed from" in v3["detail"]
+
+    # No SKILL_HOSTNAME at all: nothing is trusted, nothing is fetched.
+    seen.clear()
+    monkeypatch.setattr(verification, "get_setting", lambda name, default="": "")
+    v3, v4 = verification._v3_v4_fetch(_store())
+    assert seen == []
+    assert v3["state"] == "unknown"
+    assert v4["state"] == "unknown"
 
 
 def test_v3_v4_no_credentials_and_no_target(monkeypatch):
@@ -170,7 +216,8 @@ def test_v3_v4_no_credentials_and_no_target(monkeypatch):
     # Nothing recorded and no SKILL_HOSTNAME: nothing to fetch at all
     monkeypatch.setattr(verification, "get_setting", lambda name, default="": default)
     v3, v4 = verification._v3_v4_fetch({})
-    assert (v3["state"], v4["state"]) == ("unknown", "unknown")
+    assert v3["state"] == "unknown"
+    assert v4["state"] == "unknown"
 
 
 # --- V5: freshness ---------------------------------------------------------
@@ -521,20 +568,7 @@ def test_status_verify_endpoint(client, monkeypatch):
     response = client.get("/status/verify", headers=AUTH)
     assert response.status_code == 200
     data = response.get_json()
-    assert [c["id"] for c in data["checks"]] == [
-        "v1",
-        "v2a",
-        "v2b",
-        "v3",
-        "v4",
-        "v5",
-        "v6",
-        "v7",
-        "v8",
-        "v9",
-        "v10",
-        "v11",
-    ]
+    assert [c["id"] for c in data["checks"]] == CHECK_IDS
     # The fixture has no alexa players (v6+v9 fail) and the conftest
     # self-fetch stub blocks v3 — pin the exact outcome so a silent
     # all-pass regression cannot slip through.

@@ -37,9 +37,9 @@
 <div class="ma-editors">
   <section class="ma-panel">
     <div class="ma-panelhead"><h2>Request payload</h2></div>
-    <p class="ma-small ma-muted">Editable JSON sent with this test.</p>
+    <label class="ma-small ma-muted" for="payload">Editable JSON sent with this test.</label>
     <p class="ma-small ma-error" id="payload-error" hidden></p>
-    <textarea id="payload" class="ma-editor" aria-label="Request JSON" spellcheck="false">{
+    <textarea id="payload" class="ma-editor" spellcheck="false">{
   "version": "1.0",
   "request": {
     "type": "IntentRequest",
@@ -73,9 +73,12 @@
     document.querySelectorAll('input[name="target"]').forEach((radio)=>{
       radio.addEventListener('change', ()=>{
         const st = document.getElementById('target-status');
-        if(st) st.textContent = radio.value === 'local' && radio.checked
-          ? 'Local service selected'
-          : (radio.checked ? 'Public endpoint selected' : st.textContent);
+        if (!st) return;
+        if (radio.checked && radio.value === 'local') {
+          st.textContent = 'Local service selected';
+        } else if (radio.checked) {
+          st.textContent = 'Public endpoint selected';
+        }
       });
     });
     async function loadIntents(){
