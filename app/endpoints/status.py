@@ -126,9 +126,11 @@ def _skill_row_html():
     try:
         deployment, matches, ready = _deployment_facts()
     except Exception as e:
+        # Class name only (CWE-209); full detail goes to the log.
+        _log.exception("deployment facts unavailable (skill row)")
         return row(
             MA_DISPLAY_NAME,
-            f"Deployment status unavailable: {escape(str(e))}",
+            f"Deployment status unavailable: {type(e).__name__}",
             "Unknown",
             "warning",
         )
@@ -360,9 +362,11 @@ def _skill_ask_html():
             f"{summary_fragment}</div>"
         )
     except Exception as e:
+        # Class name only (CWE-209); full detail goes to the log.
+        _log.exception("ASK deployment summary failed")
         return row(
             AMAZON_DISPLAY_NAME,
-            f"ASK check error: {escape(str(e))}",
+            f"ASK check error: {type(e).__name__}",
             "Unknown",
             "warning",
         )
@@ -383,7 +387,8 @@ def _metadata_status_html():
 
         return _render_metadata_html(dict(skill_data.get_info()))
     except Exception as e:
-        return METADATA_ERROR_HTML.format(escape(str(e)))
+        _log.exception("metadata status read failed")
+        return METADATA_ERROR_HTML.format(escape(type(e).__name__))
 
 
 def _activity_items():
@@ -524,7 +529,8 @@ def _compute_metadata_html():
 
         return _render_metadata_html(metadata_info)
     except Exception as e:
-        return METADATA_ERROR_HTML.format(escape(str(e)))
+        _log.exception("metadata computation failed")
+        return METADATA_ERROR_HTML.format(escape(type(e).__name__))
 
 
 @status_bp.route("/status/metadata", methods=["GET"])

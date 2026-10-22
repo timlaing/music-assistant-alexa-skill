@@ -262,14 +262,17 @@ def test_skill_ask_html_branches(client, monkeypatch):
     with app.test_request_context("/status"):
         assert "SKILL_HOSTNAME not configured" in status._skill_ask_html()
 
-    # Any exception becomes a muted error fragment.
+    # Any exception becomes a muted error fragment carrying the exception
+    # class name only — messages must not reach rendered responses (CWE-209);
+    # the full traceback goes to the server log instead.
     def boom():
         raise RuntimeError("kaput")
 
     monkeypatch.setattr(status, "manager", boom)
     with app.test_request_context("/status"):
         assert "ASK check error" in status._skill_ask_html()
-        assert "kaput" in status._skill_ask_html()
+        assert "RuntimeError" in status._skill_ask_html()
+        assert "kaput" not in status._skill_ask_html()
 
 
 def test_render_metadata_html_branches(client):
