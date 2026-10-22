@@ -858,7 +858,12 @@ def _diagnostics_bundle():
         deployment, matches, ready = _deployment_facts()
         bundle["deployment"] = {**deployment, "settings_match": matches, "ready": ready}
     except Exception as exc:
-        bundle["deployment"] = {"error": f"{type(exc).__name__}: {exc}"}
+        # Type name only: exception *messages* flowing into a served response
+        # are flagged as information exposure (py/stack-trace-exposure); the
+        # class name is untainted and still identifies the failing area.
+        bundle["deployment"] = {
+            "error": f"deployment facts unavailable ({type(exc).__name__})"
+        }
     return _diagnostics_redact(bundle)
 
 
