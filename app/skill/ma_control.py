@@ -30,10 +30,13 @@ from music_assistant_client.exceptions import (
 from music_assistant_models.errors import MusicAssistantError
 
 from env_secrets import get_env_secret
+from . import playback_requests
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_COMMANDS = ("next", "previous", "start_over", "pause", "stop", "resume")
+# Seconds a command waits for a background write to the same player.
+COMMAND_LOCK_WAIT = 2
 
 # How long to suppress the echoed intent caused by pause/stop/resume.
 # Alexa.TextCommand is a direct API call (not acoustic), so the round trip
@@ -124,6 +127,10 @@ def send_player_command(player_id, command):
         logger.error("MA_API_URL is not set; cannot send %s command to MA", command)
         return False
 
+    lock = playback_requests.write_lock(player_id)
+    # A stalled background start can hold the lock for long, and Alexa waits only
+    # 8 s for the answer; the command has superseded that start, so go ahead.
+    locked = lock.acquire(timeout=COMMAND_LOCK_WAIT)
     try:
         asyncio.run(_send_command(server_url, token, player_id, command))
         return True
@@ -145,3 +152,6 @@ def send_player_command(player_id, command):
             "Unexpected error sending %s command to MA player %s", command, player_id
         )
         return False
+    finally:
+        if locked:
+            lock.release()

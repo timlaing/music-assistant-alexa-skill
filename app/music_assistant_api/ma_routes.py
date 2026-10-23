@@ -47,6 +47,9 @@ def register_routes(bp):
                 # url_root) excludes the /ma mount prefix. Redacted to a
                 # host placeholder in the diagnostics bundle.
                 "push_base": request.host_url.rstrip("/"),
+                "playerId": payload.get("playerId")
+                if isinstance(payload.get("playerId"), str)
+                else None,
             }
         )
         return jsonify({"status": "ok", "version": version})

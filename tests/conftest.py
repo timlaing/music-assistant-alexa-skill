@@ -16,8 +16,13 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setenv("APP_SETTINGS_PATH", str(tmp_path / "app-settings.json"))
     import shared_store
-    from skill import data
+    from skill import data, ma_control, playback_requests
 
+    monkeypatch.setattr(shared_store, "_player_snapshots", {})
+    monkeypatch.setattr(playback_requests, "_generations", {})
+    monkeypatch.setattr(playback_requests, "_write_locks", {})
+    monkeypatch.setattr(ma_control, "_recent_ma_triggered", {})
+    playback_requests._ticket.set(None)
     monkeypatch.setattr(shared_store, "_ma", None)
     monkeypatch.setattr(shared_store, "_alexa", None)
     monkeypatch.setattr(shared_store, "_version", 0)

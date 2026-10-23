@@ -57,8 +57,13 @@ def _metadata(payload):
     }
 
 
+def select_stream(payload):
+    """Pin one player's stream and metadata to this Alexa response."""
+    _request_info.set(_metadata(payload))
+
+
 def begin_request():
-    _request_info.set(_metadata(shared_store.get_ma()))
+    select_stream(shared_store.get_ma())
 
 
 def get_info():

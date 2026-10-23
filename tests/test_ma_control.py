@@ -11,7 +11,7 @@ from music_assistant_client.exceptions import (
     InvalidServerVersion,
 )
 from music_assistant_models.errors import MusicAssistantError
-from skill import ma_control
+from skill import ma_control, playback_requests
 
 
 def _fake_client_context(client):
@@ -141,3 +141,19 @@ def test_send_command_resume_uses_players_play(monkeypatch):
     )
     asyncio.run(ma_control._send_command("http://ma:8095", "tok", "player", "resume"))
     client.players.play.assert_awaited_once_with("player")
+
+
+def test_command_does_not_wait_long_for_a_stalled_background_write(monkeypatch):
+    monkeypatch.setenv("MA_API_URL", "http://ma:8095")
+    monkeypatch.setattr(ma_control, "COMMAND_LOCK_WAIT", 0.01)
+    sent = AsyncMock()
+    monkeypatch.setattr(ma_control, "_send_command", sent)
+    stalled = playback_requests.write_lock("player")
+    stalled.acquire()
+    try:
+        assert ma_control.send_player_command("player", "pause") is True
+        sent.assert_awaited_once()
+        # The background write still owns its lock.
+        assert stalled.locked()
+    finally:
+        stalled.release()

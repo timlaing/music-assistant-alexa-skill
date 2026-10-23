@@ -86,3 +86,13 @@ def register_routes(bp):
                     "intents": [],
                 }
             ), 500
+
+    @bp.route("/playback-state", methods=["GET"])
+    def playback_state():
+        """Where the player's Echo really is; read by Music Assistant's Alexa player."""
+        from skill import echo_position
+
+        player = request.args.get("player_id", "").strip()
+        if not player:
+            return jsonify({"error": "player_id is required"}), 400
+        return jsonify(echo_position.report(player))
