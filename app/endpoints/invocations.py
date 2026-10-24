@@ -142,16 +142,17 @@ def _entry_device(incoming):
 
 def _response_status_html(entry):
     """Show the recorded HTTP outcome without implying device playback."""
-    status = entry.get("response_status")
+    status = entry.get("response_status") if isinstance(entry, dict) else None
     if type(status) is not int or not 100 <= status <= 599:
         label, state = "Not recorded", ""
     else:
         label = f"HTTP {status}"
-        state = (
-            " ma-ok"
-            if 200 <= status < 300
-            else (" ma-error" if status >= 400 else " ma-warning")
-        )
+        if 200 <= status < 300:
+            state = " ma-ok"
+        elif status >= 400:
+            state = " ma-error"
+        else:
+            state = " ma-warning"
     return (
         f"<span class='ma-state{state}'>"
         f"<span class='ma-dot' aria-hidden='true'></span>{label}</span>"
@@ -222,6 +223,8 @@ def _invocations_body(intent_logs):
     numbered = [(len(intent_logs) - idx, entry) for idx, entry in enumerate(rev)]
     rows, cards, details = [], [], []
     for entry_id, entry in numbered:
+        if not isinstance(entry, dict):
+            entry = {}
         detail_id = f"invocation-detail-{entry_id}"
         rows.append(_render_row(entry_id, entry, detail_id))
         cards.append(_render_record(entry_id, entry, detail_id))

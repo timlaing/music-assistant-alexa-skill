@@ -101,6 +101,7 @@ def _classify_response(kind, code, response):
 
 
 def probe(label, value, kind, session):
+    """Check a public target and classify its HTTPS response for its purpose."""
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
     if kind == "testaudio":
         result["kind"] = kind

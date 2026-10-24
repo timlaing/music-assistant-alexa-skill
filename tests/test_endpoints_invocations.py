@@ -18,6 +18,7 @@ def logs():
 
 
 def test_empty_invocations_page(client, logs):
+    """Verify empty invocations page."""
     response = client.get("/invocations", headers=AUTH)
     assert response.status_code == 200
     assert response.mimetype == "text/html"
@@ -25,6 +26,7 @@ def test_empty_invocations_page(client, logs):
 
 
 def test_invocations_page_renders_newest_first(client, logs):
+    """Verify invocations page renders newest first."""
     logs.append(
         {
             "incoming": {
@@ -52,6 +54,7 @@ def test_invocations_page_renders_newest_first(client, logs):
 
 
 def test_invocations_page_handles_missing_fields(client, logs):
+    """Verify invocations page handles missing fields."""
     logs.append({"incoming": None, "response": None, "ts": None})
     logs.append({"incoming": "not-json", "response": "", "ts": "not-a-number"})
     body = client.get("/invocations", headers=AUTH).get_data(as_text=True)
@@ -63,6 +66,7 @@ def test_invocations_page_handles_missing_fields(client, logs):
 
 
 def test_status_invocations_count_endpoint(client, logs):
+    """Verify status invocations count endpoint."""
     from endpoints import status
 
     empty = client.get("/status/invocations", headers=AUTH).json
@@ -79,6 +83,7 @@ def test_status_invocations_count_endpoint(client, logs):
 
 
 def test_render_entry_prefers_time_then_incoming_timestamp():
+    """Verify render entry prefers time then incoming timestamp."""
     entry = {"incoming": {"request": {"timestamp": "2026-01-02T03:04:05Z"}}}
     assert "03:04:05" in invocations._render_entry(1, entry)
     entry = {"incoming": {"request": {}}, "ts": 1700000000.0}
@@ -86,6 +91,7 @@ def test_render_entry_prefers_time_then_incoming_timestamp():
 
 
 def test_render_entry_supports_payload_key_alias_and_json_string_response():
+    """Verify render entry supports payload key alias and json string response."""
     entry = {
         "payload": {"request": {"type": "SessionEndedRequest"}},
         "response_body": '{"ok": true}',
@@ -100,6 +106,7 @@ def test_render_entry_supports_payload_key_alias_and_json_string_response():
 
 
 def test_format_time_shapes():
+    """Verify format time shapes."""
     from datetime import datetime, timezone
 
     assert invocations._format_time(None) == "(no timestamp)"
@@ -117,6 +124,7 @@ def test_format_time_shapes():
 
 
 def test_format_value_shapes():
+    """Verify format value shapes."""
     assert invocations._format_value(None, "E") == "E"
     assert invocations._format_value("  ", "E") == "E"
     assert invocations._format_value("null", "E") == "E"
@@ -128,6 +136,7 @@ def test_format_value_shapes():
 
 
 def test_entry_helpers_on_non_dict_inputs():
+    """Verify entry helpers on non dict inputs."""
     assert invocations._entry_value({}, "a", "b") is None
     assert invocations._entry_value({"b": 2}, "a", "b") == 2
     assert invocations._entry_timestamp({"incoming": {}}, "payload-str") is None
@@ -152,6 +161,7 @@ def test_entry_helpers_on_non_dict_inputs():
 def test_invocations_show_recorded_http_status_on_desktop_and_mobile(
     client, logs, status, label, state
 ):
+    """Verify invocations show recorded http status on desktop and mobile."""
     logs.append({"incoming": {}, "response_status": status})
     body = client.get("/invocations", headers=AUTH).get_data(as_text=True)
     assert "<th>HTTP status</th>" in body
@@ -159,7 +169,10 @@ def test_invocations_show_recorded_http_status_on_desktop_and_mobile(
         f"<span class='ma-state{state}'>"
         f"<span class='ma-dot' aria-hidden='true'></span>{label}</span>"
     )
-    assert body.count(badge) == 2
+    table = body.split("<table", 1)[1].split("</table>", 1)[0]
+    card = body.split("<article", 1)[1].split("</article>", 1)[0]
+    assert table.count(badge) == 1
+    assert card.count(badge) == 1
     assert "Unknown</span>" not in body
 
 
@@ -173,6 +186,7 @@ def test_invocations_show_recorded_http_status_on_desktop_and_mobile(
     ],
 )
 def test_echo_playback_reports_device_event(client, logs, event, label, state):
+    """Verify echo playback reports device event."""
     logs.append(
         {
             "incoming": {
@@ -194,6 +208,7 @@ def test_echo_playback_reports_device_event(client, logs, event, label, state):
 
 
 def test_echo_playback_ignores_simulator_and_unrelated_requests(client, logs):
+    """Verify echo playback ignores simulator and unrelated requests."""
     logs.extend(
         [
             {"incoming": {"request": {"type": "IntentRequest"}}},
@@ -216,6 +231,7 @@ def test_echo_playback_ignores_simulator_and_unrelated_requests(client, logs):
 
 
 def test_echo_playback_uses_event_time_not_completion_order(client, logs):
+    """Verify echo playback uses event time not completion order."""
     for event, ts in [("PlaybackFailed", 200), ("PlaybackStarted", 100)]:
         logs.append(
             {
@@ -235,6 +251,7 @@ def test_echo_playback_uses_event_time_not_completion_order(client, logs):
 
 @pytest.mark.parametrize("code", [None, 400, 401, 403, 500])
 def test_echo_playback_ignores_rejected_callbacks(client, logs, code):
+    """Verify echo playback ignores rejected callbacks."""
     logs.append(
         {
             "incoming": {
@@ -248,3 +265,45 @@ def test_echo_playback_ignores_rejected_callbacks(client, logs, code):
         "Not tested"
         in client.get("/status/invocations", headers=AUTH).json["echo_playback_html"]
     )
+
+
+@pytest.mark.parametrize("entry", [None, "invalid", 42, []])
+def test_malformed_invocations_render_without_crashing(client, logs, entry):
+    """Verify malformed invocations render without crashing."""
+    logs.append(entry)
+    response = client.get("/invocations", headers=AUTH)
+    assert response.status_code == 200
+    assert "Not recorded" in response.get_data(as_text=True)
+    assert "Not recorded" in invocations._response_status_html(entry)
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "NaN", "Infinity"])
+def test_playback_event_time_falls_back_to_receipt(timestamp):
+    """Verify playback event time falls back to receipt."""
+    from endpoints.status import _playback_event_time
+
+    assert _playback_event_time({"timestamp": timestamp}, {"ts": 200}) == 200
+    assert _playback_event_time({"timestamp": timestamp}, {}) is None
+
+
+def test_delayed_playback_callback_does_not_replace_newer_event(client, logs):
+    """Verify delayed playback callback does not replace newer event."""
+    for event, timestamp, receipt in [
+        ("PlaybackStarted", "2026-10-24T12:01:00Z", 200),
+        ("PlaybackFailed", "2026-10-24T12:00:00Z", 300),
+    ]:
+        logs.append(
+            {
+                "incoming": {
+                    "request": {"type": "AudioPlayer." + event, "timestamp": timestamp},
+                    "context": {"System": {"device": {"deviceId": "device-123456"}}},
+                },
+                "response_status": 200,
+                "ts": receipt,
+            }
+        )
+    fragment = client.get("/status/invocations", headers=AUTH).json[
+        "echo_playback_html"
+    ]
+    assert "Playback confirmed" in fragment
+    assert "Playback failed" not in fragment
