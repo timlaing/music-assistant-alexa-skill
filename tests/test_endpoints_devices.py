@@ -159,7 +159,8 @@ def test_devices_page_offers_player_dropdown(client, ma_players, logs):
     assert '<option value="ma-kitchen" selected>Kitchen</option>' in body
     assert '<option value="ma-studio">Studio speaker</option>' in body
     # The card names the player, and the raw id input is gone.
-    assert "Controls" in body and "Kitchen" in body
+    assert "Controls" in body
+    assert "Kitchen" in body
     assert 'placeholder="MA player_id"' not in body
 
 
@@ -171,7 +172,8 @@ def test_devices_page_keeps_unlisted_mapping_selected(client, ma_players):
         "</option>" in body
     )
     # The card still reports what the Echo controls instead of a bare id.
-    assert "Controls" in body and "ma-gone" in body
+    assert "Controls" in body
+    assert "ma-gone" in body
 
 
 def test_devices_page_falls_back_to_text_input_without_players(client):
@@ -201,7 +203,8 @@ def test_devices_save_accepts_a_listed_player(client, ma_players):
     assert response.status_code == 302
     assert device_mapping.get_player_for_device("device-d") == "ma-studio"
     body = client.get("/devices", headers=AUTH).get_data(as_text=True)
-    assert "Controls" in body and "Studio speaker" in body
+    assert "Controls" in body
+    assert "Studio speaker" in body
 
 
 def test_devices_save_rejects_a_player_name(client, ma_players):
