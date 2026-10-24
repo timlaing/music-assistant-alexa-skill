@@ -13,9 +13,15 @@ from flask import (
 from markupsafe import escape
 from page_nav import nav_html
 from shared_store import get_ma
-from skill import device_mapping
+from skill import device_mapping, ma_control
 
 devices_bp = Blueprint("devices_bp", __name__)
+
+# Query-param codes the POST handler can redirect with, rendered as a note.
+# Only known codes are ever displayed (the query value itself is not echoed).
+_SAVE_ERRORS = {
+    "unknown-player": "That is not one of Music Assistant's players, so the mapping was left unchanged."
+}
 
 
 def _extract_device_id(payload):
@@ -89,10 +95,46 @@ def _ma_stream_player_name():
         return ""
 
 
+def _player_options(saved_player, players):
+    """Build the <option> rows for a device's player select.
+
+    Returns None when Music Assistant's player list isn't available, which
+    tells the template to fall back to a free-text id field. A saved id that
+    MA no longer reports keeps its own selected option, so a mapping is never
+    silently dropped just because the player is currently missing.
+    """
+    if players is None:
+        return None
+    options = [
+        {
+            "value": player["player_id"],
+            "label": player["name"] or player["player_id"],
+            "selected": player["player_id"] == saved_player,
+        }
+        for player in players
+    ]
+    if saved_player and not any(
+        player["player_id"] == saved_player for player in players
+    ):
+        options.append(
+            {
+                "value": saved_player,
+                "label": f"{saved_player} (not in Music Assistant right now)",
+                "selected": True,
+            }
+        )
+    return options
+
+
 @devices_bp.route("/devices", methods=["GET"])
 def devices_page():
     mapping = device_mapping.load_mapping()
     seen = _seen_devices()
+    players = ma_control.list_ma_players()
+    player_names = {
+        player["player_id"]: player["name"] or player["player_id"]
+        for player in players or []
+    }
 
     all_device_ids = sorted(
         set(mapping.keys()) | set(seen.keys()),
@@ -114,12 +156,20 @@ def devices_page():
                 "last_seen": _format_ts(info.get("last_seen")),
                 "last_request": info.get("last_request") or "(not seen this session)",
                 "player_id": saved_player,
+                "player_name": player_names.get(saved_player)
+                or (saved_player if saved_player and players is not None else ""),
+                "options": _player_options(saved_player, players),
                 "mapped": bool(saved_player),
             }
         )
 
     try:
-        page = render_template("devices.html", devices=devices, stream_hint=stream_hint)
+        page = render_template(
+            "devices.html",
+            devices=devices,
+            stream_hint=stream_hint,
+            error=_SAVE_ERRORS.get(request.args.get("error"), ""),
+        )
         page = page.replace("__NAV__", nav_html("devices"))
         return Response(page, status=200, mimetype="text/html")
     except Exception:
@@ -146,5 +196,12 @@ def devices_save():
     device_id = (request.form.get("device_id") or "").strip()
     player_id = (request.form.get("player_id") or "").strip()
     if device_id:
+        # When the player list is available, only real MA player ids may enter
+        # the mapping - a display name (or an id for a removed player) is
+        # rejected rather than written out. Without a list, accept as given.
+        players = ma_control.list_ma_players()
+        known = {player["player_id"] for player in players or []}
+        if player_id and known and player_id not in known:
+            return redirect(url_for("devices_bp.devices_page", error="unknown-player"))
         device_mapping.set_player_for_device(device_id, player_id or None)
     return redirect(url_for("devices_bp.devices_page"))

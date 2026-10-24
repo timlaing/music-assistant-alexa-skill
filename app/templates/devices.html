@@ -5,6 +5,9 @@
 {% block page_actions %}{% include '_refresh_button.html' %}{% endblock %}
 {% block content %}
 <div class="ma-note" style="margin:0 0 22px">To discover another Echo, say “Alexa, ask Music Assistant for help” on that device, then refresh this page.</div>
+{% if error %}
+<div class="ma-note ma-errornote" style="margin:0 0 22px">{{ error }}</div>
+{% endif %}
 {% if stream_hint %}
 <div class="ma-note" style="margin:0 0 22px">The current Music Assistant stream is playing on <strong>{{ stream_hint }}</strong>. If that is this Echo's player, pick it below — the hint is a display name, not the player ID.</div>
 {% endif %}
@@ -16,11 +19,23 @@
       <span class="ma-state {{ 'ma-ok' if device.mapped else 'ma-warning' }}"><span class="ma-dot" aria-hidden="true"></span>{{ 'Mapped' if device.mapped else 'Needs mapping' }}</span>
     </div>
     <h2>Echo …{{ device.short_id }}</h2>
-    <p class="ma-small ma-muted">Device {{ device.device_id }} · Seen {{ device.last_seen }}</p>
+    {% if device.player_name %}<p class="ma-small ma-controls">Controls <strong>{{ device.player_name }}</strong></p>{% endif %}
+    <p class="ma-small ma-muted ma-deviceline" title="Device {{ device.device_id }}">Device {{ device.device_id }} · Seen {{ device.last_seen }}</p>
     <form method="POST" action="/devices">
       <input type="hidden" name="device_id" value="{{ device.device_id }}" />
       <label class="ma-field">Music Assistant player
+        {% if device.options is not none %}
+        <select name="player_id">
+          <option value="">— Not mapped —</option>
+          {% for option in device.options %}
+          <option value="{{ option.value }}"{{ ' selected' if option.selected else '' }}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <small>Only the player's ID is stored in the mapping — never its name.</small>
+        {% else %}
         <input type="text" name="player_id" value="{{ device.player_id }}" placeholder="MA player_id" />
+        <small>Music Assistant's player list is unavailable, so the raw player ID is asked for.</small>
+        {% endif %}
       </label>
       <div class="ma-actions"><button class="ma-button ma-primary" type="submit">Save mapping</button></div>
     </form>

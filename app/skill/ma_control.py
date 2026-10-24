@@ -111,6 +111,57 @@ async def _send_command(server_url, token, player_id, command):
             raise ValueError(f"Unsupported MA command: {command}")
 
 
+# The /devices page lists MA's players by display name, but only the player id
+# may ever be stored in the mapping. The list changes rarely, so it is cached
+# briefly: a page render and the save that follows it share one connection.
+_PLAYERS_TTL = 15
+_players_lock = threading.Lock()
+_players_cache = {"at": 0.0, "players": None}
+
+
+async def _fetch_players(server_url, token):
+    async with (
+        # Timeout FIRST so it also covers the connection handshake.
+        asyncio.timeout(5),
+        aiohttp.ClientSession() as session,
+        MusicAssistantClient(server_url, session, token=token) as client,
+    ):
+        return await client.send_command("players/all")
+
+
+def list_ma_players():
+    """Return ``[{"player_id", "name"}]`` for every MA player, or None.
+
+    ``None`` means Music Assistant is unreachable or unconfigured; callers
+    must keep working without the list instead of failing the request. Failures
+    are cached for the same TTL so a down server doesn't stall every page.
+    """
+    server_url = get_env_secret("MA_API_URL")
+    token = get_env_secret("MA_API_TOKEN")
+    if not server_url or not token:
+        return None
+    with _players_lock:
+        if time.time() - _players_cache["at"] < _PLAYERS_TTL:
+            return _players_cache["players"]
+    try:
+        raw = asyncio.run(_fetch_players(server_url, token)) or []
+    except Exception:
+        # Class name only: exception messages must never reach a response
+        # (CWE-209); full detail goes to the log.
+        logger.exception("Could not list Music Assistant players")
+        players = None
+    else:
+        players = [
+            {"player_id": player.get("player_id"), "name": player.get("name")}
+            for player in raw
+            if isinstance(player, dict) and player.get("player_id")
+        ]
+        players.sort(key=lambda p: (p["name"] or p["player_id"]).lower())
+    with _players_lock:
+        _players_cache.update(at=time.time(), players=players)
+    return players
+
+
 def send_player_command(player_id, command):
     """Send a command to a Music Assistant player. Returns True on success.
 
