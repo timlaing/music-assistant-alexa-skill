@@ -62,8 +62,27 @@ def select_stream(payload):
     _request_info.set(_metadata(payload))
 
 
-def begin_request():
-    select_stream(shared_store.get_ma())
+def begin_request(device_id=None):
+    """Pin this request's stream metadata (issue #33).
+
+    When the requesting Echo is mapped to an MA player (/devices), pin that
+    player's own push: several Echoes can play different queues at once, and
+    MA pushes every player's URL within a fraction of a second. An unmapped
+    device pins the latest push, exactly as before.
+
+    A mapped player that has not pushed a stream of its own pins nothing:
+    falling back to the latest push would hand this Echo another queue's
+    stream, which is the bug this isolation exists to prevent
+    (``test_mapped_player_without_stream_cannot_use_another_players_stream``).
+    """
+    player = None
+    if device_id:
+        from . import device_mapping
+
+        player = device_mapping.get_player_for_device(device_id)
+    select_stream(
+        shared_store.get_player_snapshot(player) if player else shared_store.get_ma()
+    )
 
 
 def get_info():
@@ -71,7 +90,11 @@ def get_info():
     return dict(snapshot) if snapshot is not None else _metadata(shared_store.get_ma())
 
 
-def get_latest(*args, **kwargs):
-    """Read this process directly; an empty store is normal before the first push."""
-    begin_request()
+def get_latest(device_id=None):
+    """Read this process directly; an empty store is normal before the first push.
+
+    `device_id` scopes "latest" to the requesting Echo's own player so a
+    refresh from one Echo never shows another player's stream (issue #33).
+    """
+    begin_request(device_id)
     return {"changed": bool(get_info().get("audioSources"))}
