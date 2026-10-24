@@ -83,10 +83,23 @@ def test_metadata_refresh_of_a_mapped_echo_without_its_own_push_stays_empty(
     payload = event("Alexa.Presentation.APL.UserEvent", device="echo-venus", apl=True)
     payload["request"]["arguments"] = ["MetadataRefresh", "tick"]
 
-    rendered = json.dumps(invoke(payload)["directives"])
+    directives = invoke(payload).get("directives") or []
+    rendered = json.dumps(directives)
+    # The handler re-arms the refresh loop with a SendEvent tick, so its
+    # presence proves it ran end to end rather than returning early and
+    # leaving the card without any further updates.
+    refresh_ticks = [
+        command
+        for directive in directives
+        for command in directive.get("commands", [])
+        if command.get("type") == "SendEvent"
+    ]
+
     assert "Song on Mars" not in rendered
     # The request did pin metadata - it is empty, not another player's track.
     assert data.get_info()["audioSources"] == ""
+    assert refresh_ticks, f"no scheduled refresh in: {rendered}"
+    assert "MetadataRefresh" in refresh_ticks[0]["arguments"]
 
 
 def test_stale_url_refresh_ignores_another_players_push(monkeypatch):
