@@ -46,8 +46,10 @@ def test_each_echo_plays_the_stream_pushed_for_its_own_player(client):
     mars = play_url("echo-mars")
     venus = play_url("echo-venus")
 
-    assert mars and "/Mars.mp3" in mars, f"Mars Echo got: {mars}"
-    assert venus and "/Venus.mp3" in venus, f"Venus Echo got: {venus}"
+    assert mars, "Mars Echo got no Play directive"
+    assert "/Mars.mp3" in mars, f"Mars Echo got: {mars}"
+    assert venus, "Venus Echo got no Play directive"
+    assert "/Venus.mp3" in venus, f"Venus Echo got: {venus}"
 
 
 def test_request_order_does_not_matter(client):
@@ -59,8 +61,10 @@ def test_request_order_does_not_matter(client):
     venus = play_url("echo-venus")
     mars = play_url("echo-mars")
 
-    assert mars and "/Mars.mp3" in mars, f"Mars Echo got: {mars}"
-    assert venus and "/Venus.mp3" in venus, f"Venus Echo got: {venus}"
+    assert mars, "Mars Echo got no Play directive"
+    assert "/Mars.mp3" in mars, f"Mars Echo got: {mars}"
+    assert venus, "Venus Echo got no Play directive"
+    assert "/Venus.mp3" in venus, f"Venus Echo got: {venus}"
 
 
 def test_stale_url_refresh_ignores_another_players_push(monkeypatch):
