@@ -372,14 +372,17 @@ def _refresh_stream_url(device_id, player_id):
     Music Assistant flow stream URLs are one-shot: once the queue's flow
     session has streamed to the end, MA answers 404 for it forever (issue
     #40). Resuming the queue makes MA start a new flow session and push its
-    URL to /ma/push-url; this waits briefly for that push. Returns the new
-    URL, or None if the MA command fails or no new URL arrives in time (the
-    caller falls back to the stored URL, whose validation then produces the
-    usual reachability error).
+    URL to /ma/push-url; this waits briefly for that push. Only this player's
+    push counts: when several Echoes play at once, MA pushes the other
+    players' URLs during the same window and taking one of those would hand
+    this Echo another queue's stream (issue #33). Returns the new URL, or
+    None if the MA command fails or no new URL arrives in time (the caller
+    falls back to the stored URL, whose validation then produces the usual
+    reachability error).
     """
     import shared_store
 
-    before = shared_store.get_ma() or {}
+    before = shared_store.get_player_snapshot(player_id) or {}
     # Distinct token: MA's alexa provider echoes an AMAZON.ResumeIntent back
     # into the device when it receives players.play(); that echo is a side
     # effect of this refresh, not a user resume, so ResumeIntentHandler
@@ -391,7 +394,7 @@ def _refresh_stream_url(device_id, player_id):
     deadline = time.monotonic() + _REFRESH_WAIT_SECONDS
     while time.monotonic() < deadline:
         time.sleep(_REFRESH_POLL_SECONDS)
-        current = shared_store.get_ma() or {}
+        current = shared_store.get_player_snapshot(player_id) or {}
         url = current.get("streamUrl")
         if (
             url
@@ -759,7 +762,7 @@ class APLUserEventHandler(AbstractRequestHandler):
         # Fetch latest metadata from Music Assistant
         changed = False
         try:
-            result = data.get_latest()
+            result = data.get_latest(_device_id_from(handler_input))
             changed = bool(result and result.get("changed"))
             if changed:
                 logger.info("Metadata changed")
@@ -919,16 +922,11 @@ class APLSupportRequestInterceptor(AbstractRequestInterceptor):
     """Capture metadata and device capabilities independently for each request."""
 
     def process(self, handler_input):
-        data.begin_request()
+        data.begin_request(_device_id_from(handler_input))
         try:
             echo_position.record(handler_input.request_envelope)
         except Exception:
             logger.exception("Could not record the Echo's playback position")
-        player = device_mapping.get_player_for_device(_device_id_from(handler_input))
-        if player:
-            import shared_store
-
-            data.select_stream(shared_store.get_player_snapshot(player))
         context = getattr(handler_input.request_envelope, "context", None)
         system = getattr(context, "system", None)
         device = getattr(system, "device", None)
