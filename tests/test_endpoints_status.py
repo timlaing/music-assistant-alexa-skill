@@ -579,6 +579,7 @@ def test_status_json_variants(client, selector):
         "alexa_api_html",
         "metadata_html",
         "invocations_html",
+        "echo_playback_html",
         "created",
     }
 

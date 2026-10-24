@@ -290,12 +290,17 @@ def _capture_incoming_intent():
 
 @app.after_request
 def _record_incoming_intent(response):
+    """Retain the request, response and simulator origin for status diagnostics."""
     if getattr(g, "_incoming_alexa_payload", None) is not None:
         try:
             logs = app.config.setdefault("INTENT_LOGS", [])
             entry = {
                 "incoming": g._incoming_alexa_payload,
                 "response_status": response.status_code,
+                "simulator": bool(
+                    request.headers.get("X-Simulator-Bypass")
+                    or request.headers.get("X-Simulator-Signature")
+                ),
                 "response_body": response.get_data(as_text=True),
                 "ts": getattr(g, "_incoming_alexa_ts", None),
             }

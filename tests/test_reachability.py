@@ -37,6 +37,7 @@ class Session:
 
 
 def test_skill_probe_checks_service_health_and_proxy_prefix():
+    """Verify skill probe checks service health and proxy prefix."""
     session = Session(Response())
     result = probe("Skill", "https://example.com/ma-alexa-skill/", "skill", session)
     assert result["status"] == "reachable"
@@ -54,12 +55,14 @@ def test_skill_probe_checks_service_health_and_proxy_prefix():
     ],
 )
 def test_network_errors_reported_without_exception_text(error, message):
+    """Verify network errors reported without exception text."""
     result = probe("Skill", "https://example.com/", "skill", Session(error))
     assert result["status"] == "failed"
     assert message in result["message"]
 
 
 def test_wrong_route_and_audio_failure_are_not_green():
+    """Verify wrong route and audio failure are not green."""
     assert (
         probe(
             "Skill",
@@ -94,12 +97,14 @@ def test_wrong_route_and_audio_failure_are_not_green():
 
 
 def test_actual_stream_url_uses_configured_public_base(monkeypatch):
+    """Verify actual stream url uses configured public base."""
     monkeypatch.setenv("MA_HOSTNAME", "https://streams.example.com/music")
     set_ma({"url": "http://ma.local:8097/flow/track.mp3"})
     assert targets()[-1][1] == "https://streams.example.com/music/flow/track.mp3"
 
 
 def test_testaudio_target_follows_skill_host(monkeypatch):
+    """Verify testaudio target follows skill host."""
     monkeypatch.setenv("SKILL_HOSTNAME", "https://example.com/ma-alexa-skill")
     assert (
         "Public audio delivery",
@@ -109,6 +114,7 @@ def test_testaudio_target_follows_skill_host(monkeypatch):
 
 
 def test_testaudio_probe_checks_content_type():
+    """Verify testaudio probe checks content type."""
     ok = probe(
         "Public audio delivery",
         "https://example.com/ma-alexa-skill/",
@@ -135,6 +141,7 @@ def test_testaudio_probe_checks_content_type():
 
 
 def test_testaudio_html_embeds_player():
+    """Verify testaudio html embeds player."""
     from reachability import html
 
     rendered = html(
@@ -157,6 +164,7 @@ def test_testaudio_html_embeds_player():
 
 
 def test_testaudio_probe_streams_get_and_requires_data():
+    """Verify testaudio probe streams get and requires data."""
     session = Session(Response())
     ok = probe("Public audio delivery", "https://example.com/", "testaudio", session)
     assert session.calls[0][0] == "GET"
@@ -193,6 +201,7 @@ def test_testaudio_probe_streams_get_and_requires_data():
 
 
 def test_checks_cached_and_status_does_not_block(monkeypatch):
+    """Verify checks cached and status does not block."""
     import reachability
 
     class FakeSession(Session):
@@ -219,6 +228,7 @@ def test_checks_cached_and_status_does_not_block(monkeypatch):
 
 
 def test_status_html_preserves_markup_and_escapes_values():
+    """Verify status html preserves markup and escapes values."""
     from markupsafe import escape
 
     from reachability import diagnostics, html
@@ -237,6 +247,7 @@ def test_status_html_preserves_markup_and_escapes_values():
 
 
 def test_summary_readiness_states():
+    """Verify summary readiness states."""
     from reachability import summary
 
     base = {"checked_at": 1.0, "checking": False, "checks": [], "perspective": "p"}
@@ -286,6 +297,7 @@ def test_summary_readiness_states():
 def test_invalid_rewrite_still_reports_failed_audio_check(
     client, monkeypatch, stream, url
 ):
+    """Verify invalid rewrite still reports failed audio check."""
     import reachability
     from app import app
     from test_skill_deployment import AUTH
@@ -312,3 +324,23 @@ def test_invalid_rewrite_still_reports_failed_audio_check(
     assert audio["label"] == "Current audio"
     assert audio["status"] == "failed"
     assert "Invalid HTTPS URL" in audio["message"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("host", "reachable"),
+        ("skill", "failed"),
+        ("audio", "failed"),
+        ("testaudio", "failed"),
+    ],
+)
+def test_method_not_allowed_is_success_only_for_stream_host(kind, expected):
+    """Verify method not allowed is success only for stream host."""
+    session = Session(Response(405))
+    result = probe("Check", "https://example.com/", kind, session)
+    assert result["status"] == expected
+    assert result["http_status"] == 405
+    if kind == "host":
+        assert session.calls[0][0] == "HEAD"
+        assert "HEAD not supported" in result["message"]
