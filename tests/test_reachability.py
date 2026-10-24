@@ -312,3 +312,22 @@ def test_invalid_rewrite_still_reports_failed_audio_check(
     assert audio["label"] == "Current audio"
     assert audio["status"] == "failed"
     assert "Invalid HTTPS URL" in audio["message"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("host", "reachable"),
+        ("skill", "failed"),
+        ("audio", "failed"),
+        ("testaudio", "failed"),
+    ],
+)
+def test_method_not_allowed_is_success_only_for_stream_host(kind, expected):
+    session = Session(Response(405))
+    result = probe("Check", "https://example.com/", kind, session)
+    assert result["status"] == expected
+    assert result["http_status"] == 405
+    if kind == "host":
+        assert session.calls[0][0] == "HEAD"
+        assert "HEAD not supported" in result["message"]

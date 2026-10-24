@@ -87,7 +87,9 @@ def _classify_response(kind, code, response):
         return _classify_testaudio(code, response)
     if 200 <= code < 300:
         return "reachable", f"HTTPS reachable (HTTP {code})"
-    if kind == "host" and code in (404, 405):
+    if kind == "host" and code == 405:
+        return "reachable", "HTTPS reachable (HTTP 405; HEAD not supported)"
+    if kind == "host" and code == 404:
         return (
             "warning",
             f"HTTPS reachable (HTTP {code}); test an actual audio URL to confirm playback access",
