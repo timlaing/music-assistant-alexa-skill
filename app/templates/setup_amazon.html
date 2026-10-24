@@ -18,7 +18,7 @@
     <details class="ma-detail"{% if not done[2] %} open{% endif %}>
       <summary>Register or change your Amazon application</summary>
       <ol>
-        <li>Save your public audio URL on the <a href="/setup/step/1">previous step</a> so the callback URL above is correct.</li>
+        <li>Save your public skill endpoint on the <a href="/setup/step/1">previous step</a> so the callback URL above is correct — it defaults to your public audio URL’s origin followed by <code>/ma-alexa-skill/</code>.</li>
         <li>Create a Login with Amazon security profile in the <a href="https://developer.amazon.com/loginwithamazon/console/site/lwa/overview.html" target="_blank" rel="noopener noreferrer">LWA developer console ↗</a>, then add the callback URL to <strong>Allowed Return URLs</strong> under <strong>Web Settings → Edit</strong>. Use Allowed Return URLs, rather than Allowed Origins or the Home Assistant ingress address.</li>
         <li>Enter the client ID and secret below, then select <strong>Save settings</strong> and <strong>Connect</strong>.</li>
       </ol>

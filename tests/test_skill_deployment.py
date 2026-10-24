@@ -501,6 +501,23 @@ def test_setup_wizard_step_pages_render(client, deployment):
     assert client.get("/setup/step/x", headers=AUTH).status_code == 404
 
 
+def test_setup_skill_endpoint_field_lives_before_the_callback_step(client, deployment):
+    """The callback URL on step 2 is derived from the skill endpoint, so the
+    endpoint field must be editable on step 1 — never only on step 3."""
+    from app import app
+
+    manager, _ = deployment
+    app.extensions["skill_deployment"] = manager
+    step1 = client.get("/setup/step/1", headers=AUTH).get_data(as_text=True)
+    step2 = client.get("/setup/step/2", headers=AUTH).get_data(as_text=True)
+    step3 = client.get("/setup/step/3", headers=AUTH).get_data(as_text=True)
+    assert 'id="skill_hostname"' in step1
+    assert "callback URL above is correct" in step2
+    # Step 3 must not collect it: a later save would silently override the
+    # endpoint the user picked on step 1 after they copied the callback URL.
+    assert 'id="skill_hostname"' not in step3
+
+
 def test_setup_readiness_banners_render(client, deployment):
     from app import app
 

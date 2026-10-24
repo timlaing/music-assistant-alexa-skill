@@ -13,11 +13,7 @@
     <div class="ma-note">This updates the selected personal skill. Other skills are unaffected.</div>
     <details class="ma-detail">
       <summary>Advanced skill settings</summary>
-      <label class="ma-field"
-        >Public endpoint override<input id="skill_hostname" type="url" /><small
-          >Optional. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override only when your skill uses another public endpoint.</small
-        ></label
-      >
+      <p class="ma-muted ma-small">The public skill endpoint is set on <a href="/setup/step/1">Application settings</a>; the callback URL shown in <a href="/setup/step/2">Connect to Amazon</a> follows it.</p>
       <label class="ma-field"
         >HTTPS certificate type<select id="skill_certificate_type">
           <option value="Trusted">Trusted</option>
@@ -94,7 +90,6 @@
     });
     el("locale").value = body.values.locale;
     el("enable_apl").checked = body.values.enable_apl;
-    el("skill_hostname").value = body.values.skill_hostname;
     el("skill_certificate_type").value = body.values.skill_certificate_type;
     updateCertificate();
   };
@@ -150,7 +145,6 @@
         {
           locale: el("locale").value,
           enable_apl: el("enable_apl").checked,
-          skill_hostname: el("skill_hostname").value,
           skill_certificate_type: el("skill_certificate_type").value,
           skill_certificate_pem: certificatePem,
         },
