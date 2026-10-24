@@ -131,3 +131,31 @@ def test_entry_helpers_on_non_dict_inputs():
     assert invocations._entry_timestamp({"incoming": {}}, "payload-str") is None
     assert invocations._entry_name("not-a-dict") is None
     assert invocations._entry_name({"request": {"intent": "not-a-dict"}}) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "label", "state"),
+    [
+        (200, "HTTP 200", " ma-ok"),
+        (204, "HTTP 204", " ma-ok"),
+        (302, "HTTP 302", " ma-warning"),
+        (400, "HTTP 400", " ma-error"),
+        (500, "HTTP 500", " ma-error"),
+        (None, "Not recorded", ""),
+        (True, "Not recorded", ""),
+        ("<script>", "Not recorded", ""),
+        (999, "Not recorded", ""),
+    ],
+)
+def test_invocations_show_recorded_http_status_on_desktop_and_mobile(
+    client, logs, status, label, state
+):
+    logs.append({"incoming": {}, "response_status": status})
+    body = client.get("/invocations", headers=AUTH).get_data(as_text=True)
+    assert "<th>HTTP status</th>" in body
+    badge = (
+        f"<span class='ma-state{state}'>"
+        f"<span class='ma-dot' aria-hidden='true'></span>{label}</span>"
+    )
+    assert body.count(badge) == 2
+    assert "Unknown</span>" not in body

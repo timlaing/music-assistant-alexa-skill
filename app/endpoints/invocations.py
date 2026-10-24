@@ -140,6 +140,24 @@ def _entry_device(incoming):
         return None
 
 
+def _response_status_html(entry):
+    """Show the recorded HTTP outcome without implying device playback."""
+    status = entry.get("response_status")
+    if type(status) is not int or not 100 <= status <= 599:
+        label, state = "Not recorded", ""
+    else:
+        label = f"HTTP {status}"
+        state = (
+            " ma-ok"
+            if 200 <= status < 300
+            else (" ma-error" if status >= 400 else " ma-warning")
+        )
+    return (
+        f"<span class='ma-state{state}'>"
+        f"<span class='ma-dot' aria-hidden='true'></span>{label}</span>"
+    )
+
+
 def _render_row(entry_id, entry, detail_id):
     """One desktop table row: Time, Request, Device, Result and a Details toggle."""
     incoming = _entry_value(entry, "incoming", "payload")
@@ -147,15 +165,12 @@ def _render_row(entry_id, entry, detail_id):
     display_name = _entry_name(incoming) or NO_REQUEST_NAME
     device = _entry_device(incoming)
     device_cell = escape("…" + device[-6:]) if device else "—"
-    # The intent log records no Alexa-side result, so it stays unknown rather
-    # than being inferred from an accepted HTTP response.
     return (
         f"<tr><td>{escape(display_time)}</td>"
         f"<td>{escape(display_name)}<br>"
         f"<span class='ma-small ma-muted'>Invocation {entry_id}</span></td>"
         f"<td><code>{device_cell}</code></td>"
-        f"<td><span class='ma-state'><span class='ma-dot' aria-hidden='true'></span>"
-        f"Unknown</span></td>"
+        f"<td>{_response_status_html(entry)}</td>"
         f"<td><button class='ma-button intent-toggle' type='button' "
         f"aria-expanded='false' aria-controls='{detail_id}'>Details</button></td></tr>"
     )
@@ -171,8 +186,7 @@ def _render_record(entry_id, entry, detail_id):
     return (
         f"<article class='ma-record'><div class='ma-panelhead'><h3>"
         f"{escape(display_name)}</h3>"
-        f"<span class='ma-state'><span class='ma-dot' aria-hidden='true'></span>"
-        f"Unknown</span></div>"
+        f"{_response_status_html(entry)}</div>"
         f"<div class='ma-small ma-muted'>{escape(display_time)} · Invocation {entry_id}"
         f" · {device_text}</div>"
         f"<button class='ma-button intent-toggle' type='button' "
@@ -218,7 +232,7 @@ def _invocations_body(intent_logs):
     )
     table = (
         "<table class='ma-table'><thead><tr><th>Time</th><th>Request</th>"
-        "<th>Device</th><th>Result</th><th></th></tr></thead><tbody>"
+        "<th>Device</th><th>HTTP status</th><th></th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"
     )
