@@ -67,9 +67,13 @@ def begin_request(device_id=None):
 
     When the requesting Echo is mapped to an MA player (/devices), pin that
     player's own push: several Echoes can play different queues at once, and
-    MA pushes every player's URL within a fraction of a second. Unmapped
-    devices - and players without a push of their own - pin the latest push,
-    exactly as before.
+    MA pushes every player's URL within a fraction of a second. An unmapped
+    device pins the latest push, exactly as before.
+
+    A mapped player that has not pushed a stream of its own pins nothing:
+    falling back to the latest push would hand this Echo another queue's
+    stream, which is the bug this isolation exists to prevent
+    (``test_mapped_player_without_stream_cannot_use_another_players_stream``).
     """
     player = None
     if device_id:

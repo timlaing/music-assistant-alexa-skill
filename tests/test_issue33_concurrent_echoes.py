@@ -14,7 +14,7 @@ Covers the three places that resolve "the current stream":
 import json
 
 import shared_store
-from skill import device_mapping, ma_control, util
+from skill import data, device_mapping, ma_control, util
 from skill import lambda_function as handlers
 from test_playback import event, invoke, push
 
@@ -65,6 +65,28 @@ def test_request_order_does_not_matter(client):
     assert "/Mars.mp3" in mars, f"Mars Echo got: {mars}"
     assert venus, "Venus Echo got no Play directive"
     assert "/Venus.mp3" in venus, f"Venus Echo got: {venus}"
+
+
+def test_metadata_refresh_of_a_mapped_echo_without_its_own_push_stays_empty(
+    client, monkeypatch
+):
+    """A mapped Echo's card stays empty until its own player pushes.
+
+    Taking the latest push instead would put the other queue on this Echo's
+    card. The PlayAudio half of the same isolation is
+    ``test_mapped_player_without_stream_cannot_use_another_players_stream``.
+    """
+    monkeypatch.setenv("ENABLE_APL", "true")
+    device_mapping.set_player_for_device("echo-venus", "Venus")
+    push(client, streamUrl=MARS, title="Song on Mars")  # Venus never pushes
+
+    payload = event("Alexa.Presentation.APL.UserEvent", device="echo-venus", apl=True)
+    payload["request"]["arguments"] = ["MetadataRefresh", "tick"]
+
+    rendered = json.dumps(invoke(payload)["directives"])
+    assert "Song on Mars" not in rendered
+    # The request did pin metadata - it is empty, not another player's track.
+    assert data.get_info()["audioSources"] == ""
 
 
 def test_stale_url_refresh_ignores_another_players_push(monkeypatch):
