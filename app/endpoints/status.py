@@ -448,6 +448,46 @@ def _activity_fragment():
     )
 
 
+def _echo_playback_html():
+    """Summarize the latest device playback callback retained in the log."""
+    from endpoints.invocations import _entry_device, _entry_timestamp
+
+    outcomes = {
+        "AudioPlayer.PlaybackStarted": ("Playback confirmed", "success"),
+        "AudioPlayer.PlaybackFinished": ("Playback finished", "success"),
+        "AudioPlayer.PlaybackStopped": ("Playback stopped", "neutral"),
+        "AudioPlayer.PlaybackFailed": ("Playback failed", "error"),
+    }
+    events = []
+    for entry in current_app.config.get("INTENT_LOGS", []) or []:
+        if not isinstance(entry, dict) or entry.get("simulator"):
+            continue
+        code = entry.get("response_status")
+        if type(code) is not int or not 200 <= code < 300:
+            continue
+        incoming = entry.get("incoming")
+        if not isinstance(incoming, dict):
+            continue
+        req = incoming.get("request")
+        if not isinstance(req, dict) or req.get("type") not in outcomes:
+            continue
+        device = _entry_device(incoming)
+        if not device:
+            continue
+        ts = _entry_timestamp(entry, incoming)
+        events.append((_parse_epoch(ts) or 0.0, entry, req, device, ts))
+    if not events:
+        return row(
+            "Echo playback",
+            "No device playback event recorded since restart or within the retained log.",
+            "Not tested",
+        )
+    _, _, req, device, ts = max(events, key=lambda event: event[0])
+    label, kind = outcomes[req["type"]]
+    description = f"Device …{device[-6:]} · {_activity_time_label(ts)}. Last reported event; not a live playback check."
+    return row("Echo playback", escape(description), label, kind)
+
+
 def _invocations_count():
     intent_logs = current_app.config.get("INTENT_LOGS", [])
     return len(intent_logs) if intent_logs else 0
@@ -461,6 +501,7 @@ def _build_status_json():
         "alexa_api_html": _compute_alexa_api_html(),
         "metadata_html": _metadata_status_html(),
         "invocations_html": _activity_fragment(),
+        "echo_playback_html": _echo_playback_html(),
         "created": False,
     }
 
@@ -564,6 +605,7 @@ def status():
             alexa_api_html=CHECKING_ALEXA_API_HTML,
             metadata_html=_metadata_status_html(),
             activity_html=_activity_fragment(),
+            echo_playback_html=_echo_playback_html(),
             apl_enabled=_apl_enabled(),
         )
         tpl = tpl.replace("__NAV__", nav_html("status"))
@@ -607,7 +649,11 @@ def status_ask():
 def status_invocations():
     """Return the current invocation count and activity timeline HTML so the UI can refresh it live."""
     return jsonify(
-        {"count": _invocations_count(), "invocations_html": _activity_fragment()}
+        {
+            "count": _invocations_count(),
+            "invocations_html": _activity_fragment(),
+            "echo_playback_html": _echo_playback_html(),
+        }
     )
 
 

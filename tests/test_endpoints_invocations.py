@@ -65,7 +65,9 @@ def test_invocations_page_handles_missing_fields(client, logs):
 def test_status_invocations_count_endpoint(client, logs):
     from endpoints import status
 
-    assert client.get("/status/invocations", headers=AUTH).json == {
+    empty = client.get("/status/invocations", headers=AUTH).json
+    assert "Not tested" in empty.pop("echo_playback_html")
+    assert empty == {
         "count": 0,
         "invocations_html": status.RECENT_ACTIVITY_EMPTY,
     }
@@ -159,3 +161,90 @@ def test_invocations_show_recorded_http_status_on_desktop_and_mobile(
     )
     assert body.count(badge) == 2
     assert "Unknown</span>" not in body
+
+
+@pytest.mark.parametrize(
+    ("event", "label", "state"),
+    [
+        ("PlaybackStarted", "Playback confirmed", "ma-ok"),
+        ("PlaybackFinished", "Playback finished", "ma-ok"),
+        ("PlaybackStopped", "Playback stopped", "ma-state"),
+        ("PlaybackFailed", "Playback failed", "ma-error"),
+    ],
+)
+def test_echo_playback_reports_device_event(client, logs, event, label, state):
+    logs.append(
+        {
+            "incoming": {
+                "request": {"type": "AudioPlayer." + event},
+                "context": {"System": {"device": {"deviceId": "device-123456"}}},
+            },
+            "ts": 1700000000,
+            "response_status": 200,
+        }
+    )
+    fragment = client.get("/status/invocations", headers=AUTH).json[
+        "echo_playback_html"
+    ]
+    assert label in fragment
+    assert state in fragment
+    assert "123456" in fragment
+    assert "Last reported event" in fragment
+    assert label in client.get("/status", headers=AUTH).get_data(as_text=True)
+
+
+def test_echo_playback_ignores_simulator_and_unrelated_requests(client, logs):
+    logs.extend(
+        [
+            {"incoming": {"request": {"type": "IntentRequest"}}},
+            {"incoming": {"request": {"type": "AudioPlayer.PlaybackStarted"}}},
+            {"incoming": None},
+            {
+                "incoming": {
+                    "request": {"type": "AudioPlayer.PlaybackStarted"},
+                    "context": {"System": {"device": {"deviceId": "sim-device"}}},
+                },
+                "simulator": True,
+                "response_status": 200,
+            },
+        ]
+    )
+    fragment = client.get("/status/invocations", headers=AUTH).json[
+        "echo_playback_html"
+    ]
+    assert "Not tested" in fragment
+
+
+def test_echo_playback_uses_event_time_not_completion_order(client, logs):
+    for event, ts in [("PlaybackFailed", 200), ("PlaybackStarted", 100)]:
+        logs.append(
+            {
+                "incoming": {
+                    "request": {"type": "AudioPlayer." + event},
+                    "context": {"System": {"device": {"deviceId": "device-123456"}}},
+                },
+                "ts": ts,
+                "response_status": 200,
+            }
+        )
+    fragment = client.get("/status/invocations", headers=AUTH).json[
+        "echo_playback_html"
+    ]
+    assert "Playback failed" in fragment
+
+
+@pytest.mark.parametrize("code", [None, 400, 401, 403, 500])
+def test_echo_playback_ignores_rejected_callbacks(client, logs, code):
+    logs.append(
+        {
+            "incoming": {
+                "request": {"type": "AudioPlayer.PlaybackStarted"},
+                "context": {"System": {"device": {"deviceId": "device-123456"}}},
+            },
+            "response_status": code,
+        }
+    )
+    assert (
+        "Not tested"
+        in client.get("/status/invocations", headers=AUTH).json["echo_playback_html"]
+    )

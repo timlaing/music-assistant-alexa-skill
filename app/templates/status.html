@@ -9,10 +9,7 @@
     <section class="ma-panel" aria-labelledby="connectivity-heading">
         <div class="ma-panelhead"><h2 id="connectivity-heading">Connectivity</h2></div>
         <div id="urls-row">{{ urls_html | safe }}</div>
-        <div class="ma-row">
-            <div><strong>Echo playback</strong><p>Waiting for a physical device test.</p></div>
-            <span class="ma-state"><span class="ma-dot" aria-hidden="true"></span>Not tested</span>
-        </div>
+        <div id="echo-playback-row">{{ echo_playback_html | safe }}</div>
         <details class="ma-detail">
             <summary>Connection diagnostics</summary>
             <pre class="ma-code" id="conn-diag">{{ conn_diag }}</pre>
@@ -37,7 +34,7 @@
             <span class="ma-state {{ 'ma-ok' if apl_enabled else 'ma-warning' }}"><span class="ma-dot" aria-hidden="true"></span>{{ 'Enabled' if apl_enabled else 'Disabled' }}</span>
         </div>
         <p class="ma-muted">{{ 'Artwork and playback controls are enabled.' if apl_enabled else 'Artwork and playback controls are disabled for this add-on.' }}</p>
-        <div class="ma-note">The current track will appear here when playback starts.</div>
+        <div class="ma-note">Track metadata received from Music Assistant is shown in Metadata diagnostics.</div>
         <details class="ma-detail">
             <summary>Metadata diagnostics</summary>
             <div id="metadata-row">{{ metadata_html | safe }}</div>
@@ -122,6 +119,7 @@ function setFragment(id, html){
 (function pollInvocations(){
     fetch('/status/invocations').then(r=>r.json()).then(j=>{
         setFragment('invocations-row', j.invocations_html);
+        setFragment('echo-playback-row', j.echo_playback_html);
         setTimeout(pollInvocations, 3000);
     }).catch(()=>{ setTimeout(pollInvocations, 5000); });
 })();
