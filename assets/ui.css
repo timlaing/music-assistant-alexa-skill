@@ -317,6 +317,8 @@
   margin-top: 12px;
   border-top: 1px solid var(--ma-line);
   padding-top: 6px;
+  /* The full device id shown here must wrap rather than widen the card. */
+  overflow-wrap: anywhere;
 }
 #ma-app summary {
   color: var(--ma-secondary);
@@ -523,6 +525,21 @@
   border: 1px solid var(--ma-line);
   border-radius: var(--ma-radius);
   background: var(--ma-panel);
+  /* An Alexa device id is one long unbreakable token: without this the grid
+     column could never shrink below its min-content width and the card (and
+     every sibling column) stretched to fit it. */
+  min-width: 0;
+}
+/* The device id line is truncated with an ellipsis; the full value stays in
+   the "Device details" expandable below and in the hover title. */
+#ma-app .ma-deviceline {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#ma-app .ma-controls {
+  margin-bottom: 6px;
+  color: var(--ma-good);
 }
 #ma-app .ma-deviceicon {
   width: 40px;
@@ -626,6 +643,10 @@
   color: var(--ma-secondary);
   font-size: 12px;
   margin-top: 16px;
+}
+#ma-app .ma-note.ma-errornote {
+  background: light-dark(#fcecef, #4a2430);
+  color: light-dark(#a52b36, #ffabb6);
 }
 #ma-app .ma-toast {
   padding: 10px 14px;

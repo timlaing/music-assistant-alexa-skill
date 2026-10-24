@@ -157,3 +157,57 @@ def test_command_does_not_wait_long_for_a_stalled_background_write(monkeypatch):
         assert stalled.locked()
     finally:
         stalled.release()
+
+
+@pytest.fixture
+def players_cache(monkeypatch):
+    """Isolate the module-level player-list cache for one test."""
+    monkeypatch.setattr(ma_control, "_players_cache", {"at": 0.0, "players": None})
+    return ma_control._players_cache
+
+
+def test_list_ma_players_without_credentials(monkeypatch, players_cache):
+    monkeypatch.delenv("MA_API_URL", raising=False)
+    monkeypatch.delenv("MA_API_TOKEN", raising=False)
+    assert ma_control.list_ma_players() is None
+    assert players_cache["players"] is None
+
+
+def test_list_ma_players_sorts_and_drops_incomplete_rows(monkeypatch, players_cache):
+    monkeypatch.setenv("MA_API_URL", "http://ma:8095")
+    monkeypatch.setenv("MA_API_TOKEN", "tok")
+    calls = []
+
+    async def fetch(server_url, token):
+        calls.append((server_url, token))
+        return [
+            {"player_id": "b", "name": "Zebra"},
+            {"player_id": "a", "name": "apple"},
+            {"player_id": None, "name": "no id"},
+            "not a dict",
+        ]
+
+    monkeypatch.setattr(ma_control, "_fetch_players", fetch)
+    players = ma_control.list_ma_players()
+    assert players == [
+        {"player_id": "a", "name": "apple"},
+        {"player_id": "b", "name": "Zebra"},
+    ]
+    # A second read inside the TTL is served from the cache, not the network.
+    assert ma_control.list_ma_players() == players
+    assert len(calls) == 1
+
+
+def test_list_ma_players_caches_failures(monkeypatch, players_cache):
+    monkeypatch.setenv("MA_API_URL", "http://ma:8095")
+    monkeypatch.setenv("MA_API_TOKEN", "tok")
+    calls = []
+
+    async def fetch(server_url, token):
+        calls.append(1)
+        raise OSError("MA is down")
+
+    monkeypatch.setattr(ma_control, "_fetch_players", fetch)
+    assert ma_control.list_ma_players() is None
+    assert ma_control.list_ma_players() is None
+    assert len(calls) == 1
