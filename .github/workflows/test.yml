@@ -14,8 +14,18 @@ jobs:
     permissions:
       contents: read
     steps:
+      # actions/checkout defaults to the merge commit (refs/pull/<n>/merge)
+      # on pull_request events, but sonarqube.yml scans workflow_run.head_sha,
+      # i.e. the PR head. The two trees only match while the branch is up to
+      # date with main: once main moves underneath an open PR the line numbers
+      # in the coverage artifact no longer match the scanned files and
+      # SonarPython discards the whole report (0.0% coverage on new code).
+      # Check out the PR head so the artifact and the scan describe the same
+      # tree, and so tests run against exactly what will be squash-merged.
+      # Push events have no pull_request payload and fall back to github.sha.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
