@@ -121,7 +121,7 @@ async def test_unknown_history_uses_random_available_saved_station(connected):
         [station("Offline", available=False), a, b], history=[station("Removed")]
     )
     connected(client)
-    with patch.object(v.random, "choice", return_value=b) as choose:
+    with patch.object(v, "choose", return_value=b) as choose:
         assert (await v.prepare_radio("echo", "resume"))[0] is b
     choose.assert_called_once_with([a, b])
 
@@ -182,8 +182,9 @@ def test_name_matching_requires_unambiguous_saved_station():
         v.named_station([a, b], "Other")
     with pytest.raises(ValueError, match="station name"):
         v.named_station([a, b], "")
+    duplicate = station(a.name, "duplicate")
     with pytest.raises(ValueError, match="multiple stations"):
-        v.named_station([a, station(a.name, "duplicate")], a.name)
+        v.named_station([a, duplicate], a.name)
 
 
 @run_async

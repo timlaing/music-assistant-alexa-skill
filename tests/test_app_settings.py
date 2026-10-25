@@ -110,7 +110,8 @@ def test_unreadable_secret_file_fails_closed(tmp_path, monkeypatch):
     # contents must never leak through the error path either.
     assert value != str(secret)
     assert value != "the-real-secret"
-    assert value and len(value) >= 32
+    assert value
+    assert len(value) >= 32
     # Stable within the process, and distinct per secret name so a username
     # and a password can never collapse into one guessable string.
     assert get_env_secret("APP_USERNAME") == value

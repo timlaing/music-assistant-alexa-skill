@@ -3,8 +3,8 @@
 import asyncio
 import itertools
 import logging
-import random
 import re
+import secrets
 import threading
 import time
 import unicodedata
@@ -65,6 +65,27 @@ def normalized(value):
     )
 
 
+def base_title(name):
+    """A track title without its trailing (Remastered) or [remix] qualifier."""
+    bracket = min(
+        (index for index in (name.find("("), name.find("[")) if index != -1),
+        default=-1,
+    )
+    return name[:bracket].rstrip() if bracket != -1 else name
+
+
+def shuffle(items):
+    """Uniform random order for playback, drawn from the OS entropy source."""
+    for end in range(len(items) - 1, 0, -1):
+        swap = secrets.randbelow(end + 1)
+        items[end], items[swap] = items[swap], items[end]
+
+
+def choose(items):
+    """One random item, drawn from the OS entropy source."""
+    return items[secrets.randbelow(len(items))]
+
+
 def choose_playlist(items, query):
     matches = [item for item in items if normalized(item.name) == normalized(query)]
     if len(matches) == 1:
@@ -122,8 +143,7 @@ async def find_music(client, query, kind):
                 item
                 for item in candidates
                 if artist_matches(item, artist)
-                and normalized(re.sub(r"\s*[\(\[].*$", "", item.name))
-                == normalized(title)
+                and normalized(base_title(item.name)) == normalized(title)
             ]
             if matches:
                 return min(
@@ -283,7 +303,7 @@ async def favorite_tracks(client):
         raise ValueError(
             "You have no favorite songs yet. Say add this song to my favorites to add one."
         )
-    random.shuffle(uris)
+    shuffle(uris)
     return uris
 
 
@@ -370,7 +390,7 @@ async def library_tracks(client):
         )
         tracks = [track for track in tracks if getattr(track, "available", True)]
         if tracks:
-            random.shuffle(tracks)
+            shuffle(tracks)
             return tracks
     return []
 
@@ -464,7 +484,7 @@ async def recommended_seed(client):
             logger.warning("Skipping unavailable recommendation row")
     pool = unique_recommendations(tracks)
     if pool:
-        uri = random.choice(pool)
+        uri = choose(pool)
         track = next(track for track in tracks if track["uri"] == uri)
         artists = ", ".join(
             artist["name"] for artist in track.get("artists", []) if artist.get("name")
@@ -472,7 +492,7 @@ async def recommended_seed(client):
         return uri, song_label(track.get("name"), artists)
     tracks = await library_tracks(client)
     if tracks:
-        track = random.choice(tracks)
+        track = choose(tracks)
         return track.uri, song_label(getattr(track, "name", None), artist_names(track))
     raise ValueError(
         "Music Assistant has no recommended songs or library tracks available right now."
@@ -577,6 +597,53 @@ def named_station(stations, query):
     raise ValueError("I could not find that station in your Music Assistant library.")
 
 
+async def station_for(client, stations, action, query, current, queue):
+    """The saved station this request starts, after ambiguity and history checks."""
+    if action == "named":
+        return named_station(stations, query)
+    if action in ("next", "previous"):
+        index = next(
+            (i for i, item in enumerate(stations) if station_matches(item, current)),
+            None,
+        )
+        if index is None:
+            raise ValueError(
+                "The current station is not in your saved radio library. Please start a saved station first."
+            )
+        return stations[(index + (1 if action == "next" else -1)) % len(stations)]
+    selected = next(
+        (item for item in stations if current and station_matches(item, current)),
+        None,
+    )
+    if selected is None:
+        history = await client.music.recently_played(
+            limit=50,
+            media_types=[MediaType.RADIO],
+            queue_id=queue.queue_id,
+            fully_played_only=False,
+        )
+        selected = next(
+            (
+                station
+                for previous in history
+                for station in stations
+                if station_matches(station, previous)
+            ),
+            None,
+        )
+    return selected if selected is not None else choose(stations)
+
+
+def navigation_unchanged(latest, queue, expected):
+    """True while the playback the navigation was planned against is still there."""
+    return (
+        latest.queue_id == queue.queue_id
+        and current_station(latest) is not None
+        and getattr(latest, "state", None) == "playing"
+        and getattr(latest.current_item, "queue_item_id", None) == expected
+    )
+
+
 async def prepare_radio(player_id, action, query=""):
     """Resolve before acknowledging so ambiguity and inactive radio are spoken."""
     async with connection() as client:
@@ -588,63 +655,14 @@ async def prepare_radio(player_id, action, query=""):
         ):
             raise ValueError("No radio station is playing. Your playback is unchanged.")
         stations = await saved_stations(client)
-        if action == "named":
-            selected = named_station(stations, query)
-        elif navigating:
-            index = next(
-                (
-                    i
-                    for i, item in enumerate(stations)
-                    if station_matches(item, current)
-                ),
-                None,
-            )
-            if index is None:
-                raise ValueError(
-                    "The current station is not in your saved radio library. Please start a saved station first."
-                )
-            selected = stations[
-                (index + (1 if action == "next" else -1)) % len(stations)
-            ]
-        else:
-            selected = next(
-                (
-                    item
-                    for item in stations
-                    if current and station_matches(item, current)
-                ),
-                None,
-            )
-            if selected is None:
-                history = await client.music.recently_played(
-                    limit=50,
-                    media_types=[MediaType.RADIO],
-                    queue_id=queue.queue_id,
-                    fully_played_only=False,
-                )
-                selected = next(
-                    (
-                        station
-                        for previous in history
-                        for station in stations
-                        if station_matches(station, previous)
-                    ),
-                    None,
-                )
-            if selected is None:
-                selected = random.choice(stations)
+        selected = await station_for(client, stations, action, query, current, queue)
         # Navigation must not interrupt music started while this request was preparing.
         expected = (
             getattr(queue.current_item, "queue_item_id", None) if navigating else None
         )
         if navigating:
             latest = await active_queue(client, player_id)
-            if (
-                latest.queue_id != queue.queue_id
-                or current_station(latest) is None
-                or getattr(latest, "state", None) != "playing"
-                or getattr(latest.current_item, "queue_item_id", None) != expected
-            ):
+            if not navigation_unchanged(latest, queue, expected):
                 raise ValueError(
                     "Playback changed while selecting a station. Please try again."
                 )
@@ -696,28 +714,35 @@ async def queue_information(player_id, which):
         queue = await active_queue(client, player_id)
         if which == "current" and current_station(queue) is not None:
             return describe_station(queue, include_song=True)
-        if queue.current_index is None or queue.current_item is None:
-            return "There is no current song."
-        if which == "current":
-            item = queue.current_item
-        elif which == "next" and queue.next_item is not None:
-            item = queue.next_item
-        else:
-            index = queue.current_index + (1 if which == "next" else -1)
-            if index < 0 or index >= queue.items:
-                return "There is no " + which + " song in this queue."
-            items = await client.player_queues.get_queue_items(
-                queue.queue_id, limit=1, offset=index
-            )
-            item = items[0] if items else None
+        item, message = await queue_item_at(client, queue, which)
         if item is None:
-            return "There is no " + which + " song in this queue."
+            return message
         prefix = {
             "current": "This is ",
             "next": "Next is ",
             "previous": "Before this was ",
         }[which]
         return prefix + describe_item(item) + "."
+
+
+async def queue_item_at(client, queue, which):
+    """The item `which` points at, and the message when the queue has none."""
+    if queue.current_index is None or queue.current_item is None:
+        return None, "There is no current song."
+    if which == "current":
+        return queue.current_item, None
+    if which == "next" and queue.next_item is not None:
+        return queue.next_item, None
+    index = queue.current_index + (1 if which == "next" else -1)
+    if index < 0 or index >= queue.items:
+        return None, "There is no " + which + " song in this queue."
+    items = await client.player_queues.get_queue_items(
+        queue.queue_id, limit=1, offset=index
+    )
+    item = items[0] if items else None
+    if item is None:
+        return None, "There is no " + which + " song in this queue."
+    return item, None
 
 
 def same_album(left, right):
@@ -735,6 +760,81 @@ def same_album(left, right):
     )
 
 
+def shuffle_source_error(queue, kind, current, sources, album):
+    """Why this queue cannot be shuffled, or None when it can."""
+    if (
+        current is None
+        or queue.current_index is None
+        or queue.is_dynamic
+        or len(sources) != 1
+        or sources[0].media_type != MediaType(kind)
+        or (kind == "album" and not same_album(sources[0], album))
+    ):
+        return (
+            "Please start "
+            + ("an album" if kind == "album" else "a playlist")
+            + " first."
+        )
+    if queue.shuffle_enabled:
+        return "This queue already has shuffle enabled. Please start it normally first."
+    return None
+
+
+async def unbuffered_items(client, queue, boundary):
+    """The queue tail after boundary, fetched past Music Assistant's buffer."""
+    items, offset = [], boundary + 1
+    while offset < queue.items:
+        page = await client.player_queues.get_queue_items(
+            queue.queue_id, limit=500, offset=offset
+        )
+        if not page:
+            break
+        items.extend(page)
+        offset += len(page)
+    return items
+
+
+def require_album_tail(items, album):
+    if any(
+        not same_album(getattr(getattr(item, "media_item", None), "album", None), album)
+        for item in items
+    ):
+        raise ValueError(
+            "The remaining queue contains other music. Please start an album first."
+        )
+
+
+async def reorder_shuffled(client, player_id, queue, current, order, original):
+    """Apply the shuffled order, restoring the queue when a move fails."""
+    ids = list(original)
+
+    async def unchanged_playback():
+        latest = await active_queue(client, player_id)
+        if (
+            latest.queue_id != queue.queue_id
+            or latest.current_item is None
+            or latest.current_item.queue_item_id != current.queue_item_id
+            or latest.index_in_buffer != queue.index_in_buffer
+        ):
+            raise ValueError("Playback advanced while shuffling. Please try again.")
+
+    try:
+        await reorder(
+            client,
+            queue.queue_id,
+            ids,
+            [item.queue_item_id for item in order],
+            unchanged_playback,
+        )
+    except Exception:
+        # Moves can't be applied at once; put back the order the user had.
+        try:
+            await reorder(client, queue.queue_id, ids, original)
+        except Exception:
+            logger.exception("Could not restore the queue order after shuffling")
+        raise
+
+
 async def shuffle_selection(player_id, kind):
     """Reorder only a finite album/playlist tail; never enable shuffle mode."""
     async with connection() as client:
@@ -743,80 +843,24 @@ async def shuffle_selection(player_id, kind):
         media = getattr(current, "media_item", None)
         album = getattr(media, "album", None)
         sources = getattr(queue, "sources", [])
-        if (
-            current is None
-            or queue.current_index is None
-            or queue.is_dynamic
-            or len(sources) != 1
-            or sources[0].media_type != MediaType(kind)
-            or (kind == "album" and not same_album(sources[0], album))
-        ):
-            raise ValueError(
-                "Please start "
-                + ("an album" if kind == "album" else "a playlist")
-                + " first."
-            )
-        if queue.shuffle_enabled:
-            raise ValueError(
-                "This queue already has shuffle enabled. Please start it normally first."
-            )
+        error = shuffle_source_error(queue, kind, current, sources, album)
+        if error:
+            raise ValueError(error)
         boundary = max(
             queue.current_index,
             queue.index_in_buffer if queue.index_in_buffer is not None else -1,
         )
-        items = []
-        offset = boundary + 1
-        while offset < queue.items:
-            page = await client.player_queues.get_queue_items(
-                queue.queue_id, limit=500, offset=offset
-            )
-            if not page:
-                break
-            items.extend(page)
-            offset += len(page)
+        items = await unbuffered_items(client, queue, boundary)
         if len(items) < 2:
             raise ValueError("There are not enough unbuffered tracks left to shuffle.")
-        if kind == "album" and any(
-            not same_album(
-                getattr(getattr(item, "media_item", None), "album", None), album
-            )
-            for item in items
-        ):
-            raise ValueError(
-                "The remaining queue contains other music. Please start an album first."
-            )
+        if kind == "album":
+            require_album_tail(items, album)
         order = list(items)
-        random.shuffle(order)
+        shuffle(order)
         if order == items:
             order = order[1:] + order[:1]
         original = [item.queue_item_id for item in items]
-        ids = list(original)
-
-        async def unchanged_playback():
-            latest = await active_queue(client, player_id)
-            if (
-                latest.queue_id != queue.queue_id
-                or latest.current_item is None
-                or latest.current_item.queue_item_id != current.queue_item_id
-                or latest.index_in_buffer != queue.index_in_buffer
-            ):
-                raise ValueError("Playback advanced while shuffling. Please try again.")
-
-        try:
-            await reorder(
-                client,
-                queue.queue_id,
-                ids,
-                [item.queue_item_id for item in order],
-                unchanged_playback,
-            )
-        except Exception:
-            # Moves can't be applied at once; put back the order the user had.
-            try:
-                await reorder(client, queue.queue_id, ids, original)
-            except Exception:
-                logger.exception("Could not restore the queue order after shuffling")
-            raise
+        await reorder_shuffled(client, player_id, queue, current, order, original)
 
 
 async def reorder(client, queue_id, ids, wanted, before_move=None):
@@ -998,6 +1042,7 @@ class VoiceMusicHandler(AbstractRequestHandler):
         return intent is not None and intent.name in HANDLED_INTENTS
 
     def handle(self, handler_input):
+        """Resolve the request, then answer — one intent branch at a time."""
         name = handler_input.request_envelope.request.intent.name
         slot = (handler_input.request_envelope.request.intent.slots or {}).get("query")
         query = getattr(slot, "value", "") or ""
@@ -1010,123 +1055,132 @@ class VoiceMusicHandler(AbstractRequestHandler):
                 "Please map this Echo to its player in the bridge devices page first.",
             )
         if name in RADIO_INTENTS:
-            try:
-                station, queue_id, expected = run_now(
-                    lambda: prepare_radio(player, RADIO_INTENTS[name], query), 5
-                )
-            except ValueError as exc:
-                return say(response, str(exc))
-            except Exception:
-                logger.exception("Radio selection failed")
-                return say(
-                    response,
-                    "I could not find a radio station right now. Please try again.",
-                )
-
-            return start_after_answer(
-                player,
-                response,
-                "Starting " + station.name + ".",
-                lambda: play_station(player, station, queue_id, expected),
-                name="voice-radio",
-            )
-
+            return self._start_radio(response, player, name, query)
         if (name in MUSIC_INTENTS or name == "PlayNextIntent") and not query.strip():
             return say(response, "Please say a song, artist, album or playlist name.")
-
         if name == "PlayNextIntent":
-            request_id = getattr(
-                handler_input.request_envelope.request, "request_id", None
-            )
-            if song := repeated_play_next(request_id):
-                return say(response, song + " will play next.")
-            try:
-                song = run_now(lambda: play_next(player, query), 6)
-                remember_play_next(request_id, song)
-            except ValueError as exc:
-                return say(response, str(exc))
-            except Exception:
-                logger.exception("Play next failed")
-                return say(
-                    response, "I could not queue that song right now. Please try again."
-                )
-            return say(response, song + " will play next.")
-
+            return self._play_next(response, player, handler_input, query)
         if name in SONG_INTENTS:
-            try:
-                message, change = run_now(
-                    lambda: plan_song_change(player, *SONG_INTENTS[name]), 5
-                )
-            except ValueError as exc:
-                return say(response, str(exc))
-            except Exception:
-                logger.exception("Song update failed")
-                return say(
-                    response,
-                    "I could not update that song right now. Please try again.",
-                )
-            if change is not None:
-                run_after_response(player, "voice-song-update", None, change)
-            return say(response, message)
-
+            return self._change_song(response, player, name)
         if name in INFO_INTENTS or name in SHUFFLE_INTENTS:
-
-            async def queue_request():
-                if name in INFO_INTENTS:
-                    return await queue_information(player, INFO_INTENTS[name])
-                await shuffle_selection(player, SHUFFLE_INTENTS[name])
-                return (
-                    "The remaining " + SHUFFLE_INTENTS[name] + " tracks are shuffled."
-                )
-
-            try:
-                return say(response, run_now(queue_request, 5))
-            except ValueError as exc:
-                return say(response, str(exc))
-            except Exception:
-                logger.exception("Voice queue request failed")
-                return say(
-                    response, "I could not finish that queue request. Please try again."
-                )
-
+            return self._queue_request(response, player, name)
         if name == "ResumeMusicIntent":
-            try:
-                queue_id, current = run_now(lambda: prepare_resume(player), 5)
-            except ValueError as exc:
-                return say(response, str(exc))
-            except Exception:
-                logger.exception("Resume failed")
-                return say(
-                    response,
-                    "I could not resume your music right now. Please try again.",
-                )
-
-            what = describe_item(current) if current is not None else "your music"
-            return start_after_answer(
-                player,
-                response,
-                "Resuming " + what + ".",
-                lambda: resume_queue(queue_id),
-            )
-
+            return self._resume(response, player)
         if name == "PlaySimilarIntent":
-            try:
-                run_now(lambda: check_similar(player), 5)
-            except ValueError as exc:
-                return say(response, str(exc))
-            except Exception:
-                logger.exception("Similar songs check failed")
-                return say(
-                    response,
-                    "I could not start similar songs right now. Please try again.",
-                )
-            return start_after_answer(
-                player,
+            return self._similar(response, player)
+        return self._play_music(response, player, name, query)
+
+    def _start_radio(self, response, player, name, query):
+        try:
+            station, queue_id, expected = run_now(
+                lambda: prepare_radio(player, RADIO_INTENTS[name], query), 5
+            )
+        except ValueError as exc:
+            return say(response, str(exc))
+        except Exception:
+            logger.exception("Radio selection failed")
+            return say(
                 response,
-                "Switching to similar songs after this track.",
-                lambda: play_similar(player),
+                "I could not find a radio station right now. Please try again.",
             )
 
+        return start_after_answer(
+            player,
+            response,
+            "Starting " + station.name + ".",
+            lambda: play_station(player, station, queue_id, expected),
+            name="voice-radio",
+        )
+
+    def _play_next(self, response, player, handler_input, query):
+        request_id = getattr(handler_input.request_envelope.request, "request_id", None)
+        if song := repeated_play_next(request_id):
+            return say(response, song + " will play next.")
+        try:
+            song = run_now(lambda: play_next(player, query), 6)
+            remember_play_next(request_id, song)
+        except ValueError as exc:
+            return say(response, str(exc))
+        except Exception:
+            logger.exception("Play next failed")
+            return say(
+                response, "I could not queue that song right now. Please try again."
+            )
+        return say(response, song + " will play next.")
+
+    def _change_song(self, response, player, name):
+        try:
+            message, change = run_now(
+                lambda: plan_song_change(player, *SONG_INTENTS[name]), 5
+            )
+        except ValueError as exc:
+            return say(response, str(exc))
+        except Exception:
+            logger.exception("Song update failed")
+            return say(
+                response,
+                "I could not update that song right now. Please try again.",
+            )
+        if change is not None:
+            run_after_response(player, "voice-song-update", None, change)
+        return say(response, message)
+
+    def _queue_request(self, response, player, name):
+        async def queue_request():
+            if name in INFO_INTENTS:
+                return await queue_information(player, INFO_INTENTS[name])
+            await shuffle_selection(player, SHUFFLE_INTENTS[name])
+            return "The remaining " + SHUFFLE_INTENTS[name] + " tracks are shuffled."
+
+        try:
+            return say(response, run_now(queue_request, 5))
+        except ValueError as exc:
+            return say(response, str(exc))
+        except Exception:
+            logger.exception("Voice queue request failed")
+            return say(
+                response, "I could not finish that queue request. Please try again."
+            )
+
+    def _resume(self, response, player):
+        try:
+            queue_id, current = run_now(lambda: prepare_resume(player), 5)
+        except ValueError as exc:
+            return say(response, str(exc))
+        except Exception:
+            logger.exception("Resume failed")
+            return say(
+                response,
+                "I could not resume your music right now. Please try again.",
+            )
+
+        what = describe_item(current) if current is not None else "your music"
+        return start_after_answer(
+            player,
+            response,
+            "Resuming " + what + ".",
+            lambda: resume_queue(queue_id),
+        )
+
+    def _similar(self, response, player):
+        try:
+            run_now(lambda: check_similar(player), 5)
+        except ValueError as exc:
+            return say(response, str(exc))
+        except Exception:
+            logger.exception("Similar songs check failed")
+            return say(
+                response,
+                "I could not start similar songs right now. Please try again.",
+            )
+        return start_after_answer(
+            player,
+            response,
+            "Switching to similar songs after this track.",
+            lambda: play_similar(player),
+        )
+
+    def _play_music(self, response, player, name, query):
         try:
             selection = run_now(
                 lambda: prepare_music(

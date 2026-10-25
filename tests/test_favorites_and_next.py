@@ -163,7 +163,7 @@ async def test_favorites_play_shuffled_once_as_a_finite_queue(connected):
     favorites = [track("A"), track("B"), track("Gone", available=False)]
     c = client(favorites=favorites)
     connected(c)
-    with patch.object(v.random, "shuffle", side_effect=lambda xs: xs.reverse()):
+    with patch.object(v, "shuffle", side_effect=lambda xs: xs.reverse()):
         selection = await v.prepare_music("echo", kind="favorites")
     assert selection["media"] == ["library://track/b", "library://track/a"]
     assert selection["radio"] is False
@@ -308,7 +308,8 @@ def test_model_has_the_new_phrases():
     assert "remove this song from my library" in intents["RemoveFromLibraryIntent"]
     # "like" and "unlike" sound too alike for Alexa to tell apart.
     samples = [sample for phrases in intents.values() for sample in phrases]
-    assert "like this song" not in samples and "unlike this song" not in samples
+    assert "like this song" not in samples
+    assert "unlike this song" not in samples
     assert "play my favorites" in intents["PlayFavoritesIntent"]
 
 
