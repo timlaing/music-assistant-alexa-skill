@@ -103,6 +103,22 @@ def test_actual_stream_url_uses_configured_public_base(monkeypatch):
     assert targets()[-1][1] == "https://streams.example.com/music/flow/track.mp3"
 
 
+def test_current_audio_target_reads_stream_url_key(monkeypatch):
+    """Verify the streamUrl store key drives the current-audio target."""
+    monkeypatch.setenv("MA_HOSTNAME", "https://streams.example.com/music")
+    set_ma(
+        {
+            "streamUrl": "http://ma.local:8097/flow/track.mp3",
+            "url": "http://ma.local:8097/older/track.mp3",
+        }
+    )
+    assert (
+        "Current audio",
+        "https://streams.example.com/music/flow/track.mp3",
+        "audio",
+    ) in targets()
+
+
 def test_testaudio_target_follows_skill_host(monkeypatch):
     """Verify testaudio target follows skill host."""
     monkeypatch.setenv("SKILL_HOSTNAME", "https://example.com/ma-alexa-skill")

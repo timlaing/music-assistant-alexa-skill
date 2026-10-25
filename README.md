@@ -180,7 +180,7 @@ For stable **1.3.0**, edit application settings on `/setup`; standalone environm
 
 ## Voice commands
 
-The English (US) voice model uses the invocation name **music assistant**:
+Every locale’s voice model uses the invocation name **music assistant** — the same name Music Assistant addresses when it starts or pauses playback on its own:
 
 | Command                                                                    | Behavior                                                                  |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------- |

@@ -23,9 +23,12 @@ def targets():
     if skill:
         result.append((_AUDIO_CHECK, skill, "testaudio"))
     latest = get_ma() or {}
-    if latest.get("url"):
+    # The store key is streamUrl (ma_routes/devices use it; "url" survives as
+    # a fallback for older pushes) — reading only "url" left this row dead.
+    url = latest.get("streamUrl") or latest.get("url")
+    if url:
         try:
-            audio = rewrite_url(latest["url"], stream)
+            audio = rewrite_url(url, stream)
         except (ValueError, TypeError):
             audio = "invalid:"
         result.append(("Current audio", audio, "audio"))

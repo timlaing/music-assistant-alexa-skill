@@ -24,6 +24,9 @@ against the skill's own /ma/latest-url endpoint:
                             token values are never carried out)
   V11  public reachability  folds the cached add-on reachability results into
                             the summary (reuses the existing probe cache)
+  V12  invocation name      the invocation name the skill deploys is the name
+                            Music Assistant addresses in its start command and
+                            in the control-command prefix (issue #71 class)
 
 Failures become check states, never exceptions.
 """
@@ -66,6 +69,25 @@ _TITLE_STREAM = "Stream host"
 _TITLE_PLAYERS = "Alexa players"
 _TITLE_AMAZON = "Amazon account link"
 _TITLE_REACH = "Public reachability"
+_TITLE_INVOCATION = "Invocation name"
+
+# Music Assistant's start commands (ALEXA_LANGUAGE_COMMANDS in
+# music-assistant/server music_assistant/providers/alexa/__init__.py;
+# identical in the 2.10.7 tag and dev). Locales absent from the table fall
+# back to MA's English default — correct for en-AU/en-GB/en-IN, an upstream
+# gap for es-MX.
+MA_START_COMMANDS = {
+    "de-DE": "sag music assistant spiele audio",
+    "en-CA": "ask music assistant to play audio",
+    "en-US": "ask music assistant to play audio",
+    "es-ES": "pídele a music assistant que reproduzca audio",
+    "fr-CA": "music assistant",
+    "fr-FR": "music assistant",
+    "it-IT": "chiedi a music assistant di riprodurre audio",
+    "pt-BR": "peça ao music assistant para reproduzir áudio",
+    "nl-NL": "speel music assistant",
+}
+MA_DEFAULT_START_COMMAND = "ask music assistant to play audio"
 
 
 def _origin(url):
@@ -770,6 +792,105 @@ def _v11_reachability(snap):
     )
 
 
+def _model_language(relative):
+    """languageModel dict of a bundled app/models file, else None."""
+    import json
+    from pathlib import Path
+
+    try:
+        data = json.loads(
+            (Path(__file__).parent / "models" / relative).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    language = (
+        data.get("interactionModel", {}).get("languageModel")
+        if isinstance(data, dict)
+        else None
+    )
+    return language if isinstance(language, dict) else None
+
+
+def _names_invocation(phrase, name):
+    """True when a phrase references a skill name as whole words (not a fragment)."""
+    phrase = " ".join(str(phrase or "").casefold().split())
+    name = " ".join(str(name or "").casefold().split())
+    return bool(name) and f" {name} " in f" {phrase} "
+
+
+def _v12_invocation(state):
+    """The deployed invocation name is the name Music Assistant addresses.
+
+    MA composes both its start command (ALEXA_LANGUAGE_COMMANDS) and the
+    pause/resume/stop prefix (from /alexa/intents) around this name; any
+    disagreement means MA-initiated commands never reach the skill — the
+    issue #71 failure class, self-diagnosed here.
+    """
+    locale = get_setting("LOCALE", "en-US")
+    bundled = _model_language(f"{locale}.json")
+    if bundled is None:
+        return _check(
+            "v12",
+            _TITLE_INVOCATION,
+            "unknown",
+            f"No voice model is bundled for {locale}.",
+        )
+    live = None if not isinstance(state, dict) else state.get("live_invocation")
+    effective = live or bundled.get("invocationName") or ""
+    source = "deployed" if live else "bundled"
+    command = MA_START_COMMANDS.get(locale, MA_DEFAULT_START_COMMAND)
+    built_in = _model_language(f"built-in/{locale}.json")
+    prefix = (built_in or {}).get("invocationName") or ""
+
+    problems = []
+    if not effective:
+        problems.append(f"The {source} model declares no invocation name.")
+    elif not _names_invocation(command, effective):
+        problems.append(
+            f"Music Assistant starts playback with '{command}' for {locale}, "
+            f"which does not address the invocation name '{effective}' — the "
+            "command can never reach this skill (issue #71)."
+        )
+    if built_in is None:
+        problems.append(f"No built-in intents file is bundled for {locale}.")
+    elif not prefix:
+        problems.append(
+            "Music Assistant receives an empty control-command prefix for "
+            "this locale — its pause/resume/stop commands will be incomplete."
+        )
+    elif effective and not _names_invocation(prefix, effective):
+        problems.append(
+            f"The control-command prefix '{prefix}' does not include the "
+            f"invocation name '{effective}' — pause, resume and stop will "
+            "not route to this skill."
+        )
+    stale = ""
+    bundled_name = bundled.get("invocationName") or ""
+    if live and bundled_name and live != bundled_name:
+        stale = (
+            f" The deployed model still uses '{live}'; deploy to update it "
+            f"to '{bundled_name}'."
+        )
+    fallback = ""
+    if locale not in MA_START_COMMANDS and not locale.startswith("en-"):
+        fallback = (
+            f" Music Assistant has no start command for {locale} and falls "
+            f"back to English ('{command}') — a known Music Assistant gap."
+        )
+    if problems:
+        return _check(
+            "v12", _TITLE_INVOCATION, "fail", " ".join(problems) + stale + fallback
+        )
+    detail = (
+        f"Music Assistant's start command '{command}' addresses "
+        f"'{effective}'; the control-command prefix '{prefix}' agrees."
+        f"{stale}{fallback}"
+    )
+    if fallback:
+        return _check("v12", _TITLE_INVOCATION, "warning", detail)
+    return _check("v12", _TITLE_INVOCATION, "pass", detail)
+
+
 def _summary(checks):
     counts = {"pass": 0, "fail": 0, "warning": 0, "unknown": 0, "info": 0}
     for check in checks:
@@ -786,7 +907,7 @@ def _summary(checks):
 
 
 def run_checks():
-    """Run V1–V11. Never raises — every failure becomes a check state."""
+    """Run V1–V12. Never raises — every failure becomes a check state."""
     try:
         return _run_checks()
     except Exception as exc:  # pragma: no cover - defensive
@@ -841,6 +962,7 @@ def _reachability_snapshot():
 def _run_checks():
     store = shared_store.get_ma() or {}
     channel = _read_channel()
+    state = _deployment_state()
     checks = [
         _v1_provider(channel),
         _v2a_setup_keys(channel),
@@ -851,8 +973,9 @@ def _run_checks():
         _v7_invocations(_intent_logs()),
         _v8_stream_host(store),
         _v9_players(channel),
-        _v10_alexa_link(_deployment_state()),
+        _v10_alexa_link(state),
         _v11_reachability(_reachability_snapshot()),
+        _v12_invocation(state),
     ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

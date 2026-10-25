@@ -1,7 +1,7 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "",
+      "invocationName": "peça ao music assistant para",
       "intents": [
         {
           "intent": "AMAZON.CancelIntent",

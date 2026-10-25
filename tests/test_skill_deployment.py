@@ -184,9 +184,22 @@ def deploy(manager, create=False):
     manager.deploy(manager.state["review"]["id"])
 
 
-def test_existing_skill_preserves_identity_resources_and_invocation(deployment):
+def test_existing_skill_preserves_identity_resources_and_adopts_bundled_invocation(
+    deployment,
+):
     manager, amazon = deployment
     original = copy.deepcopy(amazon.files)
+    # The exported package still carries a stale invocation name from an older
+    # deployment; the bundled model is the source of truth, so deployment
+    # adopts it (issue #71: Music Assistant addresses the skill by the
+    # bundled name in every locale).
+    stale = json.loads(
+        amazon.files["skill-package/interactionModels/custom/en-GB.json"]
+    )
+    stale["interactionModel"]["languageModel"]["invocationName"] = "my radio"
+    amazon.files["skill-package/interactionModels/custom/en-GB.json"] = json.dumps(
+        stale
+    ).encode()
     deploy(manager)
     assert manager.state["phase"] == "complete"
     assert manager.state["skill_id"] == SKILL
@@ -215,7 +228,9 @@ def test_existing_skill_preserves_identity_resources_and_invocation(deployment):
     model = json.loads(
         amazon.files["skill-package/interactionModels/custom/en-GB.json"]
     )
-    assert model["interactionModel"]["languageModel"]["invocationName"] == "my radio"
+    assert model["interactionModel"]["languageModel"]["invocationName"] == (
+        "music assistant"
+    )
     assert not any(method == "DELETE" for method, _, _ in amazon.calls)
     assert all("/live/" not in url for _, url, _ in amazon.calls)
 
@@ -635,7 +650,7 @@ def test_rejected_access_token_refreshes_once(deployment):
     assert sum(method == "TOKEN" for method, _, _ in amazon.calls) == 1
 
 
-def test_package_at_root_and_invocation_preserved(deployment):
+def test_package_at_root_and_bundled_invocation(deployment):
     files = {"skill.json": (APP_DIR / "skill.json").read_bytes()}
     prepared, _, invocation = configure_package(files, "skill.json", settings(), False)
     assert "interactionModels/custom/en-GB.json" in prepared
@@ -968,7 +983,7 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
     model = json.loads(
         amazon.files["skill-package/interactionModels/custom/en-GB.json"]
     )["interactionModel"]["languageModel"]
-    assert model["invocationName"] == "my radio"
+    assert model["invocationName"] == "music assistant"
 
 
 def test_deploy_stores_materialized_icons_on_first_import(deployment):

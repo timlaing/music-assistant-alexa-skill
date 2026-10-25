@@ -11,7 +11,7 @@
   {% if done[1] and done[2] and done[3] and not done[4] %}{{ readiness('Ready for your review', 'Your changes have not been deployed. Review the details below before continuing.') }}{% endif %}
   <div class="ma-panelhead"><h2>Deployment summary</h2></div>
   <dl id="details"></dl>
-  <p>This replaces the selected locale’s voice model with Music Assistant’s model, preserving an existing invocation name, other locales and unrelated package files. It updates the HTTPS endpoint and regional endpoints, enables AudioPlayer, applies your APL preference and enables development testing.</p>
+  <p>This replaces the selected locale’s voice model with Music Assistant’s model — invocation name <strong>music assistant</strong> included, so Music Assistant’s own start, pause and resume commands address the skill — while other locales and unrelated package files stay untouched. It updates the HTTPS endpoint and regional endpoints, enables AudioPlayer, applies your APL preference and enables development testing.</p>
   <p id="newWarning" hidden>Creating a skill adds a new personal skill to this Amazon developer account.</p>
   <details class="ma-detail"><summary>View configuration</summary><pre id="manifest"></pre></details>
 </section>
