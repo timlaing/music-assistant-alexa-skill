@@ -23,7 +23,7 @@ class RecommendationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         )
-        with patch.object(v.random, "choice", side_effect=lambda xs: xs[-1]):
+        with patch.object(v, "choose", side_effect=lambda xs: xs[-1]):
             self.assertEqual((await v.recommended_seed(c))[0], "two")
         self.assertEqual(c.send_command.call_args.kwargs["provider"], "spotify--1")
 
@@ -154,9 +154,7 @@ class RecommendationPoolTests(unittest.IsolatedAsyncioTestCase):
             music=NS(recommendations=AsyncMock(return_value=rows)),
             send_command=AsyncMock(side_effect=items),
         )
-        with patch.object(
-            v.random, "choice", side_effect=lambda pool: pool[-1]
-        ) as choice:
+        with patch.object(v, "choose", side_effect=lambda pool: pool[-1]) as choice:
             self.assertEqual((await v.recommended_seed(c))[0], "d")
         self.assertEqual(choice.call_args.args[0], ["a", "b", "c", "d"])
         self.assertEqual(choice.call_count, 1)
@@ -228,9 +226,7 @@ class RecommendationPoolTests(unittest.IsolatedAsyncioTestCase):
             music=NS(recommendations=AsyncMock(return_value=rows)),
             send_command=AsyncMock(side_effect=items),
         )
-        with patch.object(
-            v.random, "choice", side_effect=lambda pool: pool[-1]
-        ) as choice:
+        with patch.object(v, "choose", side_effect=lambda pool: pool[-1]) as choice:
             self.assertEqual((await v.recommended_seed(c))[0], "7")
         self.assertEqual(choice.call_args.args[0], [str(i) for i in range(8)])
         self.assertEqual(c.send_command.await_count, 8)

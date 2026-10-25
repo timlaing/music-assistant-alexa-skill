@@ -115,7 +115,7 @@ class VoiceQueueTests(unittest.IsolatedAsyncioTestCase):
             get_queue_items=AsyncMock(return_value=items[2:]),
             move_item=AsyncMock(side_effect=move),
         )
-        with patch.object(v.random, "shuffle", side_effect=lambda xs: xs.reverse()):
+        with patch.object(v, "shuffle", side_effect=lambda xs: xs.reverse()):
             await self.run_with(NS(player_queues=pq), lambda: v.shuffle_album("echo"))
         self.assertEqual([i.name for i in stored], ["0", "1", "4", "3", "2"])
         self.assertIs(stored[0], items[0])
@@ -141,10 +141,9 @@ class VoiceQueueTests(unittest.IsolatedAsyncioTestCase):
         )
         for q in (non_album, dynamic_album):
             pq = NS(get_active_queue=AsyncMock(return_value=q), move_item=AsyncMock())
+            work = NS(player_queues=pq)
             with self.assertRaisesRegex(ValueError, "start an album"):
-                await self.run_with(
-                    NS(player_queues=pq), lambda: v.shuffle_album("echo")
-                )
+                await self.run_with(work, lambda: v.shuffle_album("echo"))
             pq.move_item.assert_not_awaited()
 
     async def test_explicit_artist_chooses_correct_song_or_album(self):
@@ -204,11 +203,12 @@ class VoiceQueueTests(unittest.IsolatedAsyncioTestCase):
             get_queue_items=AsyncMock(return_value=items[1:]),
             move_item=AsyncMock(),
         )
+        work = NS(player_queues=pq)
         with (
-            patch.object(v.random, "shuffle", side_effect=lambda xs: xs.reverse()),
+            patch.object(v, "shuffle", side_effect=lambda xs: xs.reverse()),
             self.assertRaisesRegex(ValueError, "Playback advanced"),
         ):
-            await self.run_with(NS(player_queues=pq), lambda: v.shuffle_album("echo"))
+            await self.run_with(work, lambda: v.shuffle_album("echo"))
         pq.move_item.assert_not_awaited()
 
     async def test_failed_shuffle_puts_the_order_back(self):
@@ -239,11 +239,12 @@ class VoiceQueueTests(unittest.IsolatedAsyncioTestCase):
             get_queue_items=AsyncMock(return_value=items[1:]),
             move_item=AsyncMock(side_effect=move),
         )
+        work = NS(player_queues=pq)
         with (
-            patch.object(v.random, "shuffle", side_effect=lambda xs: xs.reverse()),
+            patch.object(v, "shuffle", side_effect=lambda xs: xs.reverse()),
             self.assertRaises(v.MusicAssistantError),
         ):
-            await self.run_with(NS(player_queues=pq), lambda: v.shuffle_album("echo"))
+            await self.run_with(work, lambda: v.shuffle_album("echo"))
         self.assertEqual([i.name for i in stored], ["0", "1", "2", "3", "4"])
 
     async def test_title_containing_by_is_not_mistaken_for_artist(self):
@@ -278,7 +279,7 @@ class VoiceQueueTests(unittest.IsolatedAsyncioTestCase):
             get_queue_items=AsyncMock(return_value=items[1:]),
             move_item=AsyncMock(side_effect=move),
         )
-        with patch.object(v.random, "shuffle", side_effect=lambda xs: xs.reverse()):
+        with patch.object(v, "shuffle", side_effect=lambda xs: xs.reverse()):
             await self.run_with(
                 NS(player_queues=pq), lambda: v.shuffle_playlist("echo")
             )
