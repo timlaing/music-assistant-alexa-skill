@@ -1,4 +1,4 @@
-"""Tests for the read-only Music Assistant channel verification (V1–V11)."""
+"""Tests for the read-only Music Assistant channel verification (V1–V12)."""
 
 import asyncio
 import json
@@ -12,7 +12,21 @@ from endpoints import status
 
 AUTH = {"Authorization": "Basic dGVzdC11c2VyOnRlc3QtcGFzc3dvcmQ="}
 
-CHECK_IDS = ["v1", "v2a", "v2b", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+CHECK_IDS = [
+    "v1",
+    "v2a",
+    "v2b",
+    "v3",
+    "v4",
+    "v5",
+    "v6",
+    "v7",
+    "v8",
+    "v9",
+    "v10",
+    "v11",
+    "v12",
+]
 
 
 def _channel(**overrides):
@@ -455,6 +469,83 @@ def test_v11_reachability_states():
     assert verification._v11_reachability(bad)["state"] == "fail"
 
 
+def test_v12_invocation_states(monkeypatch):
+    def _set_locale(value):
+        monkeypatch.setattr(
+            verification,
+            "get_setting",
+            lambda name, default="": value if name == "LOCALE" else default,
+        )
+
+    real_model_language = verification._model_language
+
+    # Pass: the recorded de-DE deployment agrees with Music Assistant's
+    # start command.
+    _set_locale("de-DE")
+    check = verification._v12_invocation({"live_invocation": "music assistant"})
+    assert check["state"] == "pass"
+    assert "music assistant" in check["detail"]
+
+    # Unknown: state written before live_invocation existed must not pass as
+    # proof that the bundled name is what Amazon serves (issue #71).
+    assert verification._v12_invocation(None)["state"] == "unknown"
+    assert verification._v12_invocation({})["state"] == "unknown"
+
+    # Fail: Amazon still serves a model deployed for another locale.
+    mismatch = verification._v12_invocation(
+        {
+            "live_invocation": "music assistant",
+            "deployed_settings": {"locale": "en-US"},
+        }
+    )
+    assert mismatch["state"] == "fail"
+    assert "en-US" in mismatch["detail"]
+    assert "de-DE" in mismatch["detail"]
+
+    # Fail + stale note: a deployed model still using a pre-rename name
+    # (issue #71) never receives Music Assistant's start command.
+    stale = verification._v12_invocation({"live_invocation": "mein radio"})
+    assert stale["state"] == "fail"
+    assert "mein radio" in stale["detail"]
+    assert "deploy" in stale["detail"]
+
+    # Fail: the control-command prefix does not address the invocation name,
+    # so Music Assistant's pause/resume/stop commands never route here.
+    def _bad_prefix(relative):
+        if relative.startswith("built-in/"):
+            return {"invocationName": "wecker"}
+        return real_model_language(relative)
+
+    monkeypatch.setattr(verification, "_model_language", _bad_prefix)
+    prefixed = verification._v12_invocation(None)
+    assert prefixed["state"] == "fail"
+    assert "pause, resume and stop" in prefixed["detail"]
+
+    # Fail: an empty prefix — the pre-fill state of the fr/nl/pt models.
+    def _empty_prefix(relative):
+        if relative.startswith("built-in/"):
+            return {"invocationName": ""}
+        return real_model_language(relative)
+
+    monkeypatch.setattr(verification, "_model_language", _empty_prefix)
+    empty = verification._v12_invocation(None)
+    assert empty["state"] == "fail"
+    assert "empty control-command prefix" in empty["detail"]
+
+    monkeypatch.setattr(verification, "_model_language", real_model_language)
+
+    # Warn: es-MX is absent from Music Assistant's table (upstream gap) and
+    # gets the English fallback start command.
+    _set_locale("es-MX")
+    fallback = verification._v12_invocation({"live_invocation": "music assistant"})
+    assert fallback["state"] == "warning"
+    assert "es-MX" in fallback["detail"]
+
+    # Unknown: no bundled voice model for the locale.
+    _set_locale("xx-XX")
+    assert verification._v12_invocation(None)["state"] == "unknown"
+
+
 # --- composition -----------------------------------------------------------
 
 
@@ -486,18 +577,16 @@ def test_run_checks_composes_all_checks(monkeypatch):
     monkeypatch.setattr(
         verification, "_intent_logs", lambda: [{"incoming": {}, "ts": time.time()}]
     )
-    monkeypatch.setattr(
-        verification,
-        "_deployment_state",
-        lambda: {
-            "client_key": config_key(),
-            "tokens": {
-                "access_token": "a",
-                "refresh_token": "r",
-                "expires": time.time() + 3600,
-            },
+    state = {
+        "client_key": config_key(),
+        "live_invocation": "music assistant",
+        "tokens": {
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires": time.time() + 3600,
         },
-    )
+    }
+    monkeypatch.setattr(verification, "_deployment_state", lambda: state)
     monkeypatch.setattr(
         verification,
         "_reachability_snapshot",
@@ -529,10 +618,11 @@ def test_run_checks_composes_all_checks(monkeypatch):
         "v9",
         "v10",
         "v11",
+        "v12",
     ]
     assert all(c["state"] in ("pass", "info") for c in result["checks"])
     assert result["summary"]["kind"] == "good"
-    assert result["summary"]["counts"]["pass"] == 11
+    assert result["summary"]["counts"]["pass"] == 12
     assert result["summary"]["counts"]["info"] == 1
     assert result["generated_at"]
     # F: the bundle carries the player inventory (states + availability).
@@ -547,6 +637,16 @@ def test_run_checks_composes_all_checks(monkeypatch):
             "artist": "Artist",
         }
     ]
+
+    # A stale deployed name must surface through the composed check rather
+    # than hide behind the bundled-model fallback: if run_checks ever stops
+    # passing this state to V12, the assertion below is what fails.
+    state["live_invocation"] = "my radio"
+    stale_result = verification.run_checks()
+    stale_v12 = next(c for c in stale_result["checks"] if c["id"] == "v12")
+    assert stale_v12["state"] == "fail"
+    assert "my radio" in stale_v12["detail"]
+    assert stale_result["summary"]["kind"] == "error"
 
 
 def test_run_checks_records_read_failures(monkeypatch):

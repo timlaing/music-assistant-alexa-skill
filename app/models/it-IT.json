@@ -1,7 +1,7 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "la mia radio",
+      "invocationName": "music assistant",
       "intents": [
         {
           "name": "PlayAudio",
@@ -27,7 +27,8 @@
             "mette la musica",
             "mette la musica per favore",
             "accendi la musica",
-            "accendi la musica per favore"
+            "accendi la musica per favore",
+            "riprodurre audio"
           ]
         },
         {

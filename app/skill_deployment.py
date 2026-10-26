@@ -374,8 +374,16 @@ def pack(files):
     return output.getvalue()
 
 
-def _configured_model(model_path, files, locale):
-    """Load the bundled voice model for a locale, honouring a custom invocation."""
+def _configured_model(locale):
+    """Load the bundled voice model for a locale.
+
+    The bundled JSON is the source of truth, invocation name included:
+    Music Assistant addresses the skill by that name in every locale
+    (ALEXA_LANGUAGE_COMMANDS in its alexa provider), so an invocation
+    preserved from an older deployment would keep MA-initiated playback
+    silent (issue #71). Existing deployments adopt the bundled name on
+    their next deploy.
+    """
     model = json.loads((APP_DIR / "models" / f"{locale}.json").read_text())
     # Amazon's import build canonicalizes models to include the custom slot
     # type list. A bundled model that omits it is re-exported with
@@ -383,18 +391,26 @@ def _configured_model(model_path, files, locale):
     # and deployment would be blocked for that locale.
     language = model["interactionModel"]["languageModel"]
     language.setdefault("types", [])
-    if model_path in files:
-        original = json.loads(files[model_path])
-        invocation = (
-            original.get("interactionModel", {})
-            .get("languageModel", {})
-            .get("invocationName")
-        )
-        if invocation:
-            language["invocationName"] = invocation
-    elif locale.startswith("en-"):
-        language["invocationName"] = "music assistant"
     return model
+
+
+def _package_invocation(files, locale):
+    """Invocation name of a locale's model as it stands in a skill package.
+
+    Suffix-matched so it works for both Amazon exports and the local
+    package zip, whatever the manifest's directory prefix is.
+    """
+    suffix = f"interactionModels/custom/{locale}.json"
+    for name, raw in files.items():
+        if not name.endswith(suffix):
+            continue
+        try:
+            model = json.loads(raw)
+            name = model["interactionModel"]["languageModel"]["invocationName"]
+        except (ValueError, KeyError, TypeError):
+            return None
+        return name or None
+    return None
 
 
 def configure_package(files, manifest_path, config, existing):
@@ -442,7 +458,7 @@ def configure_package(files, manifest_path, config, existing):
     prefix = str(PurePosixPath(manifest_path).parent)
     prefix = "" if prefix == "." else prefix + "/"
     model_path = f"{prefix}interactionModels/custom/{locale}.json"
-    model = _configured_model(model_path, files, locale)
+    model = _configured_model(locale)
     # The bundled model intentionally replaces this locale's intents/slots.
     files[model_path] = json.dumps(model).encode()
     files[manifest_path] = json.dumps({"manifest": manifest}).encode()
@@ -864,6 +880,10 @@ class DeploymentManager:
                 )
             self.update(import_path=None)
         available = self.skills(vendor)
+        # The invocation name currently LIVE in Amazon (an export only exists
+        # for an already-created skill); verification status page compares it
+        # against the start command Music Assistant sends (issue #71).
+        live = None
         if create:
             if (
                 skill
@@ -886,6 +906,7 @@ class DeploymentManager:
                 )
             files, manifest_path = self.export(skill)
             baseline = package_fingerprint(files)
+            live = _package_invocation(files, config["locale"])
         files, manifest, invocation = configure_package(
             files, manifest_path, config, not create
         )
@@ -909,6 +930,7 @@ class DeploymentManager:
             baseline=baseline,
             phase="ready",
             package_mismatch=None,
+            live_invocation=live,
             message="Review these settings before deploying. Only the selected locale’s voice model will be replaced.",
         )
 
@@ -932,6 +954,9 @@ class DeploymentManager:
             vendor_id=review["vendor"],
             creation_unknown=False,
             deployed_settings=review["settings"],
+            # Unknown until Amazon's export confirms it: the previous value
+            # must not outlive the window before _verify_deployed_package().
+            live_invocation=None,
             import_path=None,
             verified_at=None,
             package_mismatch=None,
@@ -1201,6 +1226,11 @@ class DeploymentManager:
     def _verify_deployed_package(self, skill):
         """Confirm Amazon's export matches the approved package, adopting re-encoded icons."""
         actual_files, _ = self.export(skill)
+        deployed = self.state.get("deployed_settings") or {}
+        live = _package_invocation(actual_files, deployed.get("locale") or "")
+        if live is not None and live != self.state.get("live_invocation"):
+            # What Amazon just returned is the authoritative live invocation.
+            self.update(live_invocation=live)
         if package_fingerprint(actual_files) == self.state.get("expected_package"):
             return
         approved_files = unpack_package(self.package_path.read_bytes())[0]

@@ -1,3 +1,4 @@
+import ipaddress
 import json
 
 import pytest
@@ -101,6 +102,22 @@ def test_actual_stream_url_uses_configured_public_base(monkeypatch):
     monkeypatch.setenv("MA_HOSTNAME", "https://streams.example.com/music")
     set_ma({"url": "http://ma.local:8097/flow/track.mp3"})
     assert targets()[-1][1] == "https://streams.example.com/music/flow/track.mp3"
+
+
+def test_current_audio_target_reads_stream_url_key(monkeypatch):
+    """Verify the streamUrl store key drives the current-audio target."""
+    monkeypatch.setenv("MA_HOSTNAME", "https://streams.example.com/music")
+    set_ma(
+        {
+            "streamUrl": "http://ma.local:8097/flow/track.mp3",
+            "url": "http://ma.local:8097/older/track.mp3",
+        }
+    )
+    assert (
+        "Current audio",
+        "https://streams.example.com/music/flow/track.mp3",
+        "audio",
+    ) in targets()
 
 
 def test_testaudio_target_follows_skill_host(monkeypatch):
@@ -344,3 +361,95 @@ def test_method_not_allowed_is_success_only_for_stream_host(kind, expected):
     if kind == "host":
         assert session.calls[0][0] == "HEAD"
         assert "HEAD not supported" in result["message"]
+
+
+# --- pushed stream URL destination guard -----------------------------------
+
+
+def _audio_probe_with_views(monkeypatch, local_view, public_view):
+    """Probe a pushed stream URL with stubbed local and DoH resolution."""
+    import reachability
+
+    monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: local_view)
+    monkeypatch.setattr(reachability, "_public_addresses", lambda _host: public_view)
+    session = Session(Response())
+    result = probe(
+        "Current audio", "https://streams.example/flow/track.mp3", "audio", session
+    )
+    return result, session
+
+
+def test_audio_probe_allows_split_dns_public_view(monkeypatch):
+    """A privately-resolving host with a public DNS view still gets probed."""
+    result, session = _audio_probe_with_views(
+        monkeypatch,
+        {ipaddress.ip_address("10.0.0.5")},
+        {ipaddress.ip_address("93.184.216.34")},
+    )
+    assert result["status"] == "reachable"
+    assert session.calls
+    assert session.calls[0][0] == "HEAD"
+
+
+def test_audio_probe_refuses_internal_only_stream_url(monkeypatch):
+    """A host private on both views never receives a request from this add-on."""
+    result, session = _audio_probe_with_views(
+        monkeypatch, {ipaddress.ip_address("10.0.0.5")}, set()
+    )
+    assert result["status"] == "warning"
+    assert "private or internal" in result["message"]
+    assert session.calls == []
+
+
+def test_audio_probe_proceeds_when_doh_unavailable(monkeypatch):
+    """An unreachable resolver degrades to probing, never to blocking."""
+    result, session = _audio_probe_with_views(
+        monkeypatch, {ipaddress.ip_address("10.0.0.5")}, None
+    )
+    assert result["status"] == "reachable"
+    assert session.calls
+
+
+def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):
+    """DoH answers are parsed per record type; a failing resolver moves on."""
+    import reachability
+
+    queries = []
+
+    class DohResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class DohSession:
+        def __init__(self, fail):
+            self.fail = fail
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def get(self, endpoint, params=None, **_kwargs):
+            queries.append((endpoint, params["type"]))
+            if self.fail:
+                raise requests.ConnectionError()
+            answers = (
+                [{"data": "93.184.216.34"}]
+                if params["type"] == "A"
+                else [{"data": "2606:2800:220:1:248:1893:25c8:1946"}]
+            )
+            return DohResponse({"Status": 0, "Answer": answers})
+
+    monkeypatch.setattr(reachability.requests, "Session", lambda: DohSession(fail=True))
+    assert reachability._public_addresses("streams.example") is None
+    assert queries[-1][0] == reachability._DOH_ENDPOINTS[-1]  # fell back to Google
+
+    monkeypatch.setattr(reachability.requests, "Session", lambda: DohSession(False))
+    assert reachability._public_addresses("streams.example") == {
+        ipaddress.ip_address("93.184.216.34"),
+        ipaddress.ip_address("2606:2800:220:1:248:1893:25c8:1946"),
+    }
