@@ -387,7 +387,8 @@ def test_audio_probe_allows_split_dns_public_view(monkeypatch):
         {ipaddress.ip_address("93.184.216.34")},
     )
     assert result["status"] == "reachable"
-    assert session.calls and session.calls[0][0] == "HEAD"
+    assert session.calls
+    assert session.calls[0][0] == "HEAD"
 
 
 def test_audio_probe_refuses_internal_only_stream_url(monkeypatch):

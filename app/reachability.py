@@ -133,31 +133,35 @@ def _public_addresses(hostname):
     private, so ordinary setups never send a DoH query.
     """
     for endpoint in _DOH_ENDPOINTS:
-        found, failed = set(), False
-        with requests.Session() as doh:
-            doh.trust_env = False  # never leak netrc/proxy env to a resolver
-            for record_type in ("A", "AAAA"):
-                try:
-                    payload = doh.get(
-                        endpoint,
-                        params={"name": hostname, "type": record_type},
-                        headers={"Accept": "application/dns-json"},
-                        timeout=(2, 4),
-                    ).json()
-                except (requests.RequestException, ValueError):
-                    failed = True
-                    break
-                if payload.get("Status") not in (0, 3):  # NOERROR or NXDOMAIN
-                    failed = True
-                    break
-                for answer in payload.get("Answer") or []:
-                    try:
-                        found.add(ipaddress.ip_address(answer["data"]))
-                    except (KeyError, ValueError):
-                        pass  # CNAME hops carry a hostname, not an address
+        found, failed = _doh_lookup(endpoint, hostname)
         if not failed:
             return found
     return None
+
+
+def _doh_lookup(endpoint, hostname):
+    """(addresses, failed) for one resolver; failed means try the next one."""
+    found = set()
+    with requests.Session() as doh:
+        doh.trust_env = False  # never leak netrc/proxy env to a resolver
+        for record_type in ("A", "AAAA"):
+            try:
+                payload = doh.get(
+                    endpoint,
+                    params={"name": hostname, "type": record_type},
+                    headers={"Accept": "application/dns-json"},
+                    timeout=(2, 4),
+                ).json()
+            except (requests.RequestException, ValueError):
+                return found, True
+            if payload.get("Status") not in (0, 3):  # NOERROR or NXDOMAIN
+                return found, True
+            for answer in payload.get("Answer") or []:
+                try:
+                    found.add(ipaddress.ip_address(answer["data"]))
+                except (KeyError, ValueError):
+                    pass  # CNAME hops carry a hostname, not an address
+    return found, False
 
 
 def _must_not_probe(hostname):

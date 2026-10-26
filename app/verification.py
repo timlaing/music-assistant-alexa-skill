@@ -76,10 +76,11 @@ _TITLE_INVOCATION = "Invocation name"
 # identical in the 2.10.7 tag and dev). Locales absent from the table fall
 # back to MA's English default — correct for en-AU/en-GB/en-IN, an upstream
 # gap for es-MX.
+MA_DEFAULT_START_COMMAND = "ask music assistant to play audio"
 MA_START_COMMANDS = {
     "de-DE": "sag music assistant spiele audio",
-    "en-CA": "ask music assistant to play audio",
-    "en-US": "ask music assistant to play audio",
+    "en-CA": MA_DEFAULT_START_COMMAND,
+    "en-US": MA_DEFAULT_START_COMMAND,
     "es-ES": "pídele a music assistant que reproduzca audio",
     "fr-CA": "music assistant",
     "fr-FR": "music assistant",
@@ -87,7 +88,6 @@ MA_START_COMMANDS = {
     "pt-BR": "peça ao music assistant para reproduzir áudio",
     "nl-NL": "speel music assistant",
 }
-MA_DEFAULT_START_COMMAND = "ask music assistant to play audio"
 
 
 def _origin(url):
@@ -818,6 +818,66 @@ def _names_invocation(phrase, name):
     return bool(name) and f" {name} " in f" {phrase} "
 
 
+def _deployment_locale_problem(state, locale):
+    """Fail text when Amazon serves a model for another locale, else ``""``."""
+    deployed = state.get("deployed_settings") if isinstance(state, dict) else None
+    deployed_locale = deployed.get("locale") if isinstance(deployed, dict) else ""
+    if not deployed_locale or deployed_locale == locale:
+        return ""
+    return (
+        f"Amazon serves the {deployed_locale} model but this add-on is "
+        f"configured for {locale}; deploy this locale before trusting "
+        "the invocation check."
+    )
+
+
+def _invocation_notes(live, bundled_name, locale, command):
+    """(stale-deployment note, Music Assistant fallback note) for V12."""
+    stale = ""
+    if live and bundled_name and live != bundled_name:
+        stale = (
+            f" The deployed model still uses '{live}'; deploy to update it "
+            f"to '{bundled_name}'."
+        )
+    fallback = ""
+    if locale not in MA_START_COMMANDS and not locale.startswith("en-"):
+        fallback = (
+            f" Music Assistant has no start command for {locale} and falls "
+            f"back to English ('{command}') — a known Music Assistant gap."
+        )
+    return stale, fallback
+
+
+def _invocation_problems(state, locale, source, command, effective, built_in, prefix):
+    """Every reason the deployed invocation cannot work, in message order."""
+    problems = []
+    locale_problem = _deployment_locale_problem(state, locale)
+    if locale_problem:
+        problems.append(locale_problem)
+    if not effective:
+        problems.append(f"The {source} model declares no invocation name.")
+    elif not _names_invocation(command, effective):
+        problems.append(
+            f"Music Assistant starts playback with '{command}' for {locale}, "
+            f"which does not address the invocation name '{effective}' — the "
+            "command can never reach this skill (issue #71)."
+        )
+    if built_in is None:
+        problems.append(f"No built-in intents file is bundled for {locale}.")
+    elif not prefix:
+        problems.append(
+            "Music Assistant receives an empty control-command prefix for "
+            "this locale — its pause/resume/stop commands will be incomplete."
+        )
+    elif effective and not _names_invocation(prefix, effective):
+        problems.append(
+            f"The control-command prefix '{prefix}' does not include the "
+            f"invocation name '{effective}' — pause, resume and stop will "
+            "not route to this skill."
+        )
+    return problems
+
+
 def _v12_invocation(state):
     """The deployed invocation name is the name Music Assistant addresses.
 
@@ -842,49 +902,12 @@ def _v12_invocation(state):
     built_in = _model_language(f"built-in/{locale}.json")
     prefix = (built_in or {}).get("invocationName") or ""
 
-    problems = []
-    deployed = state.get("deployed_settings") if isinstance(state, dict) else None
-    deployed_locale = deployed.get("locale") if isinstance(deployed, dict) else ""
-    if deployed_locale and deployed_locale != locale:
-        problems.append(
-            f"Amazon serves the {deployed_locale} model but this add-on is "
-            f"configured for {locale}; deploy this locale before trusting "
-            "the invocation check."
-        )
-    if not effective:
-        problems.append(f"The {source} model declares no invocation name.")
-    elif not _names_invocation(command, effective):
-        problems.append(
-            f"Music Assistant starts playback with '{command}' for {locale}, "
-            f"which does not address the invocation name '{effective}' — the "
-            "command can never reach this skill (issue #71)."
-        )
-    if built_in is None:
-        problems.append(f"No built-in intents file is bundled for {locale}.")
-    elif not prefix:
-        problems.append(
-            "Music Assistant receives an empty control-command prefix for "
-            "this locale — its pause/resume/stop commands will be incomplete."
-        )
-    elif effective and not _names_invocation(prefix, effective):
-        problems.append(
-            f"The control-command prefix '{prefix}' does not include the "
-            f"invocation name '{effective}' — pause, resume and stop will "
-            "not route to this skill."
-        )
-    stale = ""
-    bundled_name = bundled.get("invocationName") or ""
-    if live and bundled_name and live != bundled_name:
-        stale = (
-            f" The deployed model still uses '{live}'; deploy to update it "
-            f"to '{bundled_name}'."
-        )
-    fallback = ""
-    if locale not in MA_START_COMMANDS and not locale.startswith("en-"):
-        fallback = (
-            f" Music Assistant has no start command for {locale} and falls "
-            f"back to English ('{command}') — a known Music Assistant gap."
-        )
+    problems = _invocation_problems(
+        state, locale, source, command, effective, built_in, prefix
+    )
+    stale, fallback = _invocation_notes(
+        live, bundled.get("invocationName") or "", locale, command
+    )
     if problems:
         return _check(
             "v12", _TITLE_INVOCATION, "fail", " ".join(problems) + stale + fallback

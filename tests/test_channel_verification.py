@@ -499,7 +499,8 @@ def test_v12_invocation_states(monkeypatch):
         }
     )
     assert mismatch["state"] == "fail"
-    assert "en-US" in mismatch["detail"] and "de-DE" in mismatch["detail"]
+    assert "en-US" in mismatch["detail"]
+    assert "de-DE" in mismatch["detail"]
 
     # Fail + stale note: a deployed model still using a pre-rename name
     # (issue #71) never receives Music Assistant's start command.
