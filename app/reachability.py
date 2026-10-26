@@ -25,6 +25,13 @@ _DOH_ENDPOINTS = (
     "https://dns.google/resolve",
 )
 
+# Split-horizon note (issue #49): a local DNS rewrite (e.g. AdGuard Home)
+# makes every probe from this add-on succeed via the LAN while the Echo's
+# real path — public DNS, then router hairpin — stays untested.
+_INTERNAL_NOTE = (
+    "Resolves internally (LAN) — this check does not test the public/Echo path"
+)
+
 
 def targets():
     stream = get_setting("MA_HOSTNAME", "").strip()
@@ -164,15 +171,42 @@ def _doh_lookup(endpoint, hostname):
     return found, False
 
 
-def _must_not_probe(hostname):
-    """True when the pushed host is inward-only on the public internet too."""
+def _resolution_views(hostname):
+    """(local, public) resolution views for hostname.
+
+    The public (DoH) view is fetched only when local resolution points
+    inward, so ordinary setups never send a DoH query. Either entry may be
+    None: local when the hostname does not resolve, public when every DoH
+    resolver failed.
+    """
     local = _resolved_addresses(hostname)
     if not local or all(address.is_global for address in local):
+        return local, None  # public (or unresolvable) locally — no DoH query
+    return local, _public_addresses(hostname)
+
+
+def _must_not_probe(local, public):
+    """True when the pushed host is inward-only on the public internet too."""
+    if not local or all(address.is_global for address in local):
         return False  # public (or unresolvable) locally — the probe reports it
-    public = _public_addresses(hostname)
     if public is None:
         return False  # DoH unavailable: probe rather than block
     return not any(address.is_global for address in public)
+
+
+def _resolves_internally(local, public):
+    """True when only the local view points inward (split-horizon DNS).
+
+    A local rewrite (e.g. AdGuard Home) makes this add-on's probes succeed
+    via the LAN while the Echo's public path is never exercised, so the
+    check must not report a plain pass.
+    """
+    return (
+        bool(local)
+        and not all(address.is_global for address in local)
+        and public is not None
+        and any(address.is_global for address in public)
+    )
 
 
 def probe(label, value, kind, session):
@@ -193,7 +227,10 @@ def probe(label, value, kind, session):
         ):
             raise ValueError("Public HTTPS required")
         result["url"] = urlunparse(parsed._replace(query="", fragment=""))
-        if kind == "audio" and _must_not_probe(parsed.hostname):
+        # One resolution pass feeds both the block guard and the
+        # split-horizon note, so a probe never sends a second DoH query.
+        local, public = _resolution_views(parsed.hostname)
+        if kind == "audio" and _must_not_probe(local, public):
             # Caller-influenced URL: never turn a reachability check into a
             # request toward hosts Alexa itself could not resolve.
             result.update(
@@ -204,6 +241,10 @@ def probe(label, value, kind, session):
                 ),
             )
             return result
+        if _resolves_internally(local, public):
+            # Still probe (the LAN view is what this add-on can reach), but
+            # record why the outcome cannot vouch for the Echo's path.
+            result["note"] = _INTERNAL_NOTE
         if kind == "skill":
             url = url.rstrip("/") + "/health"
         if kind == "testaudio":
@@ -219,6 +260,9 @@ def probe(label, value, kind, session):
             code = response.status_code
             result["http_status"] = code
             status, message = _classify_response(kind, code, response)
+            if status == "reachable" and "note" in result:
+                # A split-horizon pass is not a plain pass: keep it yellow.
+                status = "warning"
             result.update(status=status, message=message)
     except requests.exceptions.SSLError:
         result.update(status="failed", message="TLS certificate validation failed")
@@ -293,6 +337,9 @@ def html(result):
     for check in result["checks"]:
         label, kind = _PILL.get(check["status"], (check["status"], "neutral"))
         description = escape(check["message"])
+        note = check.get("note")
+        if note:
+            description = f'{description} <span class="muted">{escape(note)}</span>'
         url = check.get("url")
         if url and check["status"] != "reachable":
             description = f'{description} <span class="muted">{escape(url)}</span>'
@@ -330,6 +377,8 @@ def diagnostics(result):
             else check["status"]
         )
         line = f"{check['label']}: {outcome} — {check['message']}"
+        if check.get("note"):
+            line += f" [{check['note']}]"
         if check.get("url"):
             line += f" ({check['url']})"
         lines.append(line)

@@ -287,6 +287,19 @@ def test_summary_readiness_states():
     )
     assert summary(failing)["kind"] == "error"
     assert "1 of 2" in summary(failing)["description"]
+    split_horizon = dict(
+        base,
+        checks=[
+            {
+                "label": "Skill endpoint",
+                "status": "warning",
+                "message": "ok",
+                "note": "Resolves internally (LAN) — this check does not test the public/Echo path",
+            },
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+        ],
+    )
+    assert summary(split_horizon)["kind"] == "error"  # never a false green
     unconfigured = dict(
         base,
         checks=[
@@ -363,18 +376,18 @@ def test_method_not_allowed_is_success_only_for_stream_host(kind, expected):
         assert "HEAD not supported" in result["message"]
 
 
-# --- pushed stream URL destination guard -----------------------------------
+# --- resolution views: pushed-URL guard + split-horizon note (issue #49) -----
 
 
-def _audio_probe_with_views(monkeypatch, local_view, public_view):
-    """Probe a pushed stream URL with stubbed local and DoH resolution."""
+def _audio_probe_with_views(monkeypatch, local_view, public_view, kind="audio"):
+    """Probe a target with stubbed local and DoH resolution."""
     import reachability
 
     monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: local_view)
     monkeypatch.setattr(reachability, "_public_addresses", lambda _host: public_view)
     session = Session(Response())
     result = probe(
-        "Current audio", "https://streams.example/flow/track.mp3", "audio", session
+        "Current audio", "https://streams.example/flow/track.mp3", kind, session
     )
     return result, session
 
@@ -386,9 +399,45 @@ def test_audio_probe_allows_split_dns_public_view(monkeypatch):
         {ipaddress.ip_address("10.0.0.5")},
         {ipaddress.ip_address("93.184.216.34")},
     )
-    assert result["status"] == "reachable"
     assert session.calls
     assert session.calls[0][0] == "HEAD"
+    # Issue #49: the probe only exercised the LAN rewrite, so it must not
+    # report a plain pass.
+    assert result["status"] == "warning"
+    assert result["note"] == (
+        "Resolves internally (LAN) — this check does not test the public/Echo path"
+    )
+
+
+def test_skill_probe_warns_when_only_the_local_view_is_private(monkeypatch):
+    """The split-horizon note applies to every kind, not just stream URLs."""
+    result, session = _audio_probe_with_views(
+        monkeypatch,
+        {ipaddress.ip_address("192.168.1.10")},
+        {ipaddress.ip_address("93.184.216.34")},
+        kind="skill",
+    )
+    assert result["status"] == "warning"
+    assert "Resolves internally (LAN)" in result["note"]
+    assert session.calls  # probing continues — only the plain pass is denied
+
+
+def test_public_local_resolution_passes_plainly_without_doh(monkeypatch):
+    """A host that resolves publicly locally is a plain pass; no DoH query."""
+    import reachability
+
+    def _no_doh(_host):
+        pytest.fail("public local resolution must never trigger a DoH query")
+
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("93.184.216.34")},
+    )
+    monkeypatch.setattr(reachability, "_public_addresses", _no_doh)
+    result = probe("Skill", "https://example.com/", "skill", Session(Response()))
+    assert result["status"] == "reachable"
+    assert "note" not in result
 
 
 def test_audio_probe_refuses_internal_only_stream_url(monkeypatch):
@@ -407,7 +456,32 @@ def test_audio_probe_proceeds_when_doh_unavailable(monkeypatch):
         monkeypatch, {ipaddress.ip_address("10.0.0.5")}, None
     )
     assert result["status"] == "reachable"
+    assert "note" not in result
     assert session.calls
+
+
+def test_split_horizon_note_renders_as_warning_not_green():
+    """The note renders in the row and diagnostics; the pill is not green."""
+    from reachability import diagnostics, html
+
+    result = {
+        "checks": [
+            {
+                "label": "Skill endpoint",
+                "status": "warning",
+                "message": "HTTPS reachable; add-on health confirmed",
+                "note": "Resolves internally (LAN) — this check does not test the public/Echo path",
+                "url": "https://example.com/ma-alexa-skill/health",
+            }
+        ],
+        "checking": False,
+        "perspective": "p",
+    }
+    rendered = html(result)
+    assert "ma-state ma-warning" in rendered  # yellow pill, not success
+    assert "ma-state ma-ok" not in rendered
+    assert "Resolves internally (LAN)" in rendered
+    assert "[Resolves internally (LAN)" in diagnostics(result)
 
 
 def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):
