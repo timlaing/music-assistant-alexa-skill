@@ -209,6 +209,36 @@ def _resolves_internally(local, public):
     )
 
 
+def _probe_request(value, kind):
+    """(url, parsed) for the probe request; ValueError when not public HTTPS."""
+    url = public_base(value) if kind != "audio" else value
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise ValueError("Public HTTPS required")
+    return url, parsed
+
+
+def _kind_probe_url(url, clean_url, kind):
+    """Purpose-specific path appended for skill health and the test tone."""
+    if kind == "skill":
+        return url.rstrip("/") + "/health"
+    if kind == "testaudio":
+        return clean_url.rstrip("/") + "/test-audio.mp3"
+    return url
+
+
+def _downgrade_split_horizon_pass(status, result):
+    """A split-horizon pass is not a plain pass: keep it yellow."""
+    if status == "reachable" and "note" in result:
+        return "warning"
+    return status
+
+
 def probe(label, value, kind, session):
     """Check a public target and classify its HTTPS response for its purpose."""
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
@@ -217,15 +247,7 @@ def probe(label, value, kind, session):
     if not value:
         return result
     try:
-        url = public_base(value) if kind != "audio" else value
-        parsed = urlparse(url)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-        ):
-            raise ValueError("Public HTTPS required")
+        url, parsed = _probe_request(value, kind)
         result["url"] = urlunparse(parsed._replace(query="", fragment=""))
         # One resolution pass feeds both the block guard and the
         # split-horizon note, so a probe never sends a second DoH query.
@@ -245,10 +267,8 @@ def probe(label, value, kind, session):
             # Still probe (the LAN view is what this add-on can reach), but
             # record why the outcome cannot vouch for the Echo's path.
             result["note"] = _INTERNAL_NOTE
-        if kind == "skill":
-            url = url.rstrip("/") + "/health"
+        url = _kind_probe_url(url, result["url"], kind)
         if kind == "testaudio":
-            url = result["url"].rstrip("/") + "/test-audio.mp3"
             result["url"] = url
         with session.request(
             "GET" if kind in ("skill", "testaudio") else "HEAD",
@@ -260,10 +280,9 @@ def probe(label, value, kind, session):
             code = response.status_code
             result["http_status"] = code
             status, message = _classify_response(kind, code, response)
-            if status == "reachable" and "note" in result:
-                # A split-horizon pass is not a plain pass: keep it yellow.
-                status = "warning"
-            result.update(status=status, message=message)
+            result.update(
+                status=_downgrade_split_horizon_pass(status, result), message=message
+            )
     except requests.exceptions.SSLError:
         result.update(status="failed", message="TLS certificate validation failed")
     except requests.exceptions.Timeout:
