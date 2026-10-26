@@ -161,7 +161,10 @@ def _doh_lookup(endpoint, hostname):
                 ).json()
             except (requests.RequestException, ValueError):
                 return found, True
-            if payload.get("Status") not in (0, 3):  # NOERROR or NXDOMAIN
+            # NOERROR or NXDOMAIN; a non-object JSON body is malformed and
+            # must count as a resolver failure, not an AttributeError that
+            # aborts the whole check run before it can commit (issue #49).
+            if not isinstance(payload, dict) or payload.get("Status") not in (0, 3):
                 return found, True
             for answer in payload.get("Answer") or []:
                 try:
@@ -171,18 +174,52 @@ def _doh_lookup(endpoint, hostname):
     return found, False
 
 
-def _resolution_views(hostname):
+# Suffixes (plus single-label names, handled in _could_have_public_view) that
+# the public internet cannot resolve to a routable address. A DoH query about
+# such a name can never reveal a split-horizon public view — it would only
+# leak an internal hostname to a public resolver (issue #49 review).
+_LAN_ONLY_SUFFIXES = (
+    ".local",  # mDNS, e.g. homeassistant.local
+    ".localdomain",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".internal",
+)
+
+
+def _could_have_public_view(hostname):
+    """False for names only the LAN can resolve, so no DoH query leaks them."""
+    name = hostname.lower().rstrip(".")
+    if "." not in name:
+        return False  # single-label (e.g. "music-assistant") is LAN-only
+    return not name.endswith(_LAN_ONLY_SUFFIXES)
+
+
+def _resolution_views(hostname, cache=None):
     """(local, public) resolution views for hostname.
 
     The public (DoH) view is fetched only when local resolution points
     inward, so ordinary setups never send a DoH query. Either entry may be
     None: local when the hostname does not resolve, public when every DoH
-    resolver failed.
+    resolver failed. When ``cache`` is supplied, each hostname's views are
+    computed once and reused for the rest of the check run, so checks that
+    share a hostname do not repeat the local and DoH lookups.
     """
+    if cache is not None and hostname in cache:
+        return cache[hostname]
     local = _resolved_addresses(hostname)
-    if not local or all(address.is_global for address in local):
-        return local, None  # public (or unresolvable) locally — no DoH query
-    return local, _public_addresses(hostname)
+    if (
+        not local
+        or all(address.is_global for address in local)
+        or not _could_have_public_view(hostname)
+    ):
+        views = local, None  # public, LAN-only, or unresolvable — no DoH query
+    else:
+        views = local, _public_addresses(hostname)
+    if cache is not None:
+        cache[hostname] = views
+    return views
 
 
 def _must_not_probe(local, public):
@@ -239,7 +276,7 @@ def _downgrade_split_horizon_pass(status, result):
     return status
 
 
-def probe(label, value, kind, session):
+def probe(label, value, kind, session, views_cache=None):
     """Check a public target and classify its HTTPS response for its purpose."""
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
     if kind == "testaudio":
@@ -251,7 +288,7 @@ def probe(label, value, kind, session):
         result["url"] = urlunparse(parsed._replace(query="", fragment=""))
         # One resolution pass feeds both the block guard and the
         # split-horizon note, so a probe never sends a second DoH query.
-        local, public = _resolution_views(parsed.hostname)
+        local, public = _resolution_views(parsed.hostname, views_cache)
         if kind == "audio" and _must_not_probe(local, public):
             # Caller-influenced URL: never turn a reachability check into a
             # request toward hosts Alexa itself could not resolve.
@@ -324,9 +361,15 @@ class Reachability:
             }
 
     def check(self, configured):
+        # One resolution view per hostname for the whole run: the skill and
+        # test-tone checks share a host, as do the stream-host and current-
+        # audio checks, so caching avoids repeating slow DoH lookups.
+        views_cache = {}
         with requests.Session() as session:
             session.trust_env = False  # never send netrc credentials to public probes
-            results = [probe(*item, session) for item in configured]
+            results = [
+                probe(*item, session, views_cache=views_cache) for item in configured
+            ]
         with self.lock:
             if self.key == configured:
                 self.results, self.checked = results, time.time()

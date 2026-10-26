@@ -527,3 +527,67 @@ def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):
         ipaddress.ip_address("93.184.216.34"),
         ipaddress.ip_address("2606:2800:220:1:248:1893:25c8:1946"),
     }
+
+
+def test_doh_malformed_payload_is_treated_as_resolver_failure(monkeypatch):
+    """A non-object JSON answer is a resolver failure, not a crash."""
+    import reachability
+
+    class MalformedResponse:
+        def json(self):
+            return ["not", "an", "object"]  # valid JSON, not a dict
+
+    class MalformedSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def get(self, *_args, **_kwargs):
+            return MalformedResponse()
+
+    monkeypatch.setattr(reachability.requests, "Session", lambda: MalformedSession())
+    # Both resolvers answer with malformed JSON. The probe must degrade to
+    # "public view unknown" rather than raising AttributeError and aborting
+    # the check run before it can commit results.
+    assert reachability._public_addresses("streams.example") is None
+
+
+def test_lan_only_names_never_reach_public_resolvers(monkeypatch):
+    """An internal-only hostname is not sent to Cloudflare/Google DoH."""
+    import reachability
+
+    def _no_doh(_host):
+        pytest.fail("LAN-only names must never trigger a DoH query")
+
+    private = {ipaddress.ip_address("192.168.1.10")}
+    monkeypatch.setattr(reachability, "_public_addresses", _no_doh)
+    monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: private)
+    for hostname in ("homeassistant.local", "music-assistant", "haos.lan."):
+        local, public = reachability._resolution_views(hostname)
+        assert local == private
+        assert public is None  # no DoH query: the name cannot have a public view
+
+
+def test_resolution_views_are_cached_per_run(monkeypatch):
+    """Checks sharing a hostname resolve it once, not once each."""
+    import reachability
+
+    queries = []
+
+    def _doh(host):
+        queries.append(host)
+        return {ipaddress.ip_address("93.184.216.34")}
+
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("10.0.0.5")},
+    )
+    monkeypatch.setattr(reachability, "_public_addresses", _doh)
+    cache = {}
+    first = reachability._resolution_views("streams.example", cache)
+    second = reachability._resolution_views("streams.example", cache)
+    assert first == second
+    assert queries == ["streams.example"]  # the second read hit the cache
