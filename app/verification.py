@@ -11,7 +11,10 @@ against the skill's own /ma/latest-url endpoint:
                             (presence only — values are encrypted at rest)
   V2b  push observed        the scheme://host Music Assistant actually pushed
                             from, recorded on each authenticated /ma/push-url
-  V3   endpoint reachable   GET <base>/ma/latest-url answers
+  V3   endpoint reachable   GET <skill endpoint>/ma/latest-url answers
+                            (the configured origin + path prefix, so a
+                            prefixed deployment is never judged by the
+                            bare host)
   V4   basic auth           the same fetch is accepted (401 = rejected)
   V5   push freshness       how long ago the last push arrived
   V6   now playing          what MA says is playing vs the last pushed stream
@@ -55,6 +58,14 @@ _PILL = {
     "unknown": ("Unknown", "neutral"),
     "info": ("Info", "neutral"),
 }
+
+# The MA API credentials are set in the web Setup (or the add-on's
+# Configuration tab when running as an add-on), so "not configured" must
+# say where they are set (issue #47 follow-up).
+_CONFIG_HINT = (
+    " Set MA_API_URL and MA_API_TOKEN in the web Setup "
+    "(Settings), or in the add-on's Configuration tab."
+)
 
 # Check titles — one definition each; every state branch of a check shares
 # its title.
@@ -104,13 +115,15 @@ def _origin(url):
     return (parts.scheme.lower(), (parts.hostname or "").lower(), port)
 
 
-def _origin_url(url):
-    """scheme://host[:port] form of a URL, or "" when unusable.
+def _skill_base_url(url):
+    """scheme://host[:port][/prefix] form of the skill endpoint, or "".
 
-    The API is served at the origin root (DispatcherMiddleware mounts it
-    at /ma), so self-fetch targets are always normalized to the origin —
-    any path in the configured value only carries the OAuth callback and
-    must not be probed.
+    The API is served wherever the skill is mounted (DispatcherMiddleware
+    mounts it at /ma below the app root), so a skill endpoint carrying a
+    path prefix (e.g. https://host/ma-alexa-skill/) is probed WITH the
+    prefix — the bare origin may be answered by a different service (for
+    example the Music Assistant stream server), and a 404 from that
+    service would be a false pass.
     """
     origin = _origin(url)
     if origin is None:
@@ -120,7 +133,8 @@ def _origin_url(url):
         host = f"[{host}]"
     default_port = 443 if scheme == "https" else 80
     netloc = host if port == default_port else f"{host}:{port}"
-    return f"{scheme}://{netloc}"
+    path = urlsplit(url).path.rstrip("/")
+    return f"{scheme}://{netloc}{path}"
 
 
 def _check(check_id, title, state, detail):
@@ -283,7 +297,7 @@ def _v1_provider(channel):
             "v1",
             _TITLE_PROVIDER,
             "unknown",
-            "Music Assistant API is not configured (MA_API_URL / MA_API_TOKEN).",
+            "Music Assistant API is not configured." + _CONFIG_HINT,
         )
     if channel.get("error"):
         return _check(
@@ -325,7 +339,12 @@ def _v1_provider(channel):
 
 def _v2a_setup_keys(channel):
     if not channel.get("configured"):
-        return _check("v2a", _TITLE_SETUP, "unknown", "Not tested — MA not configured.")
+        return _check(
+            "v2a",
+            _TITLE_SETUP,
+            "unknown",
+            "Not tested — MA not configured." + _CONFIG_HINT,
+        )
     if channel.get("error"):
         return _check(
             "v2a",
@@ -384,19 +403,23 @@ def _v2b_push_base(store):
 def _v3_v4_fetch(store):
     push_base = (store.get("push_base") or "").strip()
     skill_host = (get_setting("SKILL_HOSTNAME", "") or "").strip()
-    # Only trust the recorded push address when BOTH addresses are usable
-    # and share their origin (scheme+host+port): /ma/push-url records the
-    # request-derived host, and the basic-auth credentials must never be
-    # sent to an origin the deployment did not configure. Comparing raw
-    # origins would let two unusable values (None == None) select the
-    # unvalidated push address, so unusable values never match.
+    # The recorded push address (request.host_url — origin only) selects the
+    # "via" wording when BOTH addresses are usable and share their origin
+    # (scheme+host+port): /ma/push-url records the request-derived host, and
+    # the basic-auth credentials must never be sent to an origin the
+    # deployment did not configure. Comparing raw origins would let two
+    # unusable values (None == None) select the unvalidated push address,
+    # so unusable values never match.
     push_origin = _origin(push_base) if push_base else None
     skill_origin = _origin(skill_host) if skill_host else None
     use_push_base = push_origin is not None and push_origin == skill_origin
-    # Probe the normalized origin: the API is served at the origin root
-    # (/ma/latest-url), while any path in SKILL_HOSTNAME only carries the
-    # OAuth callback — and a 404 from that path would be a false pass.
-    base = push_base if use_push_base else _origin_url(skill_host)
+    # Probe the configured skill endpoint (origin + path prefix): the API is
+    # served wherever the skill is mounted, so a prefixed endpoint must be
+    # probed WITH its prefix — the bare origin may be answered by a
+    # different service (e.g. the Music Assistant stream server) and its
+    # 404 would be a false pass (issue #47). The recorded push address
+    # never carries the prefix, so it can only ever agree on the origin.
+    base = _skill_base_url(skill_host)
     if not base:
         return [
             _check(
@@ -510,7 +533,14 @@ def _v5_freshness(store):
 
 
 def _v6_now_playing(channel, store):
-    if not channel.get("configured") or channel.get("error"):
+    if not channel.get("configured"):
+        return _check(
+            "v6",
+            _TITLE_PLAYING,
+            "unknown",
+            "Not tested — MA not configured." + _CONFIG_HINT,
+        )
+    if channel.get("error"):
         return _check(
             "v6",
             _TITLE_PLAYING,
@@ -661,7 +691,14 @@ def _v8_stream_host(store):
 
 
 def _v9_players(channel):
-    if not channel.get("configured") or channel.get("error"):
+    if not channel.get("configured"):
+        return _check(
+            "v9",
+            _TITLE_PLAYERS,
+            "unknown",
+            "Not available — MA not configured." + _CONFIG_HINT,
+        )
+    if channel.get("error"):
         return _check(
             "v9",
             _TITLE_PLAYERS,
