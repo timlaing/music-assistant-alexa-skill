@@ -479,11 +479,27 @@ def test_v12_invocation_states(monkeypatch):
 
     real_model_language = verification._model_language
 
-    # Pass: the bundled de-DE model and Music Assistant's start command agree.
+    # Pass: the recorded de-DE deployment agrees with Music Assistant's
+    # start command.
     _set_locale("de-DE")
-    check = verification._v12_invocation(None)
+    check = verification._v12_invocation({"live_invocation": "music assistant"})
     assert check["state"] == "pass"
     assert "music assistant" in check["detail"]
+
+    # Unknown: state written before live_invocation existed must not pass as
+    # proof that the bundled name is what Amazon serves (issue #71).
+    assert verification._v12_invocation(None)["state"] == "unknown"
+    assert verification._v12_invocation({})["state"] == "unknown"
+
+    # Fail: Amazon still serves a model deployed for another locale.
+    mismatch = verification._v12_invocation(
+        {
+            "live_invocation": "music assistant",
+            "deployed_settings": {"locale": "en-US"},
+        }
+    )
+    assert mismatch["state"] == "fail"
+    assert "en-US" in mismatch["detail"] and "de-DE" in mismatch["detail"]
 
     # Fail + stale note: a deployed model still using a pre-rename name
     # (issue #71) never receives Music Assistant's start command.
@@ -520,7 +536,7 @@ def test_v12_invocation_states(monkeypatch):
     # Warn: es-MX is absent from Music Assistant's table (upstream gap) and
     # gets the English fallback start command.
     _set_locale("es-MX")
-    fallback = verification._v12_invocation(None)
+    fallback = verification._v12_invocation({"live_invocation": "music assistant"})
     assert fallback["state"] == "warning"
     assert "es-MX" in fallback["detail"]
 
@@ -560,18 +576,16 @@ def test_run_checks_composes_all_checks(monkeypatch):
     monkeypatch.setattr(
         verification, "_intent_logs", lambda: [{"incoming": {}, "ts": time.time()}]
     )
-    monkeypatch.setattr(
-        verification,
-        "_deployment_state",
-        lambda: {
-            "client_key": config_key(),
-            "tokens": {
-                "access_token": "a",
-                "refresh_token": "r",
-                "expires": time.time() + 3600,
-            },
+    state = {
+        "client_key": config_key(),
+        "live_invocation": "music assistant",
+        "tokens": {
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires": time.time() + 3600,
         },
-    )
+    }
+    monkeypatch.setattr(verification, "_deployment_state", lambda: state)
     monkeypatch.setattr(
         verification,
         "_reachability_snapshot",
@@ -622,6 +636,16 @@ def test_run_checks_composes_all_checks(monkeypatch):
             "artist": "Artist",
         }
     ]
+
+    # A stale deployed name must surface through the composed check rather
+    # than hide behind the bundled-model fallback: if run_checks ever stops
+    # passing this state to V12, the assertion below is what fails.
+    state["live_invocation"] = "my radio"
+    stale_result = verification.run_checks()
+    stale_v12 = next(c for c in stale_result["checks"] if c["id"] == "v12")
+    assert stale_v12["state"] == "fail"
+    assert "my radio" in stale_v12["detail"]
+    assert stale_result["summary"]["kind"] == "error"
 
 
 def test_run_checks_records_read_failures(monkeypatch):

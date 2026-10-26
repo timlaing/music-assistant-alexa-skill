@@ -843,6 +843,14 @@ def _v12_invocation(state):
     prefix = (built_in or {}).get("invocationName") or ""
 
     problems = []
+    deployed = state.get("deployed_settings") if isinstance(state, dict) else None
+    deployed_locale = deployed.get("locale") if isinstance(deployed, dict) else ""
+    if deployed_locale and deployed_locale != locale:
+        problems.append(
+            f"Amazon serves the {deployed_locale} model but this add-on is "
+            f"configured for {locale}; deploy this locale before trusting "
+            "the invocation check."
+        )
     if not effective:
         problems.append(f"The {source} model declares no invocation name.")
     elif not _names_invocation(command, effective):
@@ -880,6 +888,17 @@ def _v12_invocation(state):
     if problems:
         return _check(
             "v12", _TITLE_INVOCATION, "fail", " ".join(problems) + stale + fallback
+        )
+    if not live:
+        # Absent is not proof: state written before live_invocation existed
+        # cannot show what Amazon serves right now.
+        return _check(
+            "v12",
+            _TITLE_INVOCATION,
+            "unknown",
+            f"No deployment has recorded the live invocation name yet; the "
+            f"bundled {locale} model declares '{effective}'. Review and deploy "
+            f"once to record what Amazon serves, then re-check.{fallback}",
         )
     detail = (
         f"Music Assistant's start command '{command}' addresses "

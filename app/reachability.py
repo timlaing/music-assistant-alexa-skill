@@ -1,6 +1,8 @@
 """Cached reachability checks from the add-on, without blocking playback/status."""
 
+import ipaddress
 import json
+import socket
 import threading
 import time
 from urllib.parse import urlparse, urlunparse
@@ -14,6 +16,14 @@ from shared_store import get_ma
 from ui_markup import row as markup_row
 
 _AUDIO_CHECK = "Public audio delivery"
+
+# Public resolvers consulted only when local DNS points inward, so split-DNS
+# setups (private local view, public internet view) are judged the way Alexa
+# resolves them. Cloudflare first, Google as the fallback.
+_DOH_ENDPOINTS = (
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/resolve",
+)
 
 
 def targets():
@@ -103,6 +113,64 @@ def _classify_response(kind, code, response):
     )
 
 
+def _resolved_addresses(hostname):
+    """Local-view addresses for hostname, or None when it does not resolve."""
+    try:
+        return {
+            ipaddress.ip_address(info[4][0].partition("%")[0])
+            for info in socket.getaddrinfo(hostname, None)
+        }
+    except (OSError, ValueError):
+        return None
+
+
+def _public_addresses(hostname):
+    """Public-internet addresses via DNS-over-HTTPS; None when every resolver failed.
+
+    Split-DNS setups resolve privately here but publicly for Alexa, so the
+    public view — not this add-on's local view — decides whether a pushed
+    stream URL points inward. Only consulted when local resolution is
+    private, so ordinary setups never send a DoH query.
+    """
+    for endpoint in _DOH_ENDPOINTS:
+        found, failed = set(), False
+        with requests.Session() as doh:
+            doh.trust_env = False  # never leak netrc/proxy env to a resolver
+            for record_type in ("A", "AAAA"):
+                try:
+                    payload = doh.get(
+                        endpoint,
+                        params={"name": hostname, "type": record_type},
+                        headers={"Accept": "application/dns-json"},
+                        timeout=(2, 4),
+                    ).json()
+                except (requests.RequestException, ValueError):
+                    failed = True
+                    break
+                if payload.get("Status") not in (0, 3):  # NOERROR or NXDOMAIN
+                    failed = True
+                    break
+                for answer in payload.get("Answer") or []:
+                    try:
+                        found.add(ipaddress.ip_address(answer["data"]))
+                    except (KeyError, ValueError):
+                        pass  # CNAME hops carry a hostname, not an address
+        if not failed:
+            return found
+    return None
+
+
+def _must_not_probe(hostname):
+    """True when the pushed host is inward-only on the public internet too."""
+    local = _resolved_addresses(hostname)
+    if not local or all(address.is_global for address in local):
+        return False  # public (or unresolvable) locally — the probe reports it
+    public = _public_addresses(hostname)
+    if public is None:
+        return False  # DoH unavailable: probe rather than block
+    return not any(address.is_global for address in public)
+
+
 def probe(label, value, kind, session):
     """Check a public target and classify its HTTPS response for its purpose."""
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
@@ -121,6 +189,17 @@ def probe(label, value, kind, session):
         ):
             raise ValueError("Public HTTPS required")
         result["url"] = urlunparse(parsed._replace(query="", fragment=""))
+        if kind == "audio" and _must_not_probe(parsed.hostname):
+            # Caller-influenced URL: never turn a reachability check into a
+            # request toward hosts Alexa itself could not resolve.
+            result.update(
+                status="warning",
+                message=(
+                    "Stream URL resolves only to private or internal addresses; "
+                    "Alexa cannot fetch it from the internet"
+                ),
+            )
+            return result
         if kind == "skill":
             url = url.rstrip("/") + "/health"
         if kind == "testaudio":

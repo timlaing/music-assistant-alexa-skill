@@ -973,7 +973,9 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
         model = json.loads(
             amazon.files[f"skill-package/interactionModels/custom/{locale}.json"]
         )["interactionModel"]["languageModel"]
-        assert model["invocationName"], f"{locale} must declare an invocation name"
+        assert model["invocationName"] == "music assistant", (
+            f"{locale} must deploy the bundled invocation name"
+        )
         assert "types" in model, f"{locale} must include the slot type list"
     # Revert to the default locale; the existing skill round-trips back cleanly.
     monkeypatch.setenv("LOCALE", "en-GB")
@@ -984,6 +986,34 @@ def test_real_deployment_round_trips_every_bundled_locale_then_reverts(
         amazon.files["skill-package/interactionModels/custom/en-GB.json"]
     )["interactionModel"]["languageModel"]
     assert model["invocationName"] == "music assistant"
+
+
+def test_deployment_clears_live_invocation_until_amazon_reconfirms(
+    deployment, monkeypatch
+):
+    """The stale name must not survive the window before re-verification."""
+    manager, _amazon = deployment
+    deploy(manager)
+    assert manager.state["live_invocation"] == "music assistant"
+    verified_finish = manager.finish
+
+    def interrupted():
+        raise DeploymentError("interrupted before package verification")
+
+    # Amazon accepts the new import, then the worker stops before
+    # _verify_deployed_package() records the exported invocation: V12 must
+    # report the live value as unknown rather than the previous name.
+    monkeypatch.setattr(manager, "finish", interrupted)
+    manager.prepare("vendor", SKILL, False)
+    with pytest.raises(DeploymentError, match="interrupted"):
+        manager.deploy(manager.state["review"]["id"])
+    assert manager.state["deployed_settings"]["locale"] == "en-GB"
+    assert manager.state["live_invocation"] is None
+
+    # Resuming the deployment records what Amazon actually serves again.
+    monkeypatch.setattr(manager, "finish", verified_finish)
+    manager.finish()
+    assert manager.state["live_invocation"] == "music assistant"
 
 
 def test_deploy_stores_materialized_icons_on_first_import(deployment):

@@ -48,6 +48,19 @@ def test_every_custom_model_invokes_music_assistant():
 
 
 def test_every_music_assistant_command_addresses_the_invocation():
+    # The table is copied from Music Assistant; pin the locales it must cover
+    # so a dropped entry fails here instead of shrinking this test.
+    assert set(verification.MA_START_COMMANDS) == {
+        "de-DE",
+        "en-CA",
+        "en-US",
+        "es-ES",
+        "fr-CA",
+        "fr-FR",
+        "it-IT",
+        "nl-NL",
+        "pt-BR",
+    }
     commands = [
         verification.MA_DEFAULT_START_COMMAND,
         *verification.MA_START_COMMANDS.values(),

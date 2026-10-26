@@ -954,6 +954,9 @@ class DeploymentManager:
             vendor_id=review["vendor"],
             creation_unknown=False,
             deployed_settings=review["settings"],
+            # Unknown until Amazon's export confirms it: the previous value
+            # must not outlive the window before _verify_deployed_package().
+            live_invocation=None,
             import_path=None,
             verified_at=None,
             package_mismatch=None,
