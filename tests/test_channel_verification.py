@@ -126,6 +126,30 @@ def test_v2a_setup_keys_states():
     )
 
 
+def test_ma_api_config_hint_points_at_addon_configuration_tab():
+    # The MA API options exist only in the add-on's Configuration tab, not
+    # the web Setup — the "not configured" checks say so (issue #47).
+    hint_checks = [
+        verification._v1_provider({"configured": False}),
+        verification._v2a_setup_keys({"configured": False}),
+        verification._v6_now_playing({"configured": False}, _store()),
+        verification._v9_players({"configured": False}),
+    ]
+    for check in hint_checks:
+        assert check["state"] == "unknown"
+        assert "Configuration tab" in check["detail"]
+        assert "MA_API_URL" in check["detail"]
+        assert "MA_API_TOKEN" in check["detail"]
+    # A reachable-but-errored MA is not a configuration problem — the
+    # Configuration-tab hint must not appear there.
+    for check in (
+        verification._v1_provider({"configured": True, "error": "x"}),
+        verification._v6_now_playing({"configured": True, "error": "x"}, _store()),
+        verification._v9_players({"configured": True, "error": "x"}),
+    ):
+        assert "Configuration tab" not in check["detail"]
+
+
 # --- V2b: observed push address ------------------------------------------
 
 
@@ -188,21 +212,25 @@ def test_v3_v4_only_trusts_same_origin_push_base(monkeypatch):
 
     monkeypatch.setattr(verification, "_self_fetch", _recording)
 
-    # Cross-origin push_base (scheme+port differ) must not be probed with the
-    # basic-auth credentials — the configured skill hostname is used instead,
-    # normalized to its origin: only /ma/latest-url at the origin root is the
-    # API; any path (the default /ma-alexa-skill/ form carries the OAuth
-    # callback) would answer 404 and be a false pass.
+    # Cross-origin push_base (scheme+port differ) must not be probed with
+    # the basic-auth credentials — the configured skill hostname is used
+    # instead, WITH its path prefix: when the skill is served under a
+    # prefix, the bare host is answered by whatever else serves that
+    # origin (e.g. the Music Assistant stream server), and its 404 would
+    # be a false pass (issue #47).
     monkeypatch.setattr(
         verification,
         "get_setting",
         lambda name, default="": "https://ha.example.com/ma-alexa-skill/",
     )
     v3, _ = verification._v3_v4_fetch(_store())
-    assert seen == ["https://ha.example.com"]
+    assert seen == ["https://ha.example.com/ma-alexa-skill"]
     assert "configured skill hostname" in v3["detail"]
 
-    # Same origin (scheme+host+port): the recorded push address is used.
+    # Same origin (scheme+host+port): the recorded push address still
+    # selects the wording, but the probe keeps the skill endpoint's
+    # prefix — push_base is origin-only (request.host_url) and would
+    # otherwise miss it.
     seen.clear()
     monkeypatch.setattr(
         verification,
@@ -210,7 +238,7 @@ def test_v3_v4_only_trusts_same_origin_push_base(monkeypatch):
         lambda name, default="": "http://ha.example.com:5000/skill/",
     )
     v3, _ = verification._v3_v4_fetch(_store())
-    assert seen == ["http://ha.example.com:5000"]
+    assert seen == ["http://ha.example.com:5000/skill"]
     assert "address Music Assistant pushed from" in v3["detail"]
 
     # Unusable on both sides (None == None) must never select the unvalidated
@@ -231,6 +259,50 @@ def test_v3_v4_only_trusts_same_origin_push_base(monkeypatch):
     assert seen == []
     assert v3["state"] == "unknown"
     assert v4["state"] == "unknown"
+
+
+def test_v3_v4_unprefixed_endpoint_probes_bare_origin(monkeypatch):
+    # Backwards compatible: an endpoint without a path prefix keeps
+    # probing the bare origin (existing deployments unchanged).
+    seen = []
+    monkeypatch.setattr(
+        verification,
+        "_self_fetch",
+        lambda base: seen.append(base) or _fetched(base, status=200),
+    )
+    monkeypatch.setattr(
+        verification,
+        "get_setting",
+        lambda name, default="": "https://skills.example.com",
+    )
+    v3, v4 = verification._v3_v4_fetch(_store(push_base="http://elsewhere.example.com"))
+    assert seen == ["https://skills.example.com"]
+    assert v3["state"] == "pass"
+    assert v4["state"] == "pass"
+
+
+def test_v3_v4_prefix_reaches_the_add_on_not_the_stream_server(monkeypatch):
+    # The issue #47 scenario: the skill is served under
+    # https://streams.example.com/ma-alexa-skill/ and the bare host
+    # answers /ma/latest-url itself (stream server 404). The probe must
+    # carry the prefix so the answer comes from the add-on.
+    seen = []
+    monkeypatch.setattr(
+        verification,
+        "_self_fetch",
+        lambda base: seen.append(base) or _fetched(base, status=401),
+    )
+    monkeypatch.setattr(
+        verification,
+        "get_setting",
+        lambda name, default="": "https://streams.example.com/ma-alexa-skill/",
+    )
+    v3, v4 = verification._v3_v4_fetch(_store(push_base="https://streams.example.com"))
+    assert seen == ["https://streams.example.com/ma-alexa-skill"]
+    assert v3["state"] == "pass"
+    assert "https://streams.example.com/ma-alexa-skill/ma/latest-url" in v3["detail"]
+    # The add-on rejects unauthenticated access at the prefixed path
+    assert v4["state"] == "fail"
 
 
 def test_v3_v4_no_credentials_and_no_target(monkeypatch):
