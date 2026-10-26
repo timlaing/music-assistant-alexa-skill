@@ -126,9 +126,9 @@ def test_v2a_setup_keys_states():
     )
 
 
-def test_ma_api_config_hint_points_at_addon_configuration_tab():
-    # The MA API options exist only in the add-on's Configuration tab, not
-    # the web Setup — the "not configured" checks say so (issue #47).
+def test_ma_api_config_hint_points_at_web_setup():
+    # The MA API options are set in the web Setup (or the add-on's
+    # Configuration tab); the "not configured" checks say so (issue #47).
     hint_checks = [
         verification._v1_provider({"configured": False}),
         verification._v2a_setup_keys({"configured": False}),
@@ -137,6 +137,7 @@ def test_ma_api_config_hint_points_at_addon_configuration_tab():
     ]
     for check in hint_checks:
         assert check["state"] == "unknown"
+        assert "web Setup" in check["detail"]
         assert "Configuration tab" in check["detail"]
         assert "MA_API_URL" in check["detail"]
         assert "MA_API_TOKEN" in check["detail"]

@@ -59,11 +59,12 @@ _PILL = {
     "info": ("Info", "neutral"),
 }
 
-# The MA API credentials are add-on options with no web-Setup counterpart,
-# so "not configured" must say where they are set (issue #47 follow-up).
+# The MA API credentials are set in the web Setup (or the add-on's
+# Configuration tab when running as an add-on), so "not configured" must
+# say where they are set (issue #47 follow-up).
 _CONFIG_HINT = (
-    " Set MA_API_URL and MA_API_TOKEN in the add-on's Configuration tab "
-    "(they are not part of the web Setup)."
+    " Set MA_API_URL and MA_API_TOKEN in the web Setup "
+    "(Settings), or in the add-on's Configuration tab."
 )
 
 # Check titles — one definition each; every state branch of a check shares
