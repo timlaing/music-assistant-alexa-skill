@@ -1192,7 +1192,8 @@ def test_attempt_timeouts_fit_the_remaining_failover_budget(monkeypatch):
     # own, so both are scaled to what is left: connect + read never exceeds
     # it, and neither is the unbounded fresh timeout (issue #53 review).
     assert connect + read <= 4.0
-    assert connect < 3.0 and read < 5.0
+    assert connect < 3.0
+    assert read < 5.0
 
 
 def test_health_read_stops_at_the_deadline_before_the_next_chunk():
