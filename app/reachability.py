@@ -129,10 +129,13 @@ _DNS_TIMED_OUT = object()  # sentinel: the resolver stalled past its bound
 
 # One in-flight worker per hostname so a stalled resolver is reused, not
 # re-spawned on every check run (which would slowly leak blocked daemon
-# threads). Only a still-alive worker is reused; a completed one drops out so
-# the next run re-resolves fresh.
+# threads). Only a still-alive worker is reused; a worker removes its own
+# entry when it finishes — even after its caller gave up — so completed
+# lookups never linger. Distinct stalled hostnames stop spawning workers at
+# _MAX_DNS_WORKERS, so blocked threads stay bounded too (issue #49 review).
 _dns_lock = threading.Lock()
 _dns_inflight = {}
+_MAX_DNS_WORKERS = 4
 
 
 def _resolved_addresses(hostname):
@@ -146,6 +149,13 @@ def _resolved_addresses(hostname):
         if entry is not None and entry[0].is_alive():
             worker, found = entry  # reuse the in-flight (possibly stalled) lookup
         else:
+            for name, (running, _found) in list(_dns_inflight.items()):
+                if not running.is_alive():
+                    del _dns_inflight[name]  # defensive: workers self-clean
+            if len(_dns_inflight) >= _MAX_DNS_WORKERS:
+                # Every slot holds a still-blocked lookup: fail this name fast
+                # rather than leak one more blocked worker per hostname.
+                return _DNS_TIMED_OUT
             found = {}
 
             def _lookup():
@@ -156,16 +166,18 @@ def _resolved_addresses(hostname):
                     }
                 except (OSError, ValueError):
                     found["addrs"] = None
+                finally:
+                    with _dns_lock:
+                        held = _dns_inflight.get(hostname)
+                        if held is not None and held[0] is threading.current_thread():
+                            del _dns_inflight[hostname]
 
             worker = threading.Thread(target=_lookup, daemon=True)
             _dns_inflight[hostname] = (worker, found)
             worker.start()
     worker.join(_DNS_TIMEOUT_SECONDS)
     if worker.is_alive():
-        return _DNS_TIMED_OUT  # keep the entry so later runs reuse this worker
-    with _dns_lock:
-        if _dns_inflight.get(hostname, (None,))[0] is worker:
-            del _dns_inflight[hostname]  # done: the next run re-resolves fresh
+        return _DNS_TIMED_OUT  # the worker clears its entry when it finishes
     return found.get("addrs")
 
 
@@ -367,32 +379,72 @@ def _downgrade_split_horizon_pass(status, result):
     return status
 
 
-def _request_and_classify(session, kind, url, result):
+class _PinnedAdapter(requests.adapters.HTTPAdapter):
+    """Transport adapter that connects to a preflight-validated address.
+
+    urllib3 would resolve the probe host a second time inside the request —
+    a blocking system call the probe timeouts do not bound. The pool
+    connects straight to the validated address instead, while
+    ``server_hostname`` keeps SNI and certificate verification on the real
+    host name (issue #49 review).
+    """
+
+    def __init__(self, hostname, address):
+        super().__init__()
+        self.hostname = hostname
+        self.address = str(address)
+
+    def build_connection_pool_key_attributes(self, request, verify, cert=None):
+        host_params, pool_kwargs = super().build_connection_pool_key_attributes(
+            request, verify, cert
+        )
+        host_params["host"] = self.address
+        pool_kwargs["server_hostname"] = self.hostname
+        pool_kwargs["assert_hostname"] = self.hostname
+        return host_params, pool_kwargs
+
+
+def _request_and_classify(session, kind, url, result, hostname, addresses):
     """Send the probe request for kind and record its classified outcome.
 
     A split-horizon pass is downgraded to a warning but keeps its
     ``downgraded`` flag, so the test-tone player survives only for a real
     pass (issue #48/#49 review).
+
+    The request is pinned to an address the preflight lookup already
+    validated: resolving the host again inside the HTTP client would repeat
+    a system call the (3, 5) timeout does not bound (issue #49 review).
+    Every validated address is tried in turn, mirroring how the HTTP client
+    walks one resolver answer.
     """
-    with session.request(
-        "GET" if kind in ("skill", "testaudio") else "HEAD",
-        url,
-        timeout=(3, 5),
-        allow_redirects=False,
-        stream=True,
-    ) as response:
-        code = response.status_code
-        result["http_status"] = code
-        status, message = _classify_response(kind, code, response)
-        was_reachable = status == "reachable"
-        result.update(
-            status=_downgrade_split_horizon_pass(status, result), message=message
-        )
-        if was_reachable and result["status"] == "warning":
-            # Bytes/route were confirmed; only the public path is unverified,
-            # so the test-tone player may stay (issue #48 review). A non-audio
-            # warning never set this flag.
-            result["downgraded"] = True
+    method = "GET" if kind in ("skill", "testaudio") else "HEAD"
+    ordered = sorted(addresses, key=lambda address: (address.version, int(address)))
+    for index, address in enumerate(ordered):
+        session.mount("https://", _PinnedAdapter(hostname, address))
+        try:
+            opened = session.request(
+                method, url, timeout=(3, 5), allow_redirects=False, stream=True
+            )
+        except requests.exceptions.SSLError:
+            raise  # certificate failure: every address would fail alike
+        except requests.exceptions.ConnectionError:
+            if index == len(ordered) - 1:
+                raise  # no validated address left: classify the failure
+            continue
+        with opened as response:
+            code = response.status_code
+            result["http_status"] = code
+            status, message = _classify_response(kind, code, response)
+            was_reachable = status == "reachable"
+            result.update(
+                status=_downgrade_split_horizon_pass(status, result), message=message
+            )
+            if was_reachable and result["status"] == "warning":
+                # Bytes/route were confirmed; only the public path is unverified,
+                # so the test-tone player may stay (issue #48 review). A non-audio
+                # warning never set this flag.
+                result["downgraded"] = True
+            return
 
 
 def probe(label, value, kind, session, views_cache=None):
@@ -416,6 +468,15 @@ def probe(label, value, kind, session, views_cache=None):
                 message="DNS lookup timed out; could not confirm the host resolves publicly",
             )
             return result
+        if not local:
+            # The bounded preflight lookup found no address: resolving the name
+            # again inside the HTTP client would repeat a system call the probe
+            # timeouts do not bound (issue #49 review).
+            result.update(
+                status="failed",
+                message="DNS lookup failed; the host name did not resolve",
+            )
+            return result
         if kind == "audio" and _must_not_probe(local, public):
             # Caller-influenced URL: never turn a reachability check into a
             # request toward hosts Alexa itself could not resolve.
@@ -434,7 +495,7 @@ def probe(label, value, kind, session, views_cache=None):
         url = _kind_probe_url(url, result["url"], kind)
         if kind == "testaudio":
             result["url"] = url
-        _request_and_classify(session, kind, url, result)
+        _request_and_classify(session, kind, url, result, parsed.hostname, local)
     except requests.exceptions.SSLError:
         result.update(status="failed", message="TLS certificate validation failed")
     except requests.exceptions.Timeout:
@@ -610,6 +671,26 @@ def summary(result):
                     f"{len(failed)} of {len(result['checks'])} reachability "
                     "checks failed even though the skill endpoint and audio "
                     "route are reachable. Review Connectivity below."
+                ),
+            }
+        plain_warnings = [
+            check
+            for check in result["checks"]
+            if check["status"] == "warning" and not check.get("note")
+        ]
+        if plain_warnings:
+            # A secondary warning the note branch does not cover (e.g. a
+            # Current audio URL that resolves only internally) still needs
+            # attention: never report a plain green while a check warns
+            # (issue #49 review).
+            return {
+                "kind": "warning",
+                "title": "Some checks need attention",
+                "description": (
+                    f"{len(plain_warnings)} of {len(result['checks'])} "
+                    "reachability checks reported a warning even though the "
+                    "skill endpoint and audio route are reachable. Review "
+                    "Connectivity below."
                 ),
             }
         if any(check.get("note") for check in result["checks"]):
