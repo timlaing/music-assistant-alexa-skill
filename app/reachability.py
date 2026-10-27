@@ -96,9 +96,12 @@ def _next_chunk(chunks, response, remaining):
     A clamped socket bounds the read directly. When the response exposes no
     socket to clamp (mocked probes, buffered proxy bodies), the read runs in
     a daemon thread that we stop waiting for once ``remaining`` has passed:
-    the caller returns by the deadline, and the abandoned read still ends at
-    the request's own read timeout, so the worker cannot linger past it
-    (issue #53 review).
+    the caller returns by the deadline. The abandoned worker holds a single
+    ``next()`` — it exits as soon as that read ends, which the request's own
+    read timeout guarantees within one inactivity interval (a stream that
+    keeps delivering completes the read; a silent one hits the timeout), and
+    the probe's ``with`` closes the response it was reading from (issue #53
+    review).
     """
     if remaining is None or _clamp_read_timeout(response, remaining):
         return next(chunks)
@@ -147,7 +150,10 @@ def _read_health_content(response, deadline=None):
     server that ignores the Range header cannot pull the probe past it
     (Sourcery review). A read that fails raises: a stream cut off
     mid-body must not be reported as delivered, even when bytes arrived
-    first (Sourcery review).
+    first (Sourcery review). Neither does a stream the deadline caught
+    mid-body — a stalled server that dribbled a few bytes is a timeout,
+    not delivery (Sourcery review); only an empty read at the deadline
+    returns, so the caller can report the plain no-data failure.
     """
     content = bytearray()
     chunks = response.iter_content(1)
@@ -156,6 +162,10 @@ def _read_health_content(response, deadline=None):
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if content:
+                    raise requests.exceptions.Timeout(
+                        "body read outlived the shared deadline"
+                    )
                 break  # out of budget: stop consuming instead of blocking again
         try:
             chunk = _next_chunk(chunks, response, remaining)
@@ -253,7 +263,12 @@ def _classify_response(kind, code, response, deadline=None):
                 f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
             )
         content = _read_health_content(response, deadline)
-        payload = json.loads(content) if len(content) <= 4096 else None
+        # A body that filled the whole cap was cut off by it, so its bytes
+        # are only a prefix of what the server sent — parsing that prefix
+        # could mistake a truncated body for the add-on's health payload.
+        # Only a body that finished below the cap may vouch for the add-on
+        # (Sourcery review).
+        payload = json.loads(content) if len(content) < _BODY_READ_LIMIT else None
         if isinstance(payload, dict) and payload.get("status") == "ok":
             return "reachable", "HTTPS reachable; add-on health confirmed"
         return (
@@ -675,20 +690,28 @@ def _range_refused(kind, ranged, response):
     return kind == "audio" and ranged and response.status_code in _RANGE_UNSUPPORTED
 
 
-def _open_probe_attempt(session, method, url, request_kwargs, index, ordered, deadline):
+def _open_probe_attempt(
+    session, method, url, request_kwargs, index, ordered, deadline, retryable=True
+):
     """The opened response for one failover attempt; None means try the next.
 
     A certificate failure stops the failover (every address would fail
     alike), while a connection failure moves on to the next validated
     address — unless the last one just failed or the shared budget is
     spent (issue #49/#53 review).
+
+    ``retryable=False`` refuses that advance: a connection error is
+    ambiguous (the request may already have reached the server), so
+    re-sending it could hit the one-shot flow URL twice, consume a second
+    session, or interrupt playback — the ranged GET is only ever sent once
+    and its failure is classified instead of retried (Sourcery review).
     """
     try:
         return session.request(method, url, **request_kwargs)
     except requests.exceptions.SSLError:
         raise  # certificate failure: every address would fail alike
     except requests.exceptions.ConnectionError:
-        if index == len(ordered) - 1 or time.monotonic() >= deadline:
+        if not retryable or index == len(ordered) - 1 or time.monotonic() >= deadline:
             raise
         return None
 
@@ -737,8 +760,18 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         # connect + read of this attempt cannot overrun it (issue #53 review).
         share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
         request_kwargs = _probe_request_kwargs(ranged, share)
+        # The ranged one-shot GET is never retried after an ambiguous
+        # connection error: a second send could reach the flow session
+        # twice (Sourcery review). The plain HEAD fallback retries freely.
         opened = _open_probe_attempt(
-            session, method, url, request_kwargs, index, ordered, deadline
+            session,
+            method,
+            url,
+            request_kwargs,
+            index,
+            ordered,
+            deadline,
+            retryable=not ranged,
         )
         if opened is None:
             index += 1  # connection failed: the next validated address gets a turn

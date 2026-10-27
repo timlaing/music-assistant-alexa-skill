@@ -647,6 +647,8 @@ def test_audio_probe_fallback_head_fits_the_remaining_budget(monkeypatch):
     assert session.calls[1][0] == "HEAD"
     assert "headers" not in session.calls[1][2]  # plain HEAD, no Range
     connect, read = session.calls[1][2]["timeout"]
+    assert connect > 0  # a degenerate (0, 0) timeout would fit any budget
+    assert read > 0
     assert connect + read <= 2.0
     assert result["status"] == "warning"
     assert "not verified" in result["message"]
@@ -677,7 +679,45 @@ def test_audio_probe_fallback_retries_the_remaining_addresses(monkeypatch):
     assert [call[0] for call in session.calls] == ["GET", "HEAD", "HEAD"]
     assert "headers" not in session.calls[1][2]
     assert "headers" not in session.calls[2][2]
+    # Each attempt is pinned to the address it was meant to reach: the
+    # refusing address keeps its own HEAD, then the connection failure
+    # there advances the pin to the next validated address (Sourcery
+    # review).
+    assert [adapter.address for _prefix, adapter in session.mounts] == [
+        "1.1.1.1",
+        "1.1.1.1",
+        "8.8.8.8",
+    ]
     assert "not verified" in result["message"]
+
+
+def test_audio_probe_never_re_sends_the_one_shot_ranged_get(monkeypatch):
+    """An ambiguous connection error must not trigger a second flow GET.
+
+    A connection error does not say whether the request reached the
+    server: re-sending it could hit the one-shot /flow/ URL twice —
+    consume a second session or interrupt playback — so the ranged GET is
+    sent exactly once and its failure is classified instead of retried
+    (Sourcery review).
+    """
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+        },
+    )
+    session = SequenceSession(requests.ConnectionError())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert [call[0] for call in session.calls] == ["GET"]  # no second send
+    assert session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
 
 
 def test_audio_probe_does_not_follow_redirects():
@@ -1438,10 +1478,32 @@ def test_trickling_response_stops_at_the_shared_deadline(monkeypatch):
     result = probe(
         "Public audio delivery", "https://example.com/", "testaudio", session
     )
-    # The check commits with the bytes it had instead of streaming forever:
-    # the reader stops at the deadline (issue #53 review).
-    assert result["status"] == "reachable"
+    # The deadline caught the stream mid-body: a few dribbled bytes are a
+    # timeout, not a delivery pass — a stalled server must not go green
+    # (Sourcery review), and the reader still stops at the deadline
+    # instead of streaming forever (issue #53 review).
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
     assert 0 < session.response.consumed <= 5
+
+
+def test_read_health_content_raises_when_the_deadline_cuts_a_partial_body(
+    monkeypatch,
+):
+    """Bytes that arrived before the cut do not make a stalled stream green."""
+
+    class Trickle(Response):
+        def iter_content(self, _size):
+            while True:
+                yield b"x"
+
+    # Each clock call advances 3s: of the 10s budget, three reads happen
+    # and the fourth finds the deadline already passed with bytes in hand.
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
+    deadline = reachability.time.monotonic() + 10.0
+    trickle = Trickle()
+    with pytest.raises(requests.Timeout):
+        reachability._read_health_content(trickle, deadline=deadline)
 
 
 def test_stalled_pool_reports_unavailable_and_reclaims_capacity(monkeypatch):
@@ -1557,12 +1619,38 @@ def test_read_health_content_checkpoints_after_every_byte():
 def test_read_health_content_stops_at_the_four_kib_cap():
     """A server that ignores the Range header cannot push us past 4096."""
 
+    consumed = []
+
     class Endless(Response):
         def iter_content(self, _size):
             while True:
+                consumed.append(1)
                 yield b"x"
 
-    assert len(reachability._read_health_content(Endless())) == 4096
+    content = reachability._read_health_content(Endless())
+    assert len(content) == 4096
+    # The probe stops pulling bytes at the cap instead of draining one
+    # more than it keeps (Sourcery review).
+    assert sum(consumed) <= 4096
+
+
+def test_skill_probe_does_not_trust_a_body_cut_at_the_cap():
+    """A body the 4 KiB cap truncated cannot vouch for the add-on.
+
+    The prefix of an oversized body still parses as the health payload
+    (valid JSON followed by padding), so reaching exactly the cap means
+    the read was cut — the row must stay yellow instead of green
+    (Sourcery review).
+    """
+
+    class OversizedHealth(Response):
+        def iter_content(self, _size):
+            yield b'{"status": "ok"}' + b" " * (reachability._BODY_READ_LIMIT + 64)
+
+    oversized = OversizedHealth()
+    result = probe("Skill", "https://example.com/", "skill", Session(oversized))
+    assert result["status"] == "warning"
+    assert "does not identify the add-on" in result["message"]
 
 
 def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
