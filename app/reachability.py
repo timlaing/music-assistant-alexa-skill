@@ -120,15 +120,32 @@ def _classify_response(kind, code, response):
     )
 
 
+# A stalled system resolver must not hold the check thread — and the status
+# page — indefinitely (issue #49 review).
+_DNS_TIMEOUT_SECONDS = 5.0
+
+
 def _resolved_addresses(hostname):
-    """Local-view addresses for hostname, or None when it does not resolve."""
-    try:
-        return {
-            ipaddress.ip_address(info[4][0].partition("%")[0])
-            for info in socket.getaddrinfo(hostname, None)
-        }
-    except (OSError, ValueError):
-        return None
+    """Local-view addresses for hostname, or None when it does not resolve.
+
+    ``socket.getaddrinfo`` is bounded by a worker-thread timeout so a stalled
+    system resolver degrades to "unresolved" instead of hanging the check.
+    """
+    found = {}
+
+    def _lookup():
+        try:
+            found["addrs"] = {
+                ipaddress.ip_address(info[4][0].partition("%")[0])
+                for info in socket.getaddrinfo(hostname, None)
+            }
+        except (OSError, ValueError):
+            found["addrs"] = None
+
+    worker = threading.Thread(target=_lookup, daemon=True)
+    worker.start()
+    worker.join(_DNS_TIMEOUT_SECONDS)
+    return found.get("addrs")  # None when unresolved or timed out
 
 
 def _public_addresses(hostname):
@@ -166,18 +183,28 @@ def _doh_lookup(endpoint, hostname):
             # aborts the whole check run before it can commit (issue #49).
             if not isinstance(payload, dict) or payload.get("Status") not in (0, 3):
                 return found, True
-            for answer in payload.get("Answer") or []:
+            answers = payload.get("Answer")
+            if answers is None:
+                answers = []
+            elif not isinstance(answers, list):
+                # A malformed Answer collection is a resolver failure too, so
+                # the fallback resolver still runs (issue #49 review).
+                return found, True
+            for answer in answers:
+                if not isinstance(answer, dict):
+                    continue  # stray non-object entry
                 try:
                     found.add(ipaddress.ip_address(answer["data"]))
-                except (KeyError, ValueError):
+                except (KeyError, ValueError, TypeError):
                     pass  # CNAME hops carry a hostname, not an address
     return found, False
 
 
-# Suffixes (plus single-label names, handled in _could_have_public_view) that
-# the public internet cannot resolve to a routable address. A DoH query about
-# such a name can never reveal a split-horizon public view — it would only
-# leak an internal hostname to a public resolver (issue #49 review).
+# Suffixes (plus single-label names and IP literals, handled in
+# _could_have_public_view) that the public internet cannot resolve to a
+# routable address. A DoH query about such a name can never reveal a
+# split-horizon public view — it would only leak an internal hostname (or
+# address) to a public resolver (issue #49 review).
 _LAN_ONLY_SUFFIXES = (
     ".local",  # mDNS, e.g. homeassistant.local
     ".localdomain",
@@ -185,11 +212,21 @@ _LAN_ONLY_SUFFIXES = (
     ".home",
     ".home.arpa",
     ".internal",
+    ".intranet",
+    ".private",
+    ".corp",
+    ".localhost",
+    ".homenetwork",
 )
 
 
 def _could_have_public_view(hostname):
     """False for names only the LAN can resolve, so no DoH query leaks them."""
+    try:
+        ipaddress.ip_address(hostname.partition("%")[0])
+        return False  # IP literal: nothing to resolve, and DoH would leak it
+    except ValueError:
+        pass
     name = hostname.lower().rstrip(".")
     if "." not in name:
         return False  # single-label (e.g. "music-assistant") is LAN-only
@@ -209,12 +246,13 @@ def _resolution_views(hostname, cache=None):
     if cache is not None and hostname in cache:
         return cache[hostname]
     local = _resolved_addresses(hostname)
-    if (
-        not local
-        or all(address.is_global for address in local)
-        or not _could_have_public_view(hostname)
-    ):
-        views = local, None  # public, LAN-only, or unresolvable — no DoH query
+    if not local or all(address.is_global for address in local):
+        views = local, None  # public (or unresolvable) locally — no DoH query
+    elif not _could_have_public_view(hostname):
+        # LAN-only name: it cannot have a public view, so record an empty one
+        # — not None, which means "DoH unavailable" and would let an audio
+        # target past the must-not-probe guard (issue #49 review).
+        views = local, set()
     else:
         views = local, _public_addresses(hostname)
     if cache is not None:
@@ -413,11 +451,12 @@ def html(result):
                 kind,
             )
         )
-        if (
-            check.get("kind") == "testaudio"
-            and check.get("status") == "reachable"
-            and check.get("url")
-        ):
+        # Keep the test-tone player for a split-horizon pass downgraded to a
+        # warning: the audio was confirmed, only the public path is unverified
+        # (issue #49 review). A plain non-audio warning has no note.
+        testaudio = check.get("kind") == "testaudio" and check.get("url")
+        downgraded = check.get("status") == "warning" and note
+        if testaudio and (check.get("status") == "reachable" or downgraded):
             parts.append(
                 f'<div><audio controls preload="none" src="{escape(check["url"])}"></audio> '
                 f'<span class="muted">Play the test tone through the same public route an Echo uses.</span></div>'
@@ -467,6 +506,19 @@ def summary(result):
             "description": "Running the add-on reachability checks.",
         }
     if skill == "reachable" and audio == "reachable":
+        if any(check.get("note") for check in result["checks"]):
+            # Skill + audio are green, but another check resolved only via the
+            # LAN, so part of the Echo path is unverified (issue #49 review).
+            return {
+                "kind": "warning",
+                "title": "Some checks resolve internally",
+                "description": (
+                    "The skill endpoint and audio route are reachable, but at "
+                    "least one check resolved to a LAN address, so its "
+                    "public/Echo path was not tested. Play a track on your "
+                    "Echo to confirm end-to-end playback."
+                ),
+            }
         return {
             "kind": "good",
             "title": "Service is ready for an Echo test",

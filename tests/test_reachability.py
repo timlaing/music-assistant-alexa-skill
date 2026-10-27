@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import time
 
 import pytest
 import requests
@@ -530,28 +531,66 @@ def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):
 
 
 def test_doh_malformed_payload_is_treated_as_resolver_failure(monkeypatch):
-    """A non-object JSON answer is a resolver failure, not a crash."""
+    """A non-object JSON answer fails that resolver and falls back."""
     import reachability
 
-    class MalformedResponse:
-        def json(self):
-            return ["not", "an", "object"]  # valid JSON, not a dict
+    class DohResponse:
+        def __init__(self, payload):
+            self.payload = payload
 
-    class MalformedSession:
+        def json(self):
+            return self.payload
+
+    class DohSession:
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
             pass
 
-        def get(self, *_args, **_kwargs):
-            return MalformedResponse()
+        def get(self, endpoint, params=None, **_kwargs):
+            if endpoint == reachability._DOH_ENDPOINTS[0]:
+                return DohResponse(["not", "an", "object"])  # malformed
+            answers = [{"data": "93.184.216.34"}] if params["type"] == "A" else []
+            return DohResponse({"Status": 0, "Answer": answers})
 
-    monkeypatch.setattr(reachability.requests, "Session", lambda: MalformedSession())
-    # Both resolvers answer with malformed JSON. The probe must degrade to
-    # "public view unknown" rather than raising AttributeError and aborting
-    # the check run before it can commit results.
-    assert reachability._public_addresses("streams.example") is None
+    monkeypatch.setattr(reachability.requests, "Session", lambda: DohSession())
+    # The first resolver answers with malformed JSON; the probe must treat it
+    # as a failure and use the second resolver's valid answer instead of
+    # raising AttributeError and aborting the check run.
+    assert reachability._public_addresses("streams.example") == {
+        ipaddress.ip_address("93.184.216.34")
+    }
+
+
+def test_doh_malformed_answer_is_treated_as_resolver_failure(monkeypatch):
+    """A non-list Answer field fails that resolver and falls back."""
+    import reachability
+
+    class DohResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class DohSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def get(self, endpoint, params=None, **_kwargs):
+            if endpoint == reachability._DOH_ENDPOINTS[0]:
+                return DohResponse({"Status": 0, "Answer": "not-a-list"})
+            answers = [{"data": "93.184.216.34"}] if params["type"] == "A" else []
+            return DohResponse({"Status": 0, "Answer": answers})
+
+    monkeypatch.setattr(reachability.requests, "Session", lambda: DohSession())
+    assert reachability._public_addresses("streams.example") == {
+        ipaddress.ip_address("93.184.216.34")
+    }
 
 
 def test_lan_only_names_never_reach_public_resolvers(monkeypatch):
@@ -564,30 +603,119 @@ def test_lan_only_names_never_reach_public_resolvers(monkeypatch):
     private = {ipaddress.ip_address("192.168.1.10")}
     monkeypatch.setattr(reachability, "_public_addresses", _no_doh)
     monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: private)
-    for hostname in ("homeassistant.local", "music-assistant", "haos.lan."):
+    # .local/.lan/single-label names and private IP literals all skip DoH and
+    # record an empty public view (a definitive "none"), never None.
+    for hostname in (
+        "homeassistant.local",
+        "music-assistant",
+        "haos.lan.",
+        "192.168.1.50",
+    ):
         local, public = reachability._resolution_views(hostname)
         assert local == private
-        assert public is None  # no DoH query: the name cannot have a public view
+        assert public == set()  # no DoH query; a definitive "no public view"
 
 
 def test_resolution_views_are_cached_per_run(monkeypatch):
     """Checks sharing a hostname resolve it once, not once each."""
     import reachability
 
-    queries = []
+    local_lookups = []
+    doh_lookups = []
+
+    def _local(host):
+        local_lookups.append(host)
+        return {ipaddress.ip_address("10.0.0.5")}
 
     def _doh(host):
-        queries.append(host)
+        doh_lookups.append(host)
         return {ipaddress.ip_address("93.184.216.34")}
 
-    monkeypatch.setattr(
-        reachability,
-        "_resolved_addresses",
-        lambda _host: {ipaddress.ip_address("10.0.0.5")},
-    )
+    monkeypatch.setattr(reachability, "_resolved_addresses", _local)
     monkeypatch.setattr(reachability, "_public_addresses", _doh)
     cache = {}
     first = reachability._resolution_views("streams.example", cache)
     second = reachability._resolution_views("streams.example", cache)
     assert first == second
-    assert queries == ["streams.example"]  # the second read hit the cache
+    assert doh_lookups == ["streams.example"]  # one DoH query
+    assert local_lookups == ["streams.example"]  # and one local lookup
+
+
+def test_audio_probe_blocks_lan_only_host_without_doh(monkeypatch):
+    """A LAN-only audio host is blocked without ever querying public DNS."""
+    import reachability
+
+    def _no_doh(_host):
+        pytest.fail("LAN-only names must never trigger a DoH query")
+
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("192.168.1.10")},
+    )
+    monkeypatch.setattr(reachability, "_public_addresses", _no_doh)
+    session = Session(Response())
+    result = probe("Current audio", "https://hass.local/track.mp3", "audio", session)
+    assert result["status"] == "warning"
+    assert "private or internal" in result["message"]
+    assert session.calls == []  # never probed, and no DoH query
+
+
+def test_resolved_addresses_bounds_a_stalled_resolver(monkeypatch):
+    """A stalled system resolver degrades to None instead of hanging."""
+    import reachability
+
+    def _stall(*_args, **_kwargs):
+        time.sleep(reachability._DNS_TIMEOUT_SECONDS + 0.3)
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    assert reachability._resolved_addresses("example.com") is None
+
+
+def test_summary_flags_internal_resolution_on_secondary_checks():
+    """Skill + audio green cannot mask an internally-resolving stream host."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Stream host",
+                "status": "warning",
+                "message": "ok",
+                "note": note,
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a false "good"
+    assert "resolve internally" in state["title"]
+
+
+def test_testaudio_player_survives_split_horizon_downgrade():
+    """A downgraded split-horizon test tone keeps its player."""
+    from reachability import html
+
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    check = {
+        "label": "Public audio delivery",
+        "kind": "testaudio",
+        "status": "warning",
+        "message": "ok",
+        "note": note,
+        "url": "https://example.com/test-audio.mp3",
+    }
+    rendered = html({"checks": [check], "checking": False, "perspective": "p"})
+    assert "<audio controls" in rendered  # confirmed audio keeps its player
+
+    # A plain non-audio warning (no split-horizon note) still gets no player.
+    plain = dict(check, note=None, message="not audio")
+    assert "<audio controls" not in html(
+        {"checks": [plain], "checking": False, "perspective": "p"}
+    )
