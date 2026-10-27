@@ -62,6 +62,30 @@ def targets():
     return result
 
 
+# Floor for a clamped body read: settimeout(0) would make the socket
+# non-blocking instead of briefly blocking.
+_MIN_READ_TICK_SECONDS = 0.001
+
+
+def _clamp_read_timeout(response, seconds):
+    """Cap the next blocking body read at ``seconds`` (best effort).
+
+    The request's read timeout is fixed when the request is sent and only
+    bounds inactivity between chunks, so it cannot enforce a wall-clock
+    deadline on its own; clamping the socket can. The socket lives behind
+    urllib3/http.client internals (``raw._fp`` is the http.client response,
+    ``.fp.raw`` its SocketIO), which not every response exposes — mocked
+    probes and some proxy paths keep the request timeout as their bound.
+    """
+    try:
+        sock = response.raw._fp.fp.raw._sock
+        current = sock.gettimeout()
+        if current is None or current > seconds:
+            sock.settimeout(max(seconds, _MIN_READ_TICK_SECONDS))
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def _read_health_content(response, deadline=None):
     """Read at most 4096 bytes of a probe response body.
 
@@ -71,19 +95,38 @@ def _read_health_content(response, deadline=None):
     shared budget the request itself runs under — is therefore checked
     *before* each read, so no blocking read starts once it has passed
     (issue #53 review).
+
+    Each blocking read is also clamped to the time the deadline has left,
+    so the cap holds for the read itself and not only between reads, and
+    reads are one byte at a time: a larger chunk only returns once it has
+    filled, which a slow stream can stretch well past the deadline (a
+    1024-byte chunk held a live read for 54 s past the 10 s cap in
+    testing — issue #48 review). Bytes that arrived before a cut off still
+    count as delivery; an empty read is a real failure and belongs to the
+    caller.
     """
     content = bytearray()
-    chunks = response.iter_content(1024)
-    while True:
-        if deadline is not None and time.monotonic() >= deadline:
-            break  # out of budget: stop consuming instead of blocking again
-        try:
-            chunk = next(chunks)
-        except StopIteration:
-            break
-        content.extend(chunk)
-        if len(content) > 4096:
-            break
+    try:
+        chunks = response.iter_content(1)
+        while True:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break  # out of budget: stop consuming instead of blocking again
+                _clamp_read_timeout(response, remaining)
+            try:
+                chunk = next(chunks)
+            except StopIteration:
+                break
+            content.extend(chunk)
+            if len(content) > 4096:
+                break
+    except requests.exceptions.RequestException:
+        # requests maps a socket read timeout during streaming to
+        # ConnectionError; partial bytes still prove delivery, but an empty
+        # read is a real failure and must reach probe()'s handlers.
+        if not content:
+            raise
     return content
 
 
@@ -626,7 +669,14 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
                     else:
                         status, message = _classify_head_response(kind, code)
             else:
-                status, message = _classify_response(kind, code, response, deadline)
+                try:
+                    status, message = _classify_response(kind, code, response, deadline)
+                except requests.exceptions.RequestException:
+                    # The body read failed: HTTP <code> describes the status
+                    # line, not delivery, so it must not sit beside the
+                    # failure in diagnostics (issue #48 review).
+                    result.pop("http_status", None)
+                    raise
             was_reachable = status == "reachable"
             result.update(
                 status=_downgrade_split_horizon_pass(status, result), message=message

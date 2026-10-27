@@ -2,6 +2,7 @@ import ipaddress
 import json
 import socket
 import time
+from types import SimpleNamespace
 
 import pytest
 import reachability
@@ -1466,3 +1467,111 @@ def test_probe_reports_an_unavailable_resolver_without_requesting(monkeypatch):
     assert result["status"] == "failed"
     assert "unavailable" in result["message"]  # distinct from a timeout
     assert session.calls == []  # never sends a request that would re-resolve
+
+
+# --- Review follow-ups: hard deadline and honest diagnostics ----------------
+
+
+def test_read_health_content_checkpoints_after_every_byte():
+    """A chunk is itself a blocking read, so it must stay deadline-sized.
+
+    A larger chunk only returns once it has filled, which a stream trickling
+    one byte at a time can stretch well past the deadline (the 1024-byte
+    chunk held a live read for 54 s in testing).
+    """
+    sizes = []
+
+    class Chunked(Response):
+        def iter_content(self, size):
+            sizes.append(size)
+            yield b"x"
+
+    reachability._read_health_content(Chunked())
+    assert sizes == [1]
+
+
+def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
+    """Every blocking read starts with the socket capped to what is left."""
+    clamps = []
+    monkeypatch.setattr(
+        reachability,
+        "_clamp_read_timeout",
+        lambda _response, seconds: clamps.append(seconds),
+    )
+
+    class Counting(Response):
+        def iter_content(self, _size):
+            for _ in range(3):
+                yield b"x"
+
+    deadline = time.monotonic() + 10.0
+    reachability._read_health_content(Counting(), deadline=deadline)
+    # One clamp before every read — including the one that finds the end of
+    # the body — and each is derived from the budget that only ever shrinks.
+    assert len(clamps) >= 3
+    assert all(0 < left <= 10.0 for left in clamps)
+    assert clamps == sorted(clamps, reverse=True)
+
+
+def test_read_timeout_is_clamped_to_the_time_the_deadline_has_left():
+    """The blocking read itself is bounded, not only checked after it returns."""
+
+    class Sock:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+    sock = Sock(5.0)  # the request's read timeout
+    response = SimpleNamespace(
+        raw=SimpleNamespace(
+            _fp=SimpleNamespace(fp=SimpleNamespace(raw=SimpleNamespace(_sock=sock)))
+        )
+    )
+    reachability._clamp_read_timeout(response, 2.0)
+    assert sock.timeout == 2.0  # lowered to what the deadline has left
+    reachability._clamp_read_timeout(response, 30.0)
+    assert sock.timeout == 2.0  # never raised above the configured timeout
+    # No live socket (mocked probe): the request timeout still bounds it.
+    reachability._clamp_read_timeout(SimpleNamespace(raw=None), 1.0)
+
+
+def test_read_health_content_keeps_bytes_delivered_before_a_cut_off():
+    """Bytes that arrived before the read failed still prove delivery."""
+
+    class CutShort(Response):
+        def iter_content(self, _size):
+            yield b"audio-bytes"
+            raise requests.ConnectionError()
+
+    assert reachability._read_health_content(CutShort()) == b"audio-bytes"
+
+    class Dead(Response):
+        def iter_content(self, _size):
+            raise requests.ConnectionError()
+
+    with pytest.raises(requests.ConnectionError):
+        reachability._read_health_content(Dead())  # nothing delivered: not ours
+
+
+@pytest.mark.parametrize("kind", ["audio", "skill"])
+def test_body_read_failure_leaves_no_http_status_behind(kind):
+    """A failed body read must not show HTTP 200 beside the failure."""
+
+    class BrokenBody(Response):
+        def iter_content(self, _size):
+            raise requests.Timeout()
+
+    result = probe(
+        "Check",
+        "https://streams.example.com/flow/track.mp3",
+        kind,
+        Session(BrokenBody()),
+    )
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    assert "http_status" not in result  # diagnostics fall back to the status
