@@ -126,6 +126,11 @@ def _classify_response(kind, code, response):
 # request's own DNS lookup could hang or resolve inward.
 _DNS_TIMEOUT_SECONDS = 5.0
 _DNS_TIMED_OUT = object()  # sentinel: the resolver stalled past its bound
+# Sentinel: no lookup could be started — every worker slot was held by a
+# stalled lookup, or the runtime refused a new thread. Reported distinctly
+# from a timeout so the status page never blames one slow answer for a
+# capacity problem (issue #49 review).
+_DNS_UNAVAILABLE = object()
 
 # One in-flight worker per hostname so a stalled resolver is reused, not
 # re-spawned on every check run (which would slowly leak blocked daemon
@@ -134,8 +139,14 @@ _DNS_TIMED_OUT = object()  # sentinel: the resolver stalled past its bound
 # lookups never linger. Distinct stalled hostnames stop spawning workers at
 # _MAX_DNS_WORKERS, so blocked threads stay bounded too (issue #49 review).
 _dns_lock = threading.Lock()
-_dns_inflight = {}
+_dns_inflight = {}  # hostname -> (worker, found, started_at)
 _MAX_DNS_WORKERS = 4
+# A lookup still running this long outlived every caller (the join bound is
+# _DNS_TIMEOUT_SECONDS) and is treated as permanently stalled: it may keep
+# its one blocked daemon thread — which still self-cleans if the resolver
+# ever returns — but it must not hold a worker slot until the add-on
+# restarts (issue #49 review).
+_DNS_WORKER_MAX_AGE_SECONDS = 60.0
 
 
 def _forget_worker(hostname):
@@ -151,7 +162,13 @@ def _forget_worker(hostname):
 
 
 def _spawn_lookup(hostname, found):
-    """Start the daemon lookup for hostname; the caller holds ``_dns_lock``."""
+    """Start the daemon lookup for hostname; the caller holds ``_dns_lock``.
+
+    Returns None when the runtime refuses the thread: the in-flight entry is
+    dropped so no unstarted worker lingers, and the caller reports a bounded
+    lookup failure instead of letting the refusal abort the whole check run
+    before it can commit (issue #49 review).
+    """
 
     def _lookup():
         try:
@@ -164,38 +181,58 @@ def _spawn_lookup(hostname, found):
         finally:
             _forget_worker(hostname)
 
-    worker = threading.Thread(target=_lookup, daemon=True)
-    _dns_inflight[hostname] = (worker, found)
-    worker.start()
+    try:
+        worker = threading.Thread(target=_lookup, daemon=True)
+        _dns_inflight[hostname] = (worker, found, time.monotonic())
+        worker.start()
+    except RuntimeError:
+        _dns_inflight.pop(hostname, None)  # never leave an unstarted entry
+        return None
     return worker
 
 
 def _acquire_worker(hostname):
-    """(worker, found) for hostname, or (None, None) when the cap is reached."""
+    """(worker, found) for hostname, or (None, None) when no lookup can start.
+
+    Reuses the in-flight lookup for the name and drops finished entries.
+    When every slot would otherwise stay held by lookups that outlived their
+    callers, those stale entries are reclaimed first, so a permanently
+    stalled resolver costs at most its one blocked daemon thread instead of
+    holding lookup capacity until the add-on restarts (issue #49 review).
+    """
     with _dns_lock:
         entry = _dns_inflight.get(hostname)
         if entry is not None and entry[0].is_alive():
-            return entry  # reuse the in-flight (possibly stalled) lookup
-        for name, (running, _found) in list(_dns_inflight.items()):
+            return entry[0], entry[1]  # reuse the in-flight (possibly stalled) lookup
+        for name, (running, _found, _started) in list(_dns_inflight.items()):
             if not running.is_alive():
                 del _dns_inflight[name]  # defensive: workers self-clean
         if len(_dns_inflight) >= _MAX_DNS_WORKERS:
-            # Every slot holds a still-blocked lookup: fail this name fast
+            stale_at = time.monotonic() - _DNS_WORKER_MAX_AGE_SECONDS
+            for name, (_running, _found, started) in list(_dns_inflight.items()):
+                if started <= stale_at:
+                    del _dns_inflight[name]  # stalled past its age: free the slot
+        if len(_dns_inflight) >= _MAX_DNS_WORKERS:
+            # Every slot still holds a still-blocked lookup: fail this name fast
             # rather than leak one more blocked worker per hostname.
             return None, None
         found = {}
-        return _spawn_lookup(hostname, found), found
+        worker = _spawn_lookup(hostname, found)
+        if worker is None:
+            return None, None  # thread start refused: report, never abort
+        return worker, found
 
 
 def _resolved_addresses(hostname):
-    """Local-view addresses, None when unresolved, or ``_DNS_TIMED_OUT`` if stalled.
+    """Local-view addresses, None when unresolved, ``_DNS_TIMED_OUT`` if stalled,
+    or ``_DNS_UNAVAILABLE`` when no lookup could be started.
 
     ``socket.getaddrinfo`` runs in a worker thread so a stalled system resolver
     degrades to a bounded timeout instead of hanging the check.
     """
     worker, found = _acquire_worker(hostname)
     if worker is None:
-        return _DNS_TIMED_OUT  # at the worker cap: every lookup is stalled
+        return _DNS_UNAVAILABLE  # no slot or no thread: reported distinctly
     worker.join(_DNS_TIMEOUT_SECONDS)
     if worker.is_alive():
         return _DNS_TIMED_OUT  # the worker clears its entry when it finishes
@@ -326,10 +363,11 @@ def _resolution_views(hostname, cache=None):
     if cache is not None and hostname in cache:
         return cache[hostname]
     local = _resolved_addresses(hostname)
-    if local is _DNS_TIMED_OUT:
-        # A stalled resolver is not "unresolved": probing would send a second
-        # DNS lookup that can hang or resolve inward (issue #49 review).
-        views = _DNS_TIMED_OUT, None
+    if local is _DNS_TIMED_OUT or local is _DNS_UNAVAILABLE:
+        # A stalled or unstartable resolver is not "unresolved": probing
+        # would send a second DNS lookup that can hang or resolve inward
+        # (issue #49 review).
+        views = local, None
     elif not local or all(address.is_global for address in local):
         views = local, None  # public (or unresolvable) locally — no DoH query
     elif not _could_have_public_view(hostname):
@@ -425,6 +463,14 @@ class _PinnedAdapter(requests.adapters.HTTPAdapter):
         return host_params, pool_kwargs
 
 
+# Every address attempt starts its own (3, 5) timeout, so a hostname with
+# many dead answers could hold the reachability check for minutes (issue
+# #49 review). One shared budget covers the whole failover: once it is
+# spent, the failure seen so far is classified instead of trying yet
+# another address.
+_FAILOVER_BUDGET_SECONDS = 10.0
+
+
 def _request_and_classify(session, kind, url, result, hostname, addresses):
     """Send the probe request for kind and record its classified outcome.
 
@@ -435,11 +481,13 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
     The request is pinned to an address the preflight lookup already
     validated: resolving the host again inside the HTTP client would repeat
     a system call the (3, 5) timeout does not bound (issue #49 review).
-    Every validated address is tried in turn, mirroring how the HTTP client
-    walks one resolver answer.
+    Every validated address is tried in turn — mirroring how the HTTP client
+    walks one resolver answer — but never beyond the shared failover
+    budget, so a long address list cannot stretch the check indefinitely.
     """
     method = "GET" if kind in ("skill", "testaudio") else "HEAD"
     ordered = sorted(addresses, key=lambda address: (address.version, int(address)))
+    deadline = time.monotonic() + _FAILOVER_BUDGET_SECONDS
     for index, address in enumerate(ordered):
         session.mount("https://", _PinnedAdapter(hostname, address))
         try:
@@ -449,8 +497,11 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         except requests.exceptions.SSLError:
             raise  # certificate failure: every address would fail alike
         except requests.exceptions.ConnectionError:
-            if index == len(ordered) - 1:
-                raise  # no validated address left: classify the failure
+            if index == len(ordered) - 1 or time.monotonic() >= deadline:
+                # Out of validated addresses or of budget: classify this
+                # failure instead of letting failover stretch the check
+                # (issue #49 review).
+                raise
             continue
         with opened as response:
             code = response.status_code
@@ -487,6 +538,16 @@ def probe(label, value, kind, session, views_cache=None):
             result.update(
                 status="failed",
                 message="DNS lookup timed out; could not confirm the host resolves publicly",
+            )
+            return result
+        if local is _DNS_UNAVAILABLE:
+            # No lookup could start (worker slots stalled, or the runtime
+            # refused a thread): report it as its own bounded failure instead
+            # of aborting the run or re-running the stall as a timeout
+            # (issue #49 review).
+            result.update(
+                status="failed",
+                message="DNS lookup unavailable; could not query the resolver right now",
             )
             return result
         if not local:
@@ -694,21 +755,25 @@ def summary(result):
                     "route are reachable. Review Connectivity below."
                 ),
             }
-        plain_warnings = [
+        attention_warnings = [
             check
             for check in result["checks"]
-            if check["status"] == "warning" and not check.get("note")
+            # A downgraded split-horizon pass verified the target and belongs
+            # to the note branch below; any other warning — note or not —
+            # reports an endpoint problem (e.g. an HTTP 404) that the banner
+            # must surface (issue #49 review).
+            if check["status"] == "warning" and not check.get("downgraded")
         ]
-        if plain_warnings:
-            # A secondary warning the note branch does not cover (e.g. a
-            # Current audio URL that resolves only internally) still needs
-            # attention: never report a plain green while a check warns
-            # (issue #49 review).
+        if attention_warnings:
+            # A secondary warning the note branch would mask (e.g. a Current
+            # audio URL that resolves only internally, or an HTTP error on a
+            # host that resolves internally) still needs attention: never
+            # report a plain green while a check warns (issue #49 review).
             return {
                 "kind": "warning",
                 "title": "Some checks need attention",
                 "description": (
-                    f"{len(plain_warnings)} of {len(result['checks'])} "
+                    f"{len(attention_warnings)} of {len(result['checks'])} "
                     "reachability checks reported a warning even though the "
                     "skill endpoint and audio route are reachable. Review "
                     "Connectivity below."

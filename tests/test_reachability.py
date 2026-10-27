@@ -715,6 +715,9 @@ def test_summary_flags_internal_resolution_on_secondary_checks():
                 "status": "warning",
                 "message": "ok",
                 "note": note,
+                # A confirmed pass that only resolves internally: the note
+                # branch reports the unverified public path (issue #49 review).
+                "downgraded": True,
             },
         ],
     )
@@ -1005,9 +1008,11 @@ def test_distinct_stalled_hostnames_stop_at_the_worker_cap(monkeypatch):
             reachability._resolved_addresses("one.example")
             is reachability._DNS_TIMED_OUT
         )
+        # A full pool is reported distinctly from one stalled answer
+        # (issue #49 review), and still never spawns an extra worker.
         assert (
             reachability._resolved_addresses("two.example")
-            is reachability._DNS_TIMED_OUT
+            is reachability._DNS_UNAVAILABLE
         )
         assert len(created) == 1  # the cap held: no second blocked worker
     finally:
@@ -1069,3 +1074,145 @@ def test_summary_treats_plain_warning_as_needing_attention():
     assert state["kind"] == "warning"  # not a false "good"
     assert "1 of 3" in state["description"]
     assert "warning" in state["description"]
+
+
+def test_summary_keeps_a_noted_warning_in_the_attention_branch():
+    """A noted endpoint problem (e.g. HTTP 404) must not hide behind the note."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Stream host",
+                "status": "warning",
+                "message": "HTTPS reachable (HTTP 404); test an actual audio URL",
+                "note": note,
+                # Not downgraded: the endpoint itself warned, so the banner
+                # must surface it instead of the generic note (issue #49 review).
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a false "good"
+    assert "need attention" in state["title"]  # not only "resolve internally"
+    assert "1 of 3" in state["description"]
+
+
+def test_failover_stops_when_the_shared_budget_is_spent(monkeypatch):
+    """One budget bounds the whole address failover, not just each attempt."""
+    monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 0.0)
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+            ipaddress.ip_address("1.1.1.1"),
+        },
+    )
+
+    class DeadSession(Session):
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            raise requests.ConnectionError()
+
+    session = DeadSession(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    # The budget is spent after the first failure, so the two remaining
+    # validated addresses never get their own fresh timeout (issue #49 review).
+    assert len(session.calls) == 1
+
+
+def test_stalled_pool_reports_unavailable_and_reclaims_capacity(monkeypatch):
+    """A full pool reports distinctly and recovers without an add-on restart."""
+    import threading as _threading
+
+    created = []
+    real_thread = _threading.Thread
+    release = _threading.Event()
+
+    def _counting_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    def _stall(*_args, **_kwargs):
+        release.wait()
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    monkeypatch.setattr(reachability, "_MAX_DNS_WORKERS", 1)
+    monkeypatch.setattr(reachability.threading, "Thread", _counting_thread)
+    try:
+        assert (
+            reachability._resolved_addresses("one.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        # The pool is full with a young entry: a distinct failure, not a
+        # misleading per-host timeout (issue #49 review).
+        assert (
+            reachability._resolved_addresses("two.example")
+            is reachability._DNS_UNAVAILABLE
+        )
+        assert len(created) == 1  # no extra blocked worker while full
+        # Age the stalled entry past the reaping bound: the slot is reclaimed
+        # and a fresh lookup runs — no add-on restart needed.
+        name, (stalled, found, started) = next(iter(reachability._dns_inflight.items()))
+        reachability._dns_inflight[name] = (
+            stalled,
+            found,
+            started - reachability._DNS_WORKER_MAX_AGE_SECONDS - 1,
+        )
+        assert (
+            reachability._resolved_addresses("three.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        assert len(created) == 2  # capacity recovered: a new worker started
+    finally:
+        release.set()  # let the blocked workers finish cleanly
+        for worker in created:
+            worker.join(2)
+        reachability._dns_inflight.clear()
+
+
+def test_refused_worker_start_fails_the_check_without_aborting(monkeypatch):
+    """A refused resolver thread is a bounded failure, not a crashed run."""
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+
+    class Refused(reachability.threading.Thread):
+        def start(self):
+            raise RuntimeError("simulated thread-start refusal")
+
+    monkeypatch.setattr(reachability.threading, "Thread", Refused)
+    try:
+        assert (
+            reachability._resolved_addresses("refused.example")
+            is reachability._DNS_UNAVAILABLE
+        )
+        # The in-flight entry was dropped: no unstarted worker lingers
+        # (issue #49 review).
+        assert reachability._dns_inflight == {}
+    finally:
+        reachability._dns_inflight.clear()
+
+
+def test_probe_reports_an_unavailable_resolver_without_requesting(monkeypatch):
+    """An unstartable lookup fails the check with its own message."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: reachability._DNS_UNAVAILABLE,
+    )
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    assert "unavailable" in result["message"]  # distinct from a timeout
+    assert session.calls == []  # never sends a request that would re-resolve
