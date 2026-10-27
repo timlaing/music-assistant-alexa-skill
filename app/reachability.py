@@ -77,9 +77,10 @@ def _clamp_read_timeout(response, seconds):
     urllib3/http.client internals (``raw._fp`` is the http.client response,
     ``.fp.raw`` its SocketIO), which not every response exposes — mocked
     probes and some proxy paths keep the request timeout as their bound.
-    Returns False when no socket was reachable, so the caller can bound the
-    read another way instead of assuming the deadline holds (issue #53
-    review).
+    Returns False when no socket was reachable — the clamp is then
+    skipped, and in either case the caller bounds the read by the
+    deadline wait rather than assuming the clamp holds (issue #53 and
+    Sourcery review).
     """
     try:
         sock = response.raw._fp.fp.raw._sock
@@ -97,15 +98,19 @@ _END_OF_BODY = object()  # sentinel: every chunk of the body was read
 class _StreamReader:
     """Reads a body from one daemon thread, one chunk at a time.
 
-    A response with no socket to clamp cannot bound a blocking read, so
-    the read has to run off the caller's thread (issue #53 review) — but
-    starting a fresh thread per byte let that overhead eat the shared
-    deadline on a 4 KiB body (Sourcery review). One thread owns the whole
-    body here and only runs when the caller asks for the next chunk, so
-    exactly the bytes the caller takes are pulled; it exits within a tick
-    of being abandoned at the deadline, the read it may be stuck in still
-    ends at the request's own read timeout, and the probe's ``with``
-    closes the response it reads from.
+    A body read is a blocking operation that a socket clamp cannot always
+    bound (mocked probes, buffered proxy bodies), so the read runs off the
+    caller's thread (issue #53 review) — but starting a fresh thread per
+    byte let that overhead eat the shared deadline on a 4 KiB body
+    (Sourcery review). One thread owns the whole body here and only runs
+    when the caller asks for the next chunk, so exactly the bytes the
+    caller takes are pulled; the caller also stops waiting for it at the
+    deadline even when a clamped socket cannot interrupt the read (a
+    decompressed body re-reads the socket many times per chunk), so the
+    call still returns on time (Sourcery review). The thread exits within
+    a tick of being abandoned, the read it may be stuck in still ends at
+    the request's own read timeout, and the probe's ``with`` closes the
+    response it reads from.
     """
 
     _IDLE_TICK_SECONDS = 0.05
@@ -130,17 +135,22 @@ class _StreamReader:
                 result = next(self.chunks)
             except StopIteration:
                 result = _END_OF_BODY
-            except requests.exceptions.RequestException as exc:
+            except Exception as exc:  # noqa: BLE001 - delivered to the caller, which re-raises it
                 result = exc
             self._result = result
             self._answered.set()
             if result is _END_OF_BODY or isinstance(result, BaseException):
                 return
 
-    def read_within(self, remaining):
-        """The next chunk, waiting at most ``remaining`` seconds for it."""
+    def read_within(self, deadline):
+        """The next chunk, waiting no longer than the absolute ``deadline``."""
         self._asked.set()
-        if not self._answered.wait(timeout=remaining):
+        # Recompute the wait from the clock at the moment of waiting: the
+        # caller's earlier arithmetic (or a clamped socket read that ran
+        # long) must not extend the time spent blocked here (Sourcery
+        # review).
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._answered.wait(timeout=remaining):
             self._abandoned = True
             raise requests.exceptions.Timeout("body read outlived the deadline")
         self._answered.clear()
@@ -199,28 +209,35 @@ def _failed_before_connect(exc):
     return _caused_by(exc, urllib3.exceptions.ConnectTimeoutError)
 
 
-def _next_chunk(chunks, response, state, remaining):
+def _next_chunk(chunks, response, state, deadline):
     """The next body chunk, with the blocking read itself bounded.
 
-    A clamped socket bounds the read directly. When the response exposes
-    no socket to clamp (mocked probes, buffered proxy bodies), the read
-    moves to ``state``'s persistent reader thread — one thread for the
+    A clamped socket bounds each socket read directly, but a chunk is not
+    one socket read: a decompressed body re-reads the socket many times to
+    produce a single chunk, so the clamp alone can still overrun the
+    deadline (Sourcery review). Every read with a deadline therefore runs
+    through ``state``'s persistent reader thread — one thread for the
     whole body instead of one per byte (Sourcery review) — and the caller
-    stops waiting for it once ``remaining`` has passed, so the call still
-    returns by the deadline. The read the reader is stuck in ends at the
-    request's own read timeout, and the probe's ``with`` closes the
-    response it reads from (issue #53 review).
+    stops waiting for it once the absolute ``deadline`` has passed, so the
+    call returns on time whether the read is clamped or not. The read the
+    reader is stuck in ends at the request's own read timeout, and the
+    probe's ``with`` closes the response it reads from (issue #53 review).
+
+    ``deadline=None`` skips both the clamp and the reader and reads
+    directly: that path is for callers that need no deadline (tests and
+    diagnostics), never the probe loop.
 
     A streamed read timeout arrives wrapped in ConnectionError, so it is
     re-raised as Timeout here: a stall must not be reported as a
     connection failure (Sourcery review).
     """
     try:
-        if remaining is None or _clamp_read_timeout(response, remaining):
+        if deadline is None:
             return next(chunks)
+        _clamp_read_timeout(response, max(deadline - time.monotonic(), 0))
         if state["reader"] is None:
             state["reader"] = _StreamReader(chunks)
-        return state["reader"].read_within(remaining)
+        return state["reader"].read_within(deadline)
     except requests.exceptions.ConnectionError as exc:
         if _caused_by(exc, urllib3.exceptions.ReadTimeoutError):
             raise requests.exceptions.Timeout("body read timed out") from exc
@@ -238,17 +255,42 @@ def _raise_if_partial(content):
         raise requests.exceptions.Timeout("body read outlived the shared deadline")
 
 
-def _read_health_content(response, deadline=None):
-    """Read at most 4096 bytes of a probe response body.
+def _body_ended(chunks, response, state, deadline):
+    """True when the body ended exactly at the 4 KiB cap.
+
+    Stopping at the cap cannot by itself tell a body that ends there from
+    one that keeps going: a server that ignores the Range header sends on
+    past it, but a body of exactly 4096 bytes must still count as
+    delivered (Sourcery review). One more chunk answers the question —
+    StopIteration means the body ended, another byte means it outgrew the
+    cap — and only callers that need the answer pay for that read: the
+    byte-counting rows never ask, so their reads stay capped untouched.
+    """
+    try:
+        _next_chunk(chunks, response, state, deadline)
+    except StopIteration:
+        return True
+    return False  # the body continues past the cap; those bytes stay unread
+
+
+def _read_health_body(response, deadline=None, confirm_end=False):
+    """Read at most 4096 bytes of a probe response body; return (content, complete).
+
+    ``complete`` says the body ended inside the cap rather than being cut
+    short by it, so a caller parsing the content cannot mistake a prefix
+    for the whole payload (Sourcery review). Only a caller that parses
+    sets ``confirm_end``: it costs one extra chunk when the body fills the
+    cap exactly.
 
     The socket read timeout only bounds the wait *between* chunks, so a
     server that keeps dripping small pieces could occupy the reachability
     worker forever and never let the check commit. ``deadline`` — the same
     shared budget the request itself runs under — is therefore checked
-    *before* each read, so no blocking read starts once it has passed, and
-    each read that does start is bounded by the time left: clamped on the
-    socket when one is reachable, abandoned at the deadline on the
-    persistent reader thread when not (issue #53 review).
+    *before* each read, so no blocking read starts once it has passed,
+    and every read runs on the persistent reader thread with the wait
+    recomputed from the clock at the moment of waiting: the call returns
+    at the deadline whether the socket was clamped or not (issue #53 and
+    Sourcery review).
 
     Reads are one byte at a time: a larger chunk only returns once it has
     filled, which a slow stream can stretch well past the deadline (a
@@ -265,24 +307,35 @@ def _read_health_content(response, deadline=None):
     content = bytearray()
     chunks = response.iter_content(1)
     state = {"reader": None}
+    complete = False
     try:
         while True:
-            remaining = None
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _raise_if_partial(content)
-                    break  # out of budget: stop consuming instead of blocking again
+            if deadline is not None and deadline - time.monotonic() <= 0:
+                _raise_if_partial(content)
+                break  # out of budget: stop consuming instead of blocking again
             try:
-                chunk = _next_chunk(chunks, response, state, remaining)
+                chunk = _next_chunk(chunks, response, state, deadline)
             except StopIteration:
+                complete = True
                 break
-            content.extend(chunk[: _BODY_READ_LIMIT - len(content)])
+            room = _BODY_READ_LIMIT - len(content)
+            if len(chunk) > room:
+                content.extend(chunk[:room])
+                break  # body outgrew the cap: the bytes that did not fit were dropped
+            content.extend(chunk)
             if len(content) >= _BODY_READ_LIMIT:
+                if confirm_end:
+                    complete = _body_ended(chunks, response, state, deadline)
                 break
     finally:
         if state["reader"] is not None:
             state["reader"].abandon()
+    return content, complete
+
+
+def _read_health_content(response, deadline=None):
+    """Read at most 4096 bytes of a probe response body (see _read_health_body)."""
+    content, _complete = _read_health_body(response, deadline)
     return content
 
 
@@ -380,13 +433,13 @@ def _classify_response(kind, code, response, deadline=None):
                 "failed",
                 f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
             )
-        content = _read_health_content(response, deadline)
-        # A body that filled the whole cap was cut off by it, so its bytes
-        # are only a prefix of what the server sent — parsing that prefix
-        # could mistake a truncated body for the add-on's health payload.
-        # Only a body that finished below the cap may vouch for the add-on
-        # (Sourcery review).
-        payload = json.loads(content) if len(content) < _BODY_READ_LIMIT else None
+        content, complete = _read_health_body(response, deadline, confirm_end=True)
+        # Only a body that arrived complete — ending inside the cap or
+        # exactly at it, not cut short by it — may vouch for the add-on:
+        # parsing a prefix could mistake a truncated body for the health
+        # payload (Sourcery review). The read above confirms the end when
+        # filling the cap leaves it ambiguous.
+        payload = json.loads(content) if complete else None
         if isinstance(payload, dict) and payload.get("status") == "ok":
             return "reachable", "HTTPS reachable; add-on health confirmed"
         return (

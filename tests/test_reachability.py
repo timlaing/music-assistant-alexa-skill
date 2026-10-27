@@ -587,14 +587,44 @@ def test_audio_probe_fails_when_no_bytes_are_delivered():
 
 def test_audio_probe_warns_on_non_audio_content_type():
     """Bytes that are not audio stay visible as a warning."""
+
+    class CountingHtml(Response):
+        def __init__(self):
+            super().__init__(headers={"Content-Type": "text/html"})
+            self.consumed = 0
+
+        def iter_content(self, _size):
+            self.consumed += 1
+            yield json.dumps({"status": "ok"}).encode()
+
+    counted = CountingHtml()
     result = probe(
         "Current audio",
         "https://streams.example.com/flow/track.mp3",
         "audio",
-        Session(Response(headers={"Content-Type": "text/html"})),
+        Session(counted),
     )
     assert result["status"] == "warning"
     assert "not audio" in result["message"]
+    assert counted.consumed == 1  # the body was read before it was judged
+
+
+def test_audio_probe_fails_when_a_non_audio_response_delivers_no_bytes():
+    """Headers cannot make an empty delivery pass: no bytes is a failure.
+
+    A classifier that warns from the Content-Type alone never needs the
+    body, so a response that sends nothing would pass as a warning; the
+    row must fail on the missing bytes whatever the headers claim
+    (Sourcery review).
+    """
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(EmptyAudio(headers={"Content-Type": "text/html"})),
+    )
+    assert result["status"] == "failed"
+    assert "delivered no data" in result["message"]
 
 
 @pytest.mark.parametrize("code", [406, 416, 501])
@@ -792,6 +822,10 @@ def test_audio_probe_advances_past_a_connection_never_opened(monkeypatch):
     assert len(session.calls) == 2  # the second validated address was tried
     assert session.calls[1][0] == "GET"
     assert session.calls[1][2]["headers"] == {"Range": "bytes=0-4095"}
+    # The failover pinned the second request to the next sorted address —
+    # retrying the refused first one would still pass with this fixture.
+    pinned = [adapter.address for _prefix, adapter in session.mounts]
+    assert pinned == ["8.8.8.8", "93.184.216.34"]
 
 
 def test_audio_probe_reports_a_stalled_read_as_a_timeout():
@@ -1577,18 +1611,20 @@ def test_trickling_response_stops_at_the_shared_deadline(monkeypatch):
                     raise AssertionError("body read outlived the shared deadline")
                 yield b"x"
 
-    monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=1.0))
     session = Session(TrickleResponse())
     result = probe(
         "Public audio delivery", "https://example.com/", "testaudio", session
     )
-    # The deadline caught the stream mid-body: a few dribbled bytes are a
+    # The deadline caught the stream mid-body: dribbled bytes are a
     # timeout, not a delivery pass — a stalled server must not go green
-    # (Sourcery review), and the reader still stops at the deadline
-    # instead of streaming forever (issue #53 review).
+    # (Sourcery review), and the reader stops instead of streaming
+    # forever (issue #53 review). Each read costs three clock calls —
+    # the deadline check, the clamp and the wait itself — so exactly two
+    # chunks land before the budget is spent (Sourcery review).
     assert result["status"] == "failed"
     assert "timed out" in result["message"]
-    assert 0 < session.response.consumed <= 5
+    assert session.response.consumed == 2
 
 
 def test_read_health_content_raises_when_the_deadline_cuts_a_partial_body(
@@ -1601,8 +1637,10 @@ def test_read_health_content_raises_when_the_deadline_cuts_a_partial_body(
             while True:
                 yield b"x"
 
-    # Each clock call advances 3s: of the 10s budget, three reads happen
-    # and the fourth finds the deadline already passed with bytes in hand.
+    # Each clock call advances 3 s and a read costs three clock calls
+    # (the deadline check, the clamp and the wait itself), so one chunk
+    # lands and the next check finds the deadline passed with bytes in
+    # hand.
     monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
     deadline = reachability.time.monotonic() + 10.0
     trickle = Trickle()
@@ -1788,6 +1826,31 @@ def test_skill_probe_does_not_trust_a_body_cut_at_the_cap():
     assert "does not identify the add-on" in result["message"]
 
 
+def test_skill_probe_confirms_a_complete_body_at_the_cap():
+    """A body that ends exactly at the cap still vouches for the add-on.
+
+    Filling all 4096 bytes is ambiguous at that instant — a larger body
+    would look the same — so the read confirms the end with one more
+    chunk: a complete health payload must not be rejected for arriving
+    exactly at the cap (Sourcery review).
+    """
+    head = json.dumps({"status": "ok"}).encode()
+    body = head + b" " * (reachability._BODY_READ_LIMIT - len(head))
+
+    class ExactlyCapped(Response):
+        def __init__(self):
+            super().__init__(headers={"Content-Type": "application/json"})
+            self.body = body
+
+        def iter_content(self, _size):
+            for start in range(0, len(self.body), 1024):
+                yield self.body[start : start + 1024]
+
+    result = probe("Skill", "https://example.com/", "skill", Session(ExactlyCapped()))
+    assert result["status"] == "reachable"
+    assert "add-on health confirmed" in result["message"]
+
+
 def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
     """Every blocking read starts capped to the budget that is left.
 
@@ -1801,10 +1864,11 @@ def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
         "_clamp_read_timeout",
         lambda _response, seconds: clamps.append(seconds) or True,
     )
-    # Each clock call advances 2s: of the 10s budget, 8s is left for the
-    # first read, then 6s, 4s and 2s for the one that finds the end of the
-    # body — exact instead of depending on how fast the test runs.
-    monkeypatch.setattr(reachability, "time", SteppingTime(step=2.0))
+    # Each clock call advances 0.5 s and a read costs three clock calls
+    # (the deadline check, the clamp and the wait itself), so the
+    # allowance shrinks 9.0, 7.5, 6.0, 4.5 instead of staying at the
+    # original 10 — exact instead of depending on how fast the test runs.
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=0.5))
 
     class Counting(Response):
         def iter_content(self, _size):
@@ -1813,7 +1877,7 @@ def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
 
     deadline = reachability.time.monotonic() + 10.0
     reachability._read_health_content(Counting(), deadline=deadline)
-    assert clamps == [8.0, 6.0, 4.0, 2.0]
+    assert clamps == [9.0, 7.5, 6.0, 4.5]
 
 
 def test_read_timeout_is_clamped_to_the_time_the_deadline_has_left():
@@ -1868,7 +1932,9 @@ def test_unclamped_body_read_still_ends_at_the_deadline():
         assert content == b""  # only an already-expired deadline returns
     finally:
         release.set()  # let the reader finish instead of lingering
-    assert time.monotonic() - started < 1.0  # bounded by the deadline
+    # Bounded close to the 50 ms deadline: a bound of a full second would
+    # wave a substantial overrun through (Sourcery review).
+    assert time.monotonic() - started < 0.25
 
 
 def test_read_health_content_propagates_a_cut_off_even_with_bytes():
@@ -1887,6 +1953,25 @@ def test_read_health_content_propagates_a_cut_off_even_with_bytes():
     cut_short = CutShort()
     with pytest.raises(requests.ConnectionError):
         reachability._read_health_content(cut_short)
+
+
+def test_body_read_failure_is_not_masked_as_a_timeout():
+    """A non-requests failure mid-body surfaces as itself, not as a stall.
+
+    Only RequestException used to reach the caller: any other failure
+    killed the reader thread, and the caller then waited out the
+    deadline, reporting a plain bug as a timeout (Sourcery review).
+    """
+
+    class Broken(Response):
+        def iter_content(self, _size):
+            yield b"x"
+            raise RuntimeError("unexpected decoder failure")
+
+    broken = Broken()
+    deadline = time.monotonic() + 5
+    with pytest.raises(RuntimeError):
+        reachability._read_health_content(broken, deadline=deadline)
 
 
 def test_read_health_content_raises_when_nothing_was_delivered():
