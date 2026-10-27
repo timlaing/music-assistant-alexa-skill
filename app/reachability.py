@@ -68,7 +68,7 @@ _MIN_READ_TICK_SECONDS = 0.001
 
 
 def _clamp_read_timeout(response, seconds):
-    """Cap the next blocking body read at ``seconds`` (best effort).
+    """Cap the next blocking body read at ``seconds``; True when bounded.
 
     The request's read timeout is fixed when the request is sent and only
     bounds inactivity between chunks, so it cannot enforce a wall-clock
@@ -76,14 +76,54 @@ def _clamp_read_timeout(response, seconds):
     urllib3/http.client internals (``raw._fp`` is the http.client response,
     ``.fp.raw`` its SocketIO), which not every response exposes — mocked
     probes and some proxy paths keep the request timeout as their bound.
+    Returns False when no socket was reachable, so the caller can bound the
+    read another way instead of assuming the deadline holds (issue #53
+    review).
     """
     try:
         sock = response.raw._fp.fp.raw._sock
         current = sock.gettimeout()
         if current is None or current > seconds:
             sock.settimeout(max(seconds, _MIN_READ_TICK_SECONDS))
+        return True
     except (AttributeError, OSError, ValueError):
-        pass
+        return False
+
+
+def _next_chunk(chunks, response, remaining):
+    """The next body chunk, with the blocking read itself bounded.
+
+    A clamped socket bounds the read directly. When the response exposes no
+    socket to clamp (mocked probes, buffered proxy bodies), the read runs in
+    a daemon thread that we stop waiting for once ``remaining`` has passed:
+    the caller returns by the deadline, and the abandoned read still ends at
+    the request's own read timeout, so the worker cannot linger past it
+    (issue #53 review).
+    """
+    if remaining is None or _clamp_read_timeout(response, remaining):
+        return next(chunks)
+    outcome = []
+
+    def _pull():
+        try:
+            outcome.append(next(chunks))
+        except BaseException as exc:  # noqa: BLE001 - re-raised by the caller
+            outcome.append(exc)
+
+    worker = threading.Thread(target=_pull, daemon=True)
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive() or not outcome:
+        raise requests.exceptions.Timeout("body read outlived the deadline")
+    item = outcome[0]
+    if isinstance(item, BaseException):
+        raise item
+    return item
+
+
+# The probe never reads past the first 4 KiB of a body, even when the
+# server ignores the Range header and keeps sending (Sourcery review).
+_BODY_READ_LIMIT = 4096
 
 
 def _read_health_content(response, deadline=None):
@@ -93,40 +133,35 @@ def _read_health_content(response, deadline=None):
     server that keeps dripping small pieces could occupy the reachability
     worker forever and never let the check commit. ``deadline`` — the same
     shared budget the request itself runs under — is therefore checked
-    *before* each read, so no blocking read starts once it has passed
+    *before* each read, so no blocking read starts once it has passed, and
+    each read that does start is bounded by the time left: clamped on the
+    socket when one is reachable, abandoned at the deadline when not
     (issue #53 review).
 
-    Each blocking read is also clamped to the time the deadline has left,
-    so the cap holds for the read itself and not only between reads, and
-    reads are one byte at a time: a larger chunk only returns once it has
+    Reads are one byte at a time: a larger chunk only returns once it has
     filled, which a slow stream can stretch well past the deadline (a
-    1024-byte chunk held a live read for 54 s past the 10 s cap in
-    testing — issue #48 review). Bytes that arrived before a cut off still
-    count as delivery; an empty read is a real failure and belongs to the
-    caller.
+    1024-byte chunk held a live read for 54 s past the 10 s cap in testing
+    — issue #48 review), and only bytes up to the 4 KiB cap are taken, so a
+    server that ignores the Range header cannot pull the probe past it
+    (Sourcery review). A read that fails raises: a stream cut off
+    mid-body must not be reported as delivered, even when bytes arrived
+    first (Sourcery review).
     """
     content = bytearray()
-    try:
-        chunks = response.iter_content(1)
-        while True:
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break  # out of budget: stop consuming instead of blocking again
-                _clamp_read_timeout(response, remaining)
-            try:
-                chunk = next(chunks)
-            except StopIteration:
-                break
-            content.extend(chunk)
-            if len(content) > 4096:
-                break
-    except requests.exceptions.RequestException:
-        # requests maps a socket read timeout during streaming to
-        # ConnectionError; partial bytes still prove delivery, but an empty
-        # read is a real failure and must reach probe()'s handlers.
-        if not content:
-            raise
+    chunks = response.iter_content(1)
+    while True:
+        remaining = None
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break  # out of budget: stop consuming instead of blocking again
+        try:
+            chunk = _next_chunk(chunks, response, remaining)
+        except StopIteration:
+            break
+        content.extend(chunk[: _BODY_READ_LIMIT - len(content)])
+        if len(content) >= _BODY_READ_LIMIT:
+            break
     return content
 
 
@@ -605,45 +640,29 @@ def _probe_request_kwargs(ranged, share):
     return kwargs
 
 
-def _audio_range_fallback(session, url, request_kwargs, result):
-    """Fall back to the plain HEAD after the proxy refused the ranged GET.
-
-    Returns the (status, message) pair for the row. A HEAD proves
-    connectivity, not delivery, so a refused range request keeps the row
-    yellow rather than green: with no bytes seen, the row must not claim a
-    plain pass (issue #48 review).
-    """
-    fallback_kwargs = dict(request_kwargs)
-    fallback_kwargs.pop("headers", None)  # plain HEAD, no Range
-    with session.request("HEAD", url, **fallback_kwargs) as head:
-        code = head.status_code
-        if 200 <= code < 300:
-            outcome = (
-                "warning",
-                f"HTTPS reachable (HTTP {code}), but the proxy "
-                "refused a range request; audio bytes not verified",
-            )
-        else:
-            outcome = _classify_head_response("audio", code)
-        result["http_status"] = code
-        return outcome
-
-
-def _classify_probe(session, kind, url, request_kwargs, response, deadline, result):
+def _classify_probe(kind, ranged, response, deadline, result):
     """Classify a completed probe response and record its status code.
 
     ``http_status`` is recorded only once the response has been classified:
     a body read that fails mid-stream never records it, so diagnostics
-    cannot show HTTP 200 beside a timeout (issue #48 review). When the
-    proxy refuses the range request itself, the plain HEAD fallback
-    classifies instead (issue #48).
+    cannot show HTTP 200 beside a timeout (issue #48 review).
+
+    ``ranged`` says the response is the range-limited GET. When it is
+    False for the Current audio row, this is the plain HEAD the proxy's
+    refused range request fell back to: a HEAD proves connectivity, not
+    delivery, so a 2xx keeps the row yellow rather than green — with no
+    bytes seen, it must not claim a plain pass (issue #48 review).
     """
     code = response.status_code
-    if kind == "audio" and code in _RANGE_UNSUPPORTED:
-        # The proxy rejected the range request, not the stream:
-        # conservatively fall back to the old HEAD probe rather than
-        # reporting the audio as broken.
-        return _audio_range_fallback(session, url, request_kwargs, result)
+    if kind == "audio" and not ranged:
+        result["http_status"] = code
+        if 200 <= code < 300:
+            return (
+                "warning",
+                f"HTTPS reachable (HTTP {code}), but the proxy "
+                "refused a range request; audio bytes not verified",
+            )
+        return _classify_head_response("audio", code)
     status, message = _classify_response(kind, code, response, deadline)
     result["http_status"] = code
     return status, message
@@ -668,11 +687,19 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
 
     The Current audio row reads real bytes instead of sending a HEAD: a
     range-limited GET whose outcome ``_classify_probe`` records (issue #48).
+    When the proxy refuses the range request, the same address is retried
+    as the plain HEAD and the remaining addresses follow it, so the
+    fallback shares this failover loop — and the budget its timeouts are
+    scaled to — instead of running a single unbounded side request
+    (Sourcery review).
     """
     method = "GET" if kind in ("skill", "testaudio", "audio") else "HEAD"
+    ranged = kind == "audio"
     ordered = sorted(addresses, key=lambda address: (address.version, int(address)))
     deadline = time.monotonic() + _FAILOVER_BUDGET_SECONDS
-    for index, address in enumerate(ordered):
+    index = 0
+    while index < len(ordered):
+        address = ordered[index]
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             # Budget spent: another attempt would start fresh timeouts the
@@ -684,7 +711,7 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         # Scale the fresh (3, 5) attempt timeouts to the budget left, so
         # connect + read of this attempt cannot overrun it (issue #53 review).
         share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
-        request_kwargs = _probe_request_kwargs(kind == "audio", share)
+        request_kwargs = _probe_request_kwargs(ranged, share)
         try:
             opened = session.request(method, url, **request_kwargs)
         except requests.exceptions.SSLError:
@@ -695,11 +722,22 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
                 # failure instead of letting failover stretch the check
                 # (issue #49 review).
                 raise
+            index += 1
             continue
         with opened as response:
-            status, message = _classify_probe(
-                session, kind, url, request_kwargs, response, deadline, result
-            )
+            if (
+                kind == "audio"
+                and ranged
+                and response.status_code in _RANGE_UNSUPPORTED
+            ):
+                # The proxy rejected the range request, not the stream:
+                # retry this address as the plain HEAD probe, then the
+                # remaining addresses, rather than reporting the audio as
+                # broken (or abandoning the failover for one side request).
+                ranged = False
+                method = "HEAD"
+                continue  # GET response closes here; the loop sends the HEAD
+            status, message = _classify_probe(kind, ranged, response, deadline, result)
             was_reachable = status == "reachable"
             result.update(
                 status=_downgrade_split_horizon_pass(status, result), message=message
@@ -710,6 +748,7 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
                 # warning never set this flag.
                 result["downgraded"] = True
             return
+    raise requests.exceptions.Timeout("no validated address could be probed")
 
 
 def probe(label, value, kind, session, views_cache=None):

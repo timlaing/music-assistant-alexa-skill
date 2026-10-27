@@ -625,6 +625,61 @@ def test_audio_probe_fallback_still_reports_head_failure():
     assert result["http_status"] == 404
 
 
+def test_audio_probe_fallback_head_fits_the_remaining_budget(monkeypatch):
+    """The fallback HEAD rescales its timeouts to the budget left."""
+    monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 4.0)
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("93.184.216.34")},
+    )
+    # Each clock call advances 1s: the ranged GET starts with 3s of the 4s
+    # budget and the fallback HEAD with 2s, so reusing the GET's larger
+    # timeouts would overrun what is left (Sourcery review).
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=1.0))
+    session = SequenceSession(Response(416), Response(200))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert session.calls[1][0] == "HEAD"
+    assert "headers" not in session.calls[1][2]  # plain HEAD, no Range
+    connect, read = session.calls[1][2]["timeout"]
+    assert connect + read <= 2.0
+    assert result["status"] == "warning"
+    assert "not verified" in result["message"]
+
+
+def test_audio_probe_fallback_retries_the_remaining_addresses(monkeypatch):
+    """A refused range falls back through the same address failover."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("1.1.1.1"),
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+        },
+    )
+    # The first address refuses the range, its own HEAD fallback cannot
+    # connect, and the next validated address must still get its turn
+    # instead of failing the probe outright (Sourcery review).
+    session = SequenceSession(Response(406), requests.ConnectionError(), Response(200))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "warning"
+    assert [call[0] for call in session.calls] == ["GET", "HEAD", "HEAD"]
+    assert "headers" not in session.calls[1][2]
+    assert "headers" not in session.calls[2][2]
+    assert "not verified" in result["message"]
+
+
 def test_audio_probe_does_not_follow_redirects():
     """Redirect behaviour is unchanged: a 3xx still fails the row."""
     session = Session(Response(302))
@@ -1331,6 +1386,19 @@ def test_attempt_timeouts_fit_the_remaining_failover_budget(monkeypatch):
     assert read < 5.0
 
 
+def test_no_validated_address_fails_instead_of_returning_silently():
+    """An empty address list reports a failure, never a missing result."""
+    with pytest.raises(requests.Timeout):
+        reachability._request_and_classify(
+            Session(Response()),
+            "skill",
+            "https://example.com/",
+            {},
+            "example.com",
+            set(),
+        )
+
+
 def test_health_read_stops_at_the_deadline_before_the_next_chunk():
     """No blocking read starts once the shared deadline has passed."""
 
@@ -1490,27 +1558,43 @@ def test_read_health_content_checkpoints_after_every_byte():
     assert sizes == [1]
 
 
+def test_read_health_content_stops_at_the_four_kib_cap():
+    """A server that ignores the Range header cannot push us past 4096."""
+
+    class Endless(Response):
+        def iter_content(self, _size):
+            while True:
+                yield b"x"
+
+    assert len(reachability._read_health_content(Endless())) == 4096
+
+
 def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
-    """Every blocking read starts with the socket capped to what is left."""
+    """Every blocking read starts capped to the budget that is left.
+
+    A controlled clock shrinks the budget between reads, so a reader that
+    keeps passing the original allowance instead of recomputing the
+    remaining deadline fails here (Sourcery review).
+    """
     clamps = []
     monkeypatch.setattr(
         reachability,
         "_clamp_read_timeout",
-        lambda _response, seconds: clamps.append(seconds),
+        lambda _response, seconds: clamps.append(seconds) or True,
     )
+    # Each clock call advances 2s: of the 10s budget, 8s is left for the
+    # first read, then 6s, 4s and 2s for the one that finds the end of the
+    # body — exact instead of depending on how fast the test runs.
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=2.0))
 
     class Counting(Response):
         def iter_content(self, _size):
             for _ in range(3):
                 yield b"x"
 
-    deadline = time.monotonic() + 10.0
+    deadline = reachability.time.monotonic() + 10.0
     reachability._read_health_content(Counting(), deadline=deadline)
-    # One clamp before every read — including the one that finds the end of
-    # the body — and each is derived from the budget that only ever shrinks.
-    assert len(clamps) >= 3
-    assert all(0 < left <= 10.0 for left in clamps)
-    assert clamps == sorted(clamps, reverse=True)
+    assert clamps == [8.0, 6.0, 4.0, 2.0]
 
 
 def test_read_timeout_is_clamped_to_the_time_the_deadline_has_left():
@@ -1540,15 +1624,39 @@ def test_read_timeout_is_clamped_to_the_time_the_deadline_has_left():
     reachability._clamp_read_timeout(SimpleNamespace(raw=None), 1.0)
 
 
-def test_read_health_content_keeps_bytes_delivered_before_a_cut_off():
-    """Bytes that arrived before the read failed still prove delivery."""
+def test_unclamped_body_read_still_ends_at_the_deadline():
+    """With no socket to clamp, the call still returns by the deadline."""
+    import threading as _threading
+
+    release = _threading.Event()
+
+    class Blocked(Response):
+        def iter_content(self, _size):
+            release.wait()  # blocks like a slow stream until released
+            yield b"x"
+
+    started = time.monotonic()
+    with pytest.raises(requests.Timeout):
+        reachability._read_health_content(Blocked(), deadline=time.monotonic() + 0.05)
+    release.set()  # let the abandoned worker finish instead of lingering
+    assert time.monotonic() - started < 1.0  # bounded by the deadline
+
+
+def test_read_health_content_propagates_a_cut_off_even_with_bytes():
+    """A stream that dies mid-body must not be reported as delivered.
+
+    Bytes that arrived before the failure do not make the endpoint usable:
+    swallowing the exception here let a dead stream pass as reachable
+    (Sourcery review).
+    """
 
     class CutShort(Response):
         def iter_content(self, _size):
             yield b"audio-bytes"
             raise requests.ConnectionError()
 
-    assert reachability._read_health_content(CutShort()) == b"audio-bytes"
+    with pytest.raises(requests.ConnectionError):
+        reachability._read_health_content(CutShort())
 
 
 def test_read_health_content_raises_when_nothing_was_delivered():
