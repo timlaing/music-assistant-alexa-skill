@@ -1388,14 +1388,10 @@ def test_attempt_timeouts_fit_the_remaining_failover_budget(monkeypatch):
 
 def test_no_validated_address_fails_instead_of_returning_silently():
     """An empty address list reports a failure, never a missing result."""
+    session = Session(Response())
     with pytest.raises(requests.Timeout):
         reachability._request_and_classify(
-            Session(Response()),
-            "skill",
-            "https://example.com/",
-            {},
-            "example.com",
-            set(),
+            session, "skill", "https://example.com/", {}, "example.com", set()
         )
 
 
@@ -1636,8 +1632,10 @@ def test_unclamped_body_read_still_ends_at_the_deadline():
             yield b"x"
 
     started = time.monotonic()
+    deadline = started + 0.05
+    blocked = Blocked()
     with pytest.raises(requests.Timeout):
-        reachability._read_health_content(Blocked(), deadline=time.monotonic() + 0.05)
+        reachability._read_health_content(blocked, deadline=deadline)
     release.set()  # let the abandoned worker finish instead of lingering
     assert time.monotonic() - started < 1.0  # bounded by the deadline
 
@@ -1655,8 +1653,9 @@ def test_read_health_content_propagates_a_cut_off_even_with_bytes():
             yield b"audio-bytes"
             raise requests.ConnectionError()
 
+    cut_short = CutShort()
     with pytest.raises(requests.ConnectionError):
-        reachability._read_health_content(CutShort())
+        reachability._read_health_content(cut_short)
 
 
 def test_read_health_content_raises_when_nothing_was_delivered():

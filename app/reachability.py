@@ -107,14 +107,16 @@ def _next_chunk(chunks, response, remaining):
     def _pull():
         try:
             outcome.append(next(chunks))
-        except BaseException as exc:  # noqa: BLE001 - re-raised by the caller
-            outcome.append(exc)
+        except (StopIteration, requests.exceptions.RequestException) as exc:
+            outcome.append(exc)  # re-raised by the caller
 
     worker = threading.Thread(target=_pull, daemon=True)
     worker.start()
     worker.join(remaining)
     if worker.is_alive() or not outcome:
-        raise requests.exceptions.Timeout("body read outlived the deadline")
+        # Still blocked past the deadline, or failed with an error the
+        # worker's excepthook already reported.
+        raise requests.exceptions.Timeout("body read failed or outlived the deadline")
     item = outcome[0]
     if isinstance(item, BaseException):
         raise item
@@ -668,6 +670,29 @@ def _classify_probe(kind, ranged, response, deadline, result):
     return status, message
 
 
+def _range_refused(kind, ranged, response):
+    """True when the proxy rejected the range request, not the stream itself."""
+    return kind == "audio" and ranged and response.status_code in _RANGE_UNSUPPORTED
+
+
+def _open_probe_attempt(session, method, url, request_kwargs, index, ordered, deadline):
+    """The opened response for one failover attempt; None means try the next.
+
+    A certificate failure stops the failover (every address would fail
+    alike), while a connection failure moves on to the next validated
+    address — unless the last one just failed or the shared budget is
+    spent (issue #49/#53 review).
+    """
+    try:
+        return session.request(method, url, **request_kwargs)
+    except requests.exceptions.SSLError:
+        raise  # certificate failure: every address would fail alike
+    except requests.exceptions.ConnectionError:
+        if index == len(ordered) - 1 or time.monotonic() >= deadline:
+            raise
+        return None
+
+
 def _request_and_classify(session, kind, url, result, hostname, addresses):
     """Send the probe request for kind and record its classified outcome.
 
@@ -712,24 +737,14 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         # connect + read of this attempt cannot overrun it (issue #53 review).
         share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
         request_kwargs = _probe_request_kwargs(ranged, share)
-        try:
-            opened = session.request(method, url, **request_kwargs)
-        except requests.exceptions.SSLError:
-            raise  # certificate failure: every address would fail alike
-        except requests.exceptions.ConnectionError:
-            if index == len(ordered) - 1 or time.monotonic() >= deadline:
-                # Out of validated addresses or of budget: classify this
-                # failure instead of letting failover stretch the check
-                # (issue #49 review).
-                raise
-            index += 1
+        opened = _open_probe_attempt(
+            session, method, url, request_kwargs, index, ordered, deadline
+        )
+        if opened is None:
+            index += 1  # connection failed: the next validated address gets a turn
             continue
         with opened as response:
-            if (
-                kind == "audio"
-                and ranged
-                and response.status_code in _RANGE_UNSUPPORTED
-            ):
+            if _range_refused(kind, ranged, response):
                 # The proxy rejected the range request, not the stream:
                 # retry this address as the plain HEAD probe, then the
                 # remaining addresses, rather than reporting the audio as
