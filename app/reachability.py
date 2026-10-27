@@ -135,7 +135,11 @@ class _StreamReader:
                 result = next(self.chunks)
             except StopIteration:
                 result = _END_OF_BODY
-            except Exception as exc:  # noqa: BLE001 - delivered to the caller, which re-raises it
+            except Exception as exc:  # noqa: BLE001
+                # Delivered to the caller, which re-raises it unchanged: a
+                # mid-body failure must surface as itself instead of killing
+                # the reader thread and being reported as a timeout the
+                # caller waited out (Sourcery review).
                 result = exc
             self._result = result
             self._answered.set()
