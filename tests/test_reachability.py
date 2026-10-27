@@ -2,10 +2,12 @@ import ipaddress
 import json
 import socket
 import time
+from types import SimpleNamespace
 
 import pytest
 import reachability
 import requests
+import urllib3.exceptions
 from reachability import Reachability, probe, targets
 from shared_store import set_ma
 
@@ -66,6 +68,25 @@ def test_skill_probe_checks_service_health_and_proxy_prefix():
     assert session.calls[0][1] == "https://example.com/ma-alexa-skill/health"
     assert session.calls[0][2]["allow_redirects"] is False
     assert "headers" not in session.calls[0][2]
+
+
+def test_skill_probe_keeps_the_http_status_when_json_is_malformed():
+    """A body that arrived but does not parse keeps its HTTP status.
+
+    Only transport and body-read failures must omit ``http_status``
+    (issue #48 review); a response that was received and merely failed to
+    decode is still worth showing in diagnostics (Sourcery review).
+    """
+
+    class Malformed(Response):
+        def iter_content(self, _size):
+            yield b'{"status": "ok"'
+
+    malformed = Malformed()
+    result = probe("Skill", "https://example.com/", "skill", Session(malformed))
+    assert result["status"] == "failed"
+    assert "unexpected response" in result["message"]
+    assert result["http_status"] == 200  # the response itself was received
 
 
 @pytest.mark.parametrize(
@@ -235,7 +256,8 @@ def test_testaudio_probe_streams_get_and_requires_data():
         "audio",
         audio_session,
     )
-    assert audio_session.calls[0][0] == "HEAD"
+    assert audio_session.calls[0][0] == "GET"
+    assert audio_session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
 
 
 def test_checks_cached_and_status_does_not_block(monkeypatch):
@@ -421,9 +443,10 @@ def test_audio_probe_allows_split_dns_public_view(monkeypatch):
         {ipaddress.ip_address("93.184.216.34")},
     )
     assert session.calls
-    assert session.calls[0][0] == "HEAD"
-    # Issue #49: the probe only exercised the LAN rewrite, so it must not
-    # report a plain pass.
+    # Issue #48: the audio row reads real bytes via a range GET, and issue
+    # #49 still requires the split-horizon pass to stay yellow.
+    assert session.calls[0][0] == "GET"
+    assert session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
     assert result["status"] == "warning"
     assert result["note"] == (
         "Resolves internally (LAN) — this check does not test the public/Echo path"
@@ -503,6 +526,351 @@ def test_split_horizon_note_renders_as_warning_not_green():
     assert "ma-state ma-ok" not in rendered
     assert "Resolves internally (LAN)" in rendered
     assert "[Resolves internally (LAN)" in diagnostics(result)
+
+
+# --- Current audio: range-limited byte delivery (issue #48) -----------------
+
+
+class SequenceSession(Session):
+    """Session returning a different response per call (e.g. GET then HEAD)."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.mounts = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class EmptyAudio(Response):
+    def iter_content(self, _size):
+        return iter(())
+
+
+def test_audio_probe_reports_bytes_it_received():
+    """The audio row is green only after real audio bytes arrive."""
+    session = Session(Response())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3?token=secret",
+        "audio",
+        session,
+    )
+    method, url, kwargs = session.calls[0]
+    assert method == "GET"
+    assert kwargs["headers"] == {"Range": "bytes=0-4095"}
+    assert kwargs["allow_redirects"] is False
+    assert kwargs["stream"] is True  # never buffer the one-shot body eagerly
+    assert url.endswith("/flow/track.mp3?token=secret")  # live token preserved
+    assert result["status"] == "reachable"
+    delivered = len(json.dumps({"status": "ok"}).encode())  # the fixture body
+    assert f"{delivered} bytes of audio/mpeg" in result["message"]
+    assert "secret" not in result["url"]  # query still stripped for display
+
+
+def test_audio_probe_fails_when_no_bytes_are_delivered():
+    """A 200/206 that delivers nothing is a failure, not a green row."""
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(EmptyAudio()),
+    )
+    assert result["status"] == "failed"
+    assert "delivered no data" in result["message"]
+
+
+def test_audio_probe_warns_on_non_audio_content_type():
+    """Bytes that are not audio stay visible as a warning."""
+
+    class CountingHtml(Response):
+        def __init__(self):
+            super().__init__(headers={"Content-Type": "text/html"})
+            self.consumed = 0
+
+        def iter_content(self, _size):
+            self.consumed += 1
+            yield json.dumps({"status": "ok"}).encode()
+
+    counted = CountingHtml()
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(counted),
+    )
+    assert result["status"] == "warning"
+    assert "not audio" in result["message"]
+    assert counted.consumed == 1  # the body was read before it was judged
+
+
+def test_audio_probe_fails_when_a_non_audio_response_delivers_no_bytes():
+    """Headers cannot make an empty delivery pass: no bytes is a failure.
+
+    A classifier that warns from the Content-Type alone never needs the
+    body, so a response that sends nothing would pass as a warning; the
+    row must fail on the missing bytes whatever the headers claim
+    (Sourcery review).
+    """
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(EmptyAudio(headers={"Content-Type": "text/html"})),
+    )
+    assert result["status"] == "failed"
+    assert "delivered no data" in result["message"]
+
+
+@pytest.mark.parametrize("code", [406, 416, 501])
+def test_audio_probe_falls_back_to_head_when_range_unsupported(code):
+    """Rejected range requests fall back to the previous HEAD probe."""
+    session = SequenceSession(Response(code), Response(200))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert session.calls[0][0] == "GET"
+    assert session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
+    fallback_method, _url, fallback_kwargs = session.calls[1]
+    assert fallback_method == "HEAD"
+    assert "headers" not in fallback_kwargs  # plain HEAD, no Range
+    # A HEAD cannot prove byte delivery, so a refused range request keeps the
+    # row yellow rather than green.
+    assert result["status"] == "warning"
+    assert result["http_status"] == 200
+    assert "not verified" in result["message"]
+
+
+def test_audio_probe_fallback_failure_reports_no_stale_status():
+    """A failed HEAD fallback must not keep the ranged GET's HTTP code."""
+    session = SequenceSession(Response(416), requests.Timeout())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert "http_status" not in result  # no stale 416 beside a timeout
+
+
+def test_audio_probe_fallback_still_reports_head_failure():
+    """The HEAD fallback keeps the old failure classification too."""
+    session = SequenceSession(Response(416), Response(404))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert result["http_status"] == 404
+
+
+def test_audio_probe_fallback_head_fits_the_remaining_budget(monkeypatch):
+    """The fallback HEAD rescales its timeouts to the budget left."""
+    monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 4.0)
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("93.184.216.34")},
+    )
+    # Each clock call advances 1s: the ranged GET starts with 3s of the 4s
+    # budget and the fallback HEAD with 2s, so reusing the GET's larger
+    # timeouts would overrun what is left (Sourcery review).
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=1.0))
+    session = SequenceSession(Response(416), Response(200))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert session.calls[1][0] == "HEAD"
+    assert "headers" not in session.calls[1][2]  # plain HEAD, no Range
+    connect, read = session.calls[1][2]["timeout"]
+    assert connect > 0  # a degenerate (0, 0) timeout would fit any budget
+    assert read > 0
+    assert connect + read <= 2.0
+    assert result["status"] == "warning"
+    assert "not verified" in result["message"]
+
+
+def test_audio_probe_fallback_retries_the_remaining_addresses(monkeypatch):
+    """A refused range falls back through the same address failover."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("1.1.1.1"),
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+        },
+    )
+    # The first address refuses the range, its own HEAD fallback cannot
+    # connect, and the next validated address must still get its turn
+    # instead of failing the probe outright (Sourcery review).
+    session = SequenceSession(Response(406), requests.ConnectionError(), Response(200))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "warning"
+    assert [call[0] for call in session.calls] == ["GET", "HEAD", "HEAD"]
+    assert "headers" not in session.calls[1][2]
+    assert "headers" not in session.calls[2][2]
+    # Each attempt is pinned to the address it was meant to reach: the
+    # refusing address keeps its own HEAD, then the connection failure
+    # there advances the pin to the next validated address (Sourcery
+    # review).
+    assert [adapter.address for _prefix, adapter in session.mounts] == [
+        "1.1.1.1",
+        "1.1.1.1",
+        "8.8.8.8",
+    ]
+    assert "not verified" in result["message"]
+
+
+def test_audio_probe_416_on_an_empty_stream_fails_without_a_fallback():
+    """416 with Content-Range bytes */0 is an empty resource, not a proxy.
+
+    For bytes=0-4095 an unsatisfiable range means the representation has
+    no bytes at all (RFC 7233), so the check must fail as no-data instead
+    of falling back to a HEAD that turns it into an inconclusive warning
+    (Sourcery review).
+    """
+    empty = Response(
+        416, headers={"Content-Range": "bytes */0", "Content-Type": "audio/mpeg"}
+    )
+    session = SequenceSession(empty)
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert result["http_status"] == 416
+    assert "empty resource" in result["message"]
+    assert len(session.calls) == 1  # no HEAD fallback for an empty resource
+
+
+def test_audio_probe_never_re_sends_the_one_shot_ranged_get(monkeypatch):
+    """An ambiguous connection error must not trigger a second flow GET.
+
+    A connection error does not say whether the request reached the
+    server: re-sending it could hit the one-shot /flow/ URL twice —
+    consume a second session or interrupt playback — so the ranged GET is
+    sent exactly once and its failure is classified instead of retried
+    (Sourcery review).
+    """
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+        },
+    )
+    session = SequenceSession(requests.ConnectionError())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert [call[0] for call in session.calls] == ["GET"]  # no second send
+    assert session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
+
+
+def test_audio_probe_advances_past_a_connection_never_opened(monkeypatch):
+    """Only ambiguous failures are one-shot: a connection that never
+    opened cannot have reached the flow URL, so the next validated
+    address still gets its turn instead of failing the audio check while
+    a reachable address waits (Sourcery review).
+    """
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+        },
+    )
+    refused = requests.ConnectionError(
+        urllib3.exceptions.NewConnectionError(None, "connection refused")
+    )
+    session = SequenceSession(refused, Response())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "reachable"
+    assert len(session.calls) == 2  # the second validated address was tried
+    assert session.calls[1][0] == "GET"
+    assert session.calls[1][2]["headers"] == {"Range": "bytes=0-4095"}
+    # The failover pinned the second request to the next sorted address —
+    # retrying the refused first one would still pass with this fixture.
+    pinned = [adapter.address for _prefix, adapter in session.mounts]
+    assert pinned == ["8.8.8.8", "93.184.216.34"]
+
+
+def test_audio_probe_reports_a_stalled_read_as_a_timeout():
+    """A streamed read timeout must not read as a connection failure.
+
+    requests wraps the read-inactivity timeout of a streamed body in
+    ConnectionError, which probe()'s generic branch would report as
+    "DNS lookup or connection failed" (Sourcery review).
+    """
+
+    class Stalled(Response):
+        def iter_content(self, _size):
+            yield b""  # the stream opens, then goes silent
+            raise requests.ConnectionError(
+                urllib3.exceptions.ReadTimeoutError(
+                    None,
+                    "https://streams.example.com/flow/track.mp3",
+                    "read timed out",
+                )
+            )
+
+    stalled = Stalled()
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(stalled),
+    )
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+
+
+def test_audio_probe_does_not_follow_redirects():
+    """Redirect behaviour is unchanged: a 3xx still fails the row."""
+    session = Session(Response(302))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert result["http_status"] == 302
+    assert len(session.calls) == 1  # no fallback, no redirect follow
+    assert session.calls[0][2]["allow_redirects"] is False
 
 
 def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):
@@ -1196,6 +1564,15 @@ def test_attempt_timeouts_fit_the_remaining_failover_budget(monkeypatch):
     assert read < 5.0
 
 
+def test_no_validated_address_fails_instead_of_returning_silently():
+    """An empty address list reports a failure, never a missing result."""
+    session = Session(Response())
+    with pytest.raises(requests.Timeout):
+        reachability._request_and_classify(
+            session, "skill", "https://example.com/", {}, "example.com", set()
+        )
+
+
 def test_health_read_stops_at_the_deadline_before_the_next_chunk():
     """No blocking read starts once the shared deadline has passed."""
 
@@ -1234,15 +1611,41 @@ def test_trickling_response_stops_at_the_shared_deadline(monkeypatch):
                     raise AssertionError("body read outlived the shared deadline")
                 yield b"x"
 
-    monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=1.0))
     session = Session(TrickleResponse())
     result = probe(
         "Public audio delivery", "https://example.com/", "testaudio", session
     )
-    # The check commits with the bytes it had instead of streaming forever:
-    # the reader stops at the deadline (issue #53 review).
-    assert result["status"] == "reachable"
-    assert 0 < session.response.consumed <= 5
+    # The deadline caught the stream mid-body: dribbled bytes are a
+    # timeout, not a delivery pass — a stalled server must not go green
+    # (Sourcery review), and the reader stops instead of streaming
+    # forever (issue #53 review). Each read costs three clock calls —
+    # the deadline check, the clamp and the wait itself — so exactly two
+    # chunks land before the budget is spent (Sourcery review).
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    assert session.response.consumed == 2
+
+
+def test_read_health_content_raises_when_the_deadline_cuts_a_partial_body(
+    monkeypatch,
+):
+    """Bytes that arrived before the cut do not make a stalled stream green."""
+
+    class Trickle(Response):
+        def iter_content(self, _size):
+            while True:
+                yield b"x"
+
+    # Each clock call advances 3 s and a read costs three clock calls
+    # (the deadline check, the clamp and the wait itself), so one chunk
+    # lands and the next check finds the deadline passed with bytes in
+    # hand.
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
+    deadline = reachability.time.monotonic() + 10.0
+    trickle = Trickle()
+    with pytest.raises(requests.Timeout):
+        reachability._read_health_content(trickle, deadline=deadline)
 
 
 def test_stalled_pool_reports_unavailable_and_reclaims_capacity(monkeypatch):
@@ -1332,3 +1735,271 @@ def test_probe_reports_an_unavailable_resolver_without_requesting(monkeypatch):
     assert result["status"] == "failed"
     assert "unavailable" in result["message"]  # distinct from a timeout
     assert session.calls == []  # never sends a request that would re-resolve
+
+
+# --- Review follow-ups: hard deadline and honest diagnostics ----------------
+
+
+def test_read_health_content_checkpoints_after_every_byte():
+    """A chunk is itself a blocking read, so it must stay deadline-sized.
+
+    A larger chunk only returns once it has filled, which a stream trickling
+    one byte at a time can stretch well past the deadline (the 1024-byte
+    chunk held a live read for 54 s in testing).
+    """
+    sizes = []
+
+    class Chunked(Response):
+        def iter_content(self, size):
+            sizes.append(size)
+            yield b"x"
+
+    reachability._read_health_content(Chunked())
+    assert sizes == [1]
+
+
+def test_read_health_content_stops_at_the_four_kib_cap():
+    """A server that ignores the Range header cannot push us past 4096."""
+
+    consumed = []
+
+    class Endless(Response):
+        def iter_content(self, _size):
+            while True:
+                consumed.append(1)
+                yield b"x"
+
+    content = reachability._read_health_content(Endless())
+    assert len(content) == 4096
+    # The probe stops pulling bytes at the cap instead of draining one
+    # more than it keeps (Sourcery review).
+    assert sum(consumed) <= 4096
+
+
+def test_unclamped_body_read_uses_a_single_reader_thread(monkeypatch):
+    """A 4 KiB body costs one reader thread, not one thread per byte.
+
+    The no-socket path used to start a fresh daemon thread for every
+    read, so a buffered response near the cap could create thousands of
+    threads and eat the shared deadline (Sourcery review).
+    """
+    import threading as _threading
+
+    created = []
+    real_thread = _threading.Thread
+
+    def counting_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    monkeypatch.setattr(reachability.threading, "Thread", counting_thread)
+
+    class Buffered(Response):
+        def iter_content(self, _size):
+            while True:
+                yield b"x"
+
+    buffered = Buffered()
+    deadline = time.monotonic() + 30
+    content = reachability._read_health_content(buffered, deadline=deadline)
+    assert len(content) == 4096
+    assert len(created) == 1  # the whole body is read by one thread
+
+
+def test_skill_probe_does_not_trust_a_body_cut_at_the_cap():
+    """A body the 4 KiB cap truncated cannot vouch for the add-on.
+
+    The prefix of an oversized body still parses as the health payload
+    (valid JSON followed by padding), so reaching exactly the cap means
+    the read was cut — the row must stay yellow instead of green
+    (Sourcery review).
+    """
+
+    class OversizedHealth(Response):
+        def iter_content(self, _size):
+            yield b'{"status": "ok"}' + b" " * (reachability._BODY_READ_LIMIT + 64)
+
+    oversized = OversizedHealth()
+    result = probe("Skill", "https://example.com/", "skill", Session(oversized))
+    assert result["status"] == "warning"
+    assert "does not identify the add-on" in result["message"]
+
+
+def test_skill_probe_confirms_a_complete_body_at_the_cap():
+    """A body that ends exactly at the cap still vouches for the add-on.
+
+    Filling all 4096 bytes is ambiguous at that instant — a larger body
+    would look the same — so the read confirms the end with one more
+    chunk: a complete health payload must not be rejected for arriving
+    exactly at the cap (Sourcery review).
+    """
+    head = json.dumps({"status": "ok"}).encode()
+    body = head + b" " * (reachability._BODY_READ_LIMIT - len(head))
+
+    class ExactlyCapped(Response):
+        def __init__(self):
+            super().__init__(headers={"Content-Type": "application/json"})
+            self.body = body
+
+        def iter_content(self, _size):
+            for start in range(0, len(self.body), 1024):
+                yield self.body[start : start + 1024]
+
+    result = probe("Skill", "https://example.com/", "skill", Session(ExactlyCapped()))
+    assert result["status"] == "reachable"
+    assert "add-on health confirmed" in result["message"]
+
+
+def test_read_health_content_clamps_each_read_to_the_budget_left(monkeypatch):
+    """Every blocking read starts capped to the budget that is left.
+
+    A controlled clock shrinks the budget between reads, so a reader that
+    keeps passing the original allowance instead of recomputing the
+    remaining deadline fails here (Sourcery review).
+    """
+    clamps = []
+    monkeypatch.setattr(
+        reachability,
+        "_clamp_read_timeout",
+        lambda _response, seconds: clamps.append(seconds) or True,
+    )
+    # Each clock call advances 0.5 s and a read costs three clock calls
+    # (the deadline check, the clamp and the wait itself), so the
+    # allowance shrinks 9.0, 7.5, 6.0, 4.5 instead of staying at the
+    # original 10 — exact instead of depending on how fast the test runs.
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=0.5))
+
+    class Counting(Response):
+        def iter_content(self, _size):
+            for _ in range(3):
+                yield b"x"
+
+    deadline = reachability.time.monotonic() + 10.0
+    reachability._read_health_content(Counting(), deadline=deadline)
+    assert clamps == [9.0, 7.5, 6.0, 4.5]
+
+
+def test_read_timeout_is_clamped_to_the_time_the_deadline_has_left():
+    """The blocking read itself is bounded, not only checked after it returns."""
+
+    class Sock:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+    sock = Sock(5.0)  # the request's read timeout
+    response = SimpleNamespace(
+        raw=SimpleNamespace(
+            _fp=SimpleNamespace(fp=SimpleNamespace(raw=SimpleNamespace(_sock=sock)))
+        )
+    )
+    reachability._clamp_read_timeout(response, 2.0)
+    assert sock.timeout == 2.0  # lowered to what the deadline has left
+    reachability._clamp_read_timeout(response, 30.0)
+    assert sock.timeout == 2.0  # never raised above the configured timeout
+    # No live socket (mocked probe): the request timeout still bounds it.
+    reachability._clamp_read_timeout(SimpleNamespace(raw=None), 1.0)
+
+
+def test_unclamped_body_read_still_ends_at_the_deadline():
+    """With no socket to clamp, the call still returns by the deadline."""
+    import threading as _threading
+
+    release = _threading.Event()
+
+    class Blocked(Response):
+        def iter_content(self, _size):
+            release.wait()  # blocks like a slow stream until released
+            yield b"x"
+
+    blocked = Blocked()
+    # The deadline is set as late as possible: only a deschedule inside
+    # the call itself can expire it before the read starts, and that
+    # pre-read case returns empty instead of raising (Sourcery review).
+    deadline = time.monotonic() + 0.05
+    started = time.monotonic()
+    try:
+        content = reachability._read_health_content(blocked, deadline=deadline)
+    except requests.Timeout:
+        pass  # the normal path: the blocked read was abandoned at the deadline
+    else:
+        assert content == b""  # only an already-expired deadline returns
+    finally:
+        release.set()  # let the reader finish instead of lingering
+    # Bounded close to the 50 ms deadline: a bound of a full second would
+    # wave a substantial overrun through (Sourcery review).
+    assert time.monotonic() - started < 0.25
+
+
+def test_read_health_content_propagates_a_cut_off_even_with_bytes():
+    """A stream that dies mid-body must not be reported as delivered.
+
+    Bytes that arrived before the failure do not make the endpoint usable:
+    swallowing the exception here let a dead stream pass as reachable
+    (Sourcery review).
+    """
+
+    class CutShort(Response):
+        def iter_content(self, _size):
+            yield b"audio-bytes"
+            raise requests.ConnectionError()
+
+    cut_short = CutShort()
+    with pytest.raises(requests.ConnectionError):
+        reachability._read_health_content(cut_short)
+
+
+def test_body_read_failure_is_not_masked_as_a_timeout():
+    """A non-requests failure mid-body surfaces as itself, not as a stall.
+
+    Only RequestException used to reach the caller: any other failure
+    killed the reader thread, and the caller then waited out the
+    deadline, reporting a plain bug as a timeout (Sourcery review).
+    """
+
+    class Broken(Response):
+        def iter_content(self, _size):
+            yield b"x"
+            raise RuntimeError("unexpected decoder failure")
+
+    broken = Broken()
+    deadline = time.monotonic() + 5
+    with pytest.raises(RuntimeError):
+        reachability._read_health_content(broken, deadline=deadline)
+
+
+def test_read_health_content_raises_when_nothing_was_delivered():
+    """An empty read is a real failure and must reach the caller."""
+
+    class Dead(Response):
+        def iter_content(self, _size):
+            raise requests.ConnectionError()
+
+    dead = Dead()
+    with pytest.raises(requests.ConnectionError):
+        reachability._read_health_content(dead)
+
+
+@pytest.mark.parametrize("kind", ["audio", "skill"])
+def test_body_read_failure_leaves_no_http_status_behind(kind):
+    """A failed body read must not show HTTP 200 beside the failure."""
+
+    class BrokenBody(Response):
+        def iter_content(self, _size):
+            raise requests.Timeout()
+
+    result = probe(
+        "Check",
+        "https://streams.example.com/flow/track.mp3",
+        kind,
+        Session(BrokenBody()),
+    )
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    assert "http_status" not in result  # diagnostics fall back to the status
