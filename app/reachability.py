@@ -8,6 +8,7 @@ import time
 from urllib.parse import urlparse, urlunparse
 
 import requests
+import urllib3.exceptions
 from app_settings import get_setting
 from flask import current_app
 from markupsafe import escape
@@ -90,45 +91,151 @@ def _clamp_read_timeout(response, seconds):
         return False
 
 
-def _next_chunk(chunks, response, remaining):
+_END_OF_BODY = object()  # sentinel: every chunk of the body was read
+
+
+class _StreamReader:
+    """Reads a body from one daemon thread, one chunk at a time.
+
+    A response with no socket to clamp cannot bound a blocking read, so
+    the read has to run off the caller's thread (issue #53 review) — but
+    starting a fresh thread per byte let that overhead eat the shared
+    deadline on a 4 KiB body (Sourcery review). One thread owns the whole
+    body here and only runs when the caller asks for the next chunk, so
+    exactly the bytes the caller takes are pulled; it exits within a tick
+    of being abandoned at the deadline, the read it may be stuck in still
+    ends at the request's own read timeout, and the probe's ``with``
+    closes the response it reads from.
+    """
+
+    _IDLE_TICK_SECONDS = 0.05
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self._asked = threading.Event()
+        self._answered = threading.Event()
+        self._result = None
+        self._abandoned = False
+        self.thread = threading.Thread(target=self._pull, daemon=True)
+        self.thread.start()
+
+    def _pull(self):
+        while not self._abandoned:
+            if not self._asked.wait(timeout=self._IDLE_TICK_SECONDS):
+                continue
+            self._asked.clear()
+            if self._abandoned:
+                return
+            try:
+                result = next(self.chunks)
+            except StopIteration:
+                result = _END_OF_BODY
+            except requests.exceptions.RequestException as exc:
+                result = exc
+            self._result = result
+            self._answered.set()
+            if result is _END_OF_BODY or isinstance(result, BaseException):
+                return
+
+    def read_within(self, remaining):
+        """The next chunk, waiting at most ``remaining`` seconds for it."""
+        self._asked.set()
+        if not self._answered.wait(timeout=remaining):
+            self._abandoned = True
+            raise requests.exceptions.Timeout("body read outlived the deadline")
+        self._answered.clear()
+        result, self._result = self._result, None
+        if result is _END_OF_BODY:
+            raise StopIteration
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def abandon(self):
+        """Stop reading: the thread exits at its next opportunity."""
+        self._abandoned = True
+
+
+def _caused_by(exc, error_type):
+    """True when ``exc`` wraps ``error_type`` anywhere in its cause chain.
+
+    requests re-wraps urllib3 failures — a refused connection arrives as
+    ``ConnectionError(MaxRetryError(reason=NewConnectionError))``, a
+    streamed read timeout as ``ConnectionError(ReadTimeoutError)`` — so
+    the type that matters is usually nested rather than the outer
+    exception (Sourcery review).
+    """
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, error_type):
+            return True
+        nested = [
+            getattr(current, attr, None)
+            for attr in ("reason", "__cause__", "__context__")
+        ]
+        nested.extend(getattr(current, "args", ()) or ())
+        pending.extend(item for item in nested if isinstance(item, BaseException))
+    return False
+
+
+def _failed_before_connect(exc):
+    """True only when the failure happened before any socket was opened.
+
+    Such a failure cannot have delivered the request, so even the one-shot
+    flow GET is safe to send to the next validated address; every other
+    connection error is ambiguous — the request may already have reached
+    the server — and fails the probe instead of being retried
+    (Sourcery review).
+    """
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True  # timed out before the socket was established
+    # A refused/unreachable connection raises NewConnectionError, which
+    # subclasses ConnectTimeoutError.
+    return _caused_by(exc, urllib3.exceptions.ConnectTimeoutError)
+
+
+def _next_chunk(chunks, response, state, remaining):
     """The next body chunk, with the blocking read itself bounded.
 
-    A clamped socket bounds the read directly. When the response exposes no
-    socket to clamp (mocked probes, buffered proxy bodies), the read runs in
-    a daemon thread that we stop waiting for once ``remaining`` has passed:
-    the caller returns by the deadline. The abandoned worker holds a single
-    ``next()`` — it exits as soon as that read ends, which the request's own
-    read timeout guarantees within one inactivity interval (a stream that
-    keeps delivering completes the read; a silent one hits the timeout), and
-    the probe's ``with`` closes the response it was reading from (issue #53
-    review).
+    A clamped socket bounds the read directly. When the response exposes
+    no socket to clamp (mocked probes, buffered proxy bodies), the read
+    moves to ``state``'s persistent reader thread — one thread for the
+    whole body instead of one per byte (Sourcery review) — and the caller
+    stops waiting for it once ``remaining`` has passed, so the call still
+    returns by the deadline. The read the reader is stuck in ends at the
+    request's own read timeout, and the probe's ``with`` closes the
+    response it reads from (issue #53 review).
+
+    A streamed read timeout arrives wrapped in ConnectionError, so it is
+    re-raised as Timeout here: a stall must not be reported as a
+    connection failure (Sourcery review).
     """
-    if remaining is None or _clamp_read_timeout(response, remaining):
-        return next(chunks)
-    outcome = []
-
-    def _pull():
-        try:
-            outcome.append(next(chunks))
-        except (StopIteration, requests.exceptions.RequestException) as exc:
-            outcome.append(exc)  # re-raised by the caller
-
-    worker = threading.Thread(target=_pull, daemon=True)
-    worker.start()
-    worker.join(remaining)
-    if worker.is_alive() or not outcome:
-        # Still blocked past the deadline, or failed with an error the
-        # worker's excepthook already reported.
-        raise requests.exceptions.Timeout("body read failed or outlived the deadline")
-    item = outcome[0]
-    if isinstance(item, BaseException):
-        raise item
-    return item
+    try:
+        if remaining is None or _clamp_read_timeout(response, remaining):
+            return next(chunks)
+        if state["reader"] is None:
+            state["reader"] = _StreamReader(chunks)
+        return state["reader"].read_within(remaining)
+    except requests.exceptions.ConnectionError as exc:
+        if _caused_by(exc, urllib3.exceptions.ReadTimeoutError):
+            raise requests.exceptions.Timeout("body read timed out") from exc
+        raise
 
 
 # The probe never reads past the first 4 KiB of a body, even when the
 # server ignores the Range header and keeps sending (Sourcery review).
 _BODY_READ_LIMIT = 4096
+
+
+def _raise_if_partial(content):
+    """A deadline cut with bytes in hand is a stall, not a delivery."""
+    if content:
+        raise requests.exceptions.Timeout("body read outlived the shared deadline")
 
 
 def _read_health_content(response, deadline=None):
@@ -140,8 +247,8 @@ def _read_health_content(response, deadline=None):
     shared budget the request itself runs under — is therefore checked
     *before* each read, so no blocking read starts once it has passed, and
     each read that does start is bounded by the time left: clamped on the
-    socket when one is reachable, abandoned at the deadline when not
-    (issue #53 review).
+    socket when one is reachable, abandoned at the deadline on the
+    persistent reader thread when not (issue #53 review).
 
     Reads are one byte at a time: a larger chunk only returns once it has
     filled, which a slow stream can stretch well past the deadline (a
@@ -157,23 +264,25 @@ def _read_health_content(response, deadline=None):
     """
     content = bytearray()
     chunks = response.iter_content(1)
-    while True:
-        remaining = None
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                if content:
-                    raise requests.exceptions.Timeout(
-                        "body read outlived the shared deadline"
-                    )
-                break  # out of budget: stop consuming instead of blocking again
-        try:
-            chunk = _next_chunk(chunks, response, remaining)
-        except StopIteration:
-            break
-        content.extend(chunk[: _BODY_READ_LIMIT - len(content)])
-        if len(content) >= _BODY_READ_LIMIT:
-            break
+    state = {"reader": None}
+    try:
+        while True:
+            remaining = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _raise_if_partial(content)
+                    break  # out of budget: stop consuming instead of blocking again
+            try:
+                chunk = _next_chunk(chunks, response, state, remaining)
+            except StopIteration:
+                break
+            content.extend(chunk[: _BODY_READ_LIMIT - len(content)])
+            if len(content) >= _BODY_READ_LIMIT:
+                break
+    finally:
+        if state["reader"] is not None:
+            state["reader"].abandon()
     return content
 
 
@@ -224,6 +333,15 @@ def _classify_audio_stream(code, response, deadline=None):
             "warning",
             f"HTTPS reachable (HTTP {code}), but the {received} buffered bytes "
             f"are not audio; check proxy routing",
+        )
+    if code == 416 and _empty_representation(response):
+        # An unsatisfiable initial range on an empty representation
+        # (Content-Range: bytes */0): the stream has nothing to play, so
+        # the row fails as no-data instead of the HEAD fallback turning it
+        # into an inconclusive warning (Sourcery review).
+        return (
+            "failed",
+            "Stream URL has no bytes to serve (empty resource); nothing would play",
         )
     return (
         "failed",
@@ -662,7 +780,9 @@ def _classify_probe(kind, ranged, response, deadline, result):
 
     ``http_status`` is recorded only once the response has been classified:
     a body read that fails mid-stream never records it, so diagnostics
-    cannot show HTTP 200 beside a timeout (issue #48 review).
+    cannot show HTTP 200 beside a timeout (issue #48 review). A body that
+    arrived but failed to decode does record it — the status is known then
+    (Sourcery review).
 
     ``ranged`` says the response is the range-limited GET. When it is
     False for the Current audio row, this is the plain HEAD the proxy's
@@ -680,18 +800,49 @@ def _classify_probe(kind, ranged, response, deadline, result):
                 "refused a range request; audio bytes not verified",
             )
         return _classify_head_response("audio", code)
-    status, message = _classify_response(kind, code, response, deadline)
+    try:
+        status, message = _classify_response(kind, code, response, deadline)
+    except (ValueError, TypeError):
+        # The response arrived and its body was read — only decoding it
+        # failed — so keep the status for diagnostics; transport and
+        # body-read failures are requests exceptions and stay status-less
+        # (issue #48 review, Sourcery review).
+        result["http_status"] = code
+        raise
     result["http_status"] = code
     return status, message
 
 
+def _empty_representation(response):
+    """True when Content-Range says the representation has zero bytes.
+
+    RFC 7233: a 416 for ``bytes=0-4095`` may carry ``Content-Range:
+    bytes */0``, meaning the representation itself is empty rather than
+    that the server cannot honour ranges (Sourcery review).
+    """
+    prefix = "bytes */"
+    content_range = (response.headers.get("Content-Range") or "").strip()
+    return (
+        content_range.startswith(prefix) and content_range.removeprefix(prefix) == "0"
+    )
+
+
 def _range_refused(kind, ranged, response):
-    """True when the proxy rejected the range request, not the stream itself."""
-    return kind == "audio" and ranged and response.status_code in _RANGE_UNSUPPORTED
+    """True when the proxy rejected the range request, not the stream itself.
+
+    A 416 whose Content-Range is ``bytes */0`` is not a rejection: for
+    ``bytes=0-4095`` it means the representation is empty (RFC 7233) — a
+    no-data failure of the stream — and sending it to the HEAD fallback
+    would only turn that failure into an inconclusive warning (Sourcery
+    review).
+    """
+    if not (kind == "audio" and ranged and response.status_code in _RANGE_UNSUPPORTED):
+        return False
+    return not (response.status_code == 416 and _empty_representation(response))
 
 
 def _open_probe_attempt(
-    session, method, url, request_kwargs, index, ordered, deadline, retryable=True
+    session, method, url, request_kwargs, index, ordered, deadline, one_shot=False
 ):
     """The opened response for one failover attempt; None means try the next.
 
@@ -700,18 +851,22 @@ def _open_probe_attempt(
     address — unless the last one just failed or the shared budget is
     spent (issue #49/#53 review).
 
-    ``retryable=False`` refuses that advance: a connection error is
-    ambiguous (the request may already have reached the server), so
-    re-sending it could hit the one-shot flow URL twice, consume a second
-    session, or interrupt playback — the ranged GET is only ever sent once
-    and its failure is classified instead of retried (Sourcery review).
+    ``one_shot=True`` (the ranged flow GET) refuses that advance when the
+    failure is ambiguous: the request may already have reached the server,
+    so re-sending it could hit the one-shot URL twice, consume a second
+    session, or interrupt playback. A connection that never opened cannot
+    have delivered the request, so it still advances to the next
+    validated address instead of failing the audio check while a
+    reachable address waits (Sourcery review).
     """
     try:
         return session.request(method, url, **request_kwargs)
     except requests.exceptions.SSLError:
         raise  # certificate failure: every address would fail alike
-    except requests.exceptions.ConnectionError:
-        if not retryable or index == len(ordered) - 1 or time.monotonic() >= deadline:
+    except requests.exceptions.ConnectionError as exc:
+        if one_shot and not _failed_before_connect(exc):
+            raise  # ambiguous: the one-shot request may already have been sent
+        if index == len(ordered) - 1 or time.monotonic() >= deadline:
             raise
         return None
 
@@ -760,9 +915,11 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         # connect + read of this attempt cannot overrun it (issue #53 review).
         share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
         request_kwargs = _probe_request_kwargs(ranged, share)
-        # The ranged one-shot GET is never retried after an ambiguous
-        # connection error: a second send could reach the flow session
-        # twice (Sourcery review). The plain HEAD fallback retries freely.
+        # The ranged one-shot GET is only retried when the connection never
+        # opened (the request cannot have reached the flow URL); an
+        # ambiguous failure raises instead of being re-sent (Sourcery
+        # review). The plain HEAD fallback and the repeatable probes fail
+        # over freely.
         opened = _open_probe_attempt(
             session,
             method,
@@ -771,7 +928,7 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
             index,
             ordered,
             deadline,
-            retryable=not ranged,
+            one_shot=ranged,
         )
         if opened is None:
             index += 1  # connection failed: the next validated address gets a turn
