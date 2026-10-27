@@ -755,6 +755,7 @@ def test_stalled_resolver_worker_is_reused_not_leaked(monkeypatch):
 
     created = []
     real_thread = _threading.Thread
+    release = _threading.Event()  # holds the worker blocked until we're done
 
     def _counting_thread(*args, **kwargs):
         thread = real_thread(*args, **kwargs)
@@ -762,7 +763,7 @@ def test_stalled_resolver_worker_is_reused_not_leaked(monkeypatch):
         return thread
 
     def _stall(*_args, **_kwargs):
-        time.sleep(0.4)
+        release.wait(2)  # stay alive (deterministically) until released
         raise OSError("simulated resolver stall")
 
     monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
@@ -781,6 +782,7 @@ def test_stalled_resolver_worker_is_reused_not_leaked(monkeypatch):
         # Two lookups, one worker: a stalled resolver is not leaked per run.
         assert len(created) == 1
     finally:
+        release.set()  # let the blocked worker finish cleanly
         reachability._dns_inflight.clear()
 
 
