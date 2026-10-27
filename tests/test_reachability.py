@@ -1,10 +1,27 @@
 import ipaddress
 import json
+import socket
+import time
 
 import pytest
+import reachability
 import requests
 from reachability import Reachability, probe, targets
 from shared_store import set_ma
+
+
+@pytest.fixture(autouse=True)
+def fixed_dns(monkeypatch):
+    """Resolve every test host to one public address — no live DNS.
+
+    probe() preflight-resolves each target and pins its request to that
+    answer, so the tests must own the lookup instead of depending on the
+    network being reachable.
+    """
+    answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    monkeypatch.setattr(
+        reachability.socket, "getaddrinfo", lambda *_args, **_kwargs: answer
+    )
 
 
 class Response:
@@ -29,6 +46,10 @@ class Session:
     def __init__(self, response):
         self.response = response
         self.calls = []
+        self.mounts = []
+
+    def mount(self, prefix, adapter):
+        self.mounts.append((prefix, adapter))
 
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
@@ -530,28 +551,66 @@ def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):
 
 
 def test_doh_malformed_payload_is_treated_as_resolver_failure(monkeypatch):
-    """A non-object JSON answer is a resolver failure, not a crash."""
+    """A non-object JSON answer fails that resolver and falls back."""
     import reachability
 
-    class MalformedResponse:
-        def json(self):
-            return ["not", "an", "object"]  # valid JSON, not a dict
+    class DohResponse:
+        def __init__(self, payload):
+            self.payload = payload
 
-    class MalformedSession:
+        def json(self):
+            return self.payload
+
+    class DohSession:
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
             pass
 
-        def get(self, *_args, **_kwargs):
-            return MalformedResponse()
+        def get(self, endpoint, params=None, **_kwargs):
+            if endpoint == reachability._DOH_ENDPOINTS[0]:
+                return DohResponse(["not", "an", "object"])  # malformed
+            answers = [{"data": "93.184.216.34"}] if params["type"] == "A" else []
+            return DohResponse({"Status": 0, "Answer": answers})
 
-    monkeypatch.setattr(reachability.requests, "Session", lambda: MalformedSession())
-    # Both resolvers answer with malformed JSON. The probe must degrade to
-    # "public view unknown" rather than raising AttributeError and aborting
-    # the check run before it can commit results.
-    assert reachability._public_addresses("streams.example") is None
+    monkeypatch.setattr(reachability.requests, "Session", lambda: DohSession())
+    # The first resolver answers with malformed JSON; the probe must treat it
+    # as a failure and use the second resolver's valid answer instead of
+    # raising AttributeError and aborting the check run.
+    assert reachability._public_addresses("streams.example") == {
+        ipaddress.ip_address("93.184.216.34")
+    }
+
+
+def test_doh_malformed_answer_is_treated_as_resolver_failure(monkeypatch):
+    """A non-list Answer field fails that resolver and falls back."""
+    import reachability
+
+    class DohResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class DohSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def get(self, endpoint, params=None, **_kwargs):
+            if endpoint == reachability._DOH_ENDPOINTS[0]:
+                return DohResponse({"Status": 0, "Answer": "not-a-list"})
+            answers = [{"data": "93.184.216.34"}] if params["type"] == "A" else []
+            return DohResponse({"Status": 0, "Answer": answers})
+
+    monkeypatch.setattr(reachability.requests, "Session", lambda: DohSession())
+    assert reachability._public_addresses("streams.example") == {
+        ipaddress.ip_address("93.184.216.34")
+    }
 
 
 def test_lan_only_names_never_reach_public_resolvers(monkeypatch):
@@ -564,30 +623,711 @@ def test_lan_only_names_never_reach_public_resolvers(monkeypatch):
     private = {ipaddress.ip_address("192.168.1.10")}
     monkeypatch.setattr(reachability, "_public_addresses", _no_doh)
     monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: private)
-    for hostname in ("homeassistant.local", "music-assistant", "haos.lan."):
+    # .local/.lan/single-label names and private IP literals all skip DoH and
+    # record an empty public view (a definitive "none"), never None.
+    for hostname in (
+        "homeassistant.local",
+        "music-assistant",
+        "haos.lan.",
+        "192.168.1.50",
+    ):
         local, public = reachability._resolution_views(hostname)
         assert local == private
-        assert public is None  # no DoH query: the name cannot have a public view
+        assert public == set()  # no DoH query; a definitive "no public view"
 
 
 def test_resolution_views_are_cached_per_run(monkeypatch):
     """Checks sharing a hostname resolve it once, not once each."""
     import reachability
 
-    queries = []
+    local_lookups = []
+    doh_lookups = []
+
+    def _local(host):
+        local_lookups.append(host)
+        return {ipaddress.ip_address("10.0.0.5")}
 
     def _doh(host):
-        queries.append(host)
+        doh_lookups.append(host)
         return {ipaddress.ip_address("93.184.216.34")}
+
+    monkeypatch.setattr(reachability, "_resolved_addresses", _local)
+    monkeypatch.setattr(reachability, "_public_addresses", _doh)
+    cache = {}
+    first = reachability._resolution_views("streams.example", cache)
+    second = reachability._resolution_views("streams.example", cache)
+    assert first == second
+    assert doh_lookups == ["streams.example"]  # one DoH query
+    assert local_lookups == ["streams.example"]  # and one local lookup
+
+
+def test_audio_probe_blocks_lan_only_host_without_doh(monkeypatch):
+    """A LAN-only audio host is blocked without ever querying public DNS."""
+    import reachability
+
+    def _no_doh(_host):
+        pytest.fail("LAN-only names must never trigger a DoH query")
+
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("192.168.1.10")},
+    )
+    monkeypatch.setattr(reachability, "_public_addresses", _no_doh)
+    session = Session(Response())
+    result = probe("Current audio", "https://hass.local/track.mp3", "audio", session)
+    assert result["status"] == "warning"
+    assert "private or internal" in result["message"]
+    assert session.calls == []  # never probed, and no DoH query
+
+
+def test_resolved_addresses_bounds_a_stalled_resolver(monkeypatch):
+    """A stalled system resolver times out instead of hanging the check."""
+    import reachability
+
+    def _stall(*_args, **_kwargs):
+        time.sleep(reachability._DNS_TIMEOUT_SECONDS + 0.3)
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    # A timeout is distinct from "does not resolve": the probe must fail the
+    # check rather than fire a second DNS lookup (issue #49 review).
+    assert (
+        reachability._resolved_addresses("example.com") is reachability._DNS_TIMED_OUT
+    )
+
+
+def test_summary_flags_internal_resolution_on_secondary_checks():
+    """Skill + audio green cannot mask an internally-resolving stream host."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Stream host",
+                "status": "warning",
+                "message": "ok",
+                "note": note,
+                # A confirmed pass that only resolves internally: the note
+                # branch reports the unverified public path (issue #49 review).
+                "downgraded": True,
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a false "good"
+    assert "resolve internally" in state["title"]
+
+
+def test_testaudio_player_survives_split_horizon_downgrade():
+    """A downgraded split-horizon test tone keeps its player."""
+    from reachability import html
+
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    # A genuine split-horizon pass: the bytes were confirmed, then probe()
+    # downgraded the check to a warning and set downgraded=True.
+    downgraded = {
+        "label": "Public audio delivery",
+        "kind": "testaudio",
+        "status": "warning",
+        "message": "ok",
+        "note": note,
+        "url": "https://example.com/test-audio.mp3",
+        "downgraded": True,
+    }
+    rendered = html({"checks": [downgraded], "checking": False, "perspective": "p"})
+    assert "<audio controls" in rendered  # confirmed audio keeps its player
+
+    # An ordinary warning from a non-test-audio check never verified the
+    # bytes, so it gets no player — this must fail if html() starts rendering
+    # a player for every warning (issue #48/#49 review).
+    non_audio = dict(downgraded, kind=None, downgraded=None, message="not audio")
+    assert "<audio controls" not in html(
+        {"checks": [non_audio], "checking": False, "perspective": "p"}
+    )
+
+
+# --- review follow-up: DNS timeout, LAN-only green, player, summary ---------
+
+
+def test_probe_fails_fast_when_local_dns_times_out(monkeypatch):
+    """A stalled local resolver fails the check without a second DNS lookup."""
+    import reachability
+
+    monkeypatch.setattr(
+        reachability, "_resolved_addresses", lambda _host: reachability._DNS_TIMED_OUT
+    )
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    assert session.calls == []  # never sends a request that would re-resolve
+
+
+def test_stalled_resolver_worker_is_reused_not_leaked(monkeypatch):
+    """A stalled resolver reuses one worker instead of leaking one per run."""
+    import threading as _threading
+
+    import reachability
+
+    created = []
+    real_thread = _threading.Thread
+    release = _threading.Event()  # holds the worker blocked until we're done
+
+    def _counting_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    def _stall(*_args, **_kwargs):
+        release.wait()  # stay blocked until the test releases us (no timeout)
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    monkeypatch.setattr(reachability.threading, "Thread", _counting_thread)
+    try:
+        assert (
+            reachability._resolved_addresses("stalled.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        assert (
+            reachability._resolved_addresses("stalled.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        # Two lookups, one worker: a stalled resolver is not leaked per run.
+        assert len(created) == 1
+    finally:
+        release.set()  # let the blocked worker finish cleanly
+        reachability._dns_inflight.clear()
+
+
+def test_could_have_public_view_rejects_reserved_names():
+    """IANA-reserved/special-use names never reach a public resolver."""
+    import reachability
+
+    # ".example" is deliberately absent: the test suite uses it as the mock
+    # public namespace (e.g. streams.example).
+    for hostname in ("host.test", "foo.onion", "x.invalid"):
+        assert reachability._could_have_public_view(hostname) is False
+
+
+def test_could_have_public_view_rejects_legacy_ip_forms():
+    """Legacy IPv4 spellings resolvers accept never reach DoH."""
+    import reachability
+
+    for hostname in ("127.1", "10.0.0.1", "192.168.1.50%eth0"):
+        assert reachability._could_have_public_view(hostname) is False
+
+
+def test_skill_probe_flags_empty_public_view(monkeypatch):
+    """A skill host with an empty public view is flagged internal, not green."""
+    result, session = _audio_probe_with_views(
+        monkeypatch,
+        {ipaddress.ip_address("10.0.0.5")},
+        set(),
+        kind="skill",
+    )
+    assert session.calls  # still probed, but never a plain green pass
+    assert result["status"] == "warning"
+    assert "Resolves internally (LAN)" in result["note"]
+
+
+def test_summary_surfaces_failed_check_alongside_reachable_skill_audio():
+    """A failed secondary check is not masked by skill+audio being green."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Stream host",
+                "status": "failed",
+                "message": "DNS",
+                "note": note,
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"
+    assert "1 of 3" in state["description"]
+    assert "failed" in state["description"]
+    assert "resolve internally" not in state["title"]
+
+
+def test_testaudio_non_audio_warning_gets_no_player(monkeypatch):
+    """A non-audio warning with a split-horizon note renders no player."""
+    import reachability
+    from reachability import html
 
     monkeypatch.setattr(
         reachability,
         "_resolved_addresses",
         lambda _host: {ipaddress.ip_address("10.0.0.5")},
     )
-    monkeypatch.setattr(reachability, "_public_addresses", _doh)
-    cache = {}
-    first = reachability._resolution_views("streams.example", cache)
-    second = reachability._resolution_views("streams.example", cache)
-    assert first == second
-    assert queries == ["streams.example"]  # the second read hit the cache
+    monkeypatch.setattr(
+        reachability,
+        "_public_addresses",
+        lambda _host: {ipaddress.ip_address("93.184.216.34")},
+    )
+    session = Session(Response(headers={"Content-Type": "text/html"}))
+    result = probe(
+        "Public audio delivery", "https://example.com/", "testaudio", session
+    )
+    assert result["status"] == "warning"  # reachable but not audio
+    assert result.get("note")  # split-horizon note present
+    assert "downgraded" not in result  # audio never confirmed
+    rendered = html({"checks": [result], "checking": False, "perspective": "p"})
+    assert "<audio controls" not in rendered
+
+
+def test_summary_treats_downgraded_split_horizon_as_warning_not_error():
+    """A split-horizon pass on skill/test-tone is a warning, not a red error."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {
+                "label": "Skill endpoint",
+                "status": "warning",
+                "message": "ok",
+                "note": note,
+                "downgraded": True,
+            },
+            {
+                "label": "Public audio delivery",
+                "status": "warning",
+                "message": "ok",
+                "note": note,
+                "downgraded": True,
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a red "error"
+    assert "resolve internally" in state["title"]
+
+
+# --- request pinning + bounded DNS workers (issue #49 review) ---------------
+
+
+def test_pinned_adapter_targets_the_preflight_address():
+    """The pool connects to the validated address; SNI/cert keep the host."""
+    from reachability import _PinnedAdapter
+
+    request = requests.Request("HEAD", "https://example.com/x").prepare()
+    adapter = _PinnedAdapter("example.com", ipaddress.ip_address("93.184.216.34"))
+    try:
+        host_params, pool_kwargs = adapter.build_connection_pool_key_attributes(
+            request, True
+        )
+    finally:
+        adapter.close()
+    assert host_params["host"] == "93.184.216.34"
+    assert pool_kwargs["server_hostname"] == "example.com"
+    assert pool_kwargs["assert_hostname"] == "example.com"
+
+
+def test_probe_fails_over_to_the_next_validated_address(monkeypatch):
+    """A dead first address falls back instead of re-resolving the host."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+        },
+    )
+
+    class FlakySession(Session):
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if len(self.calls) == 1:
+                raise requests.ConnectionError()
+            return self.response
+
+    session = FlakySession(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "reachable"
+    # 8.8.8.8 sorts first and fails; the next validated address is tried —
+    # each attempt pinned, none of them re-resolving the host name.
+    assert len(session.calls) == 2
+    assert len(session.mounts) == 2
+
+
+def test_probe_does_not_re_resolve_an_unresolved_host(monkeypatch):
+    """A preflight miss skips the request instead of repeating the lookup."""
+    monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: None)
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    assert "DNS" in result["message"]
+    assert session.calls == []  # no request, so no second DNS lookup
+    assert session.mounts == []
+
+
+def test_distinct_stalled_hostnames_stop_at_the_worker_cap(monkeypatch):
+    """The resolver-worker pool is bounded, not one blocked thread per name."""
+    import threading as _threading
+
+    created = []
+    real_thread = _threading.Thread
+    release = _threading.Event()
+
+    def _counting_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    def _stall(*_args, **_kwargs):
+        release.wait()
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    monkeypatch.setattr(reachability, "_MAX_DNS_WORKERS", 1)
+    monkeypatch.setattr(reachability.threading, "Thread", _counting_thread)
+    try:
+        assert (
+            reachability._resolved_addresses("one.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        # A full pool is reported distinctly from one stalled answer
+        # (issue #49 review), and still never spawns an extra worker.
+        assert (
+            reachability._resolved_addresses("two.example")
+            is reachability._DNS_UNAVAILABLE
+        )
+        assert len(created) == 1  # the cap held: no second blocked worker
+    finally:
+        release.set()
+        for worker in created:
+            worker.join(2)
+        reachability._dns_inflight.clear()
+
+
+def test_resolver_worker_clears_its_entry_when_it_finishes(monkeypatch):
+    """A worker that outlives its caller still drops its in-flight entry."""
+    import threading as _threading
+
+    release = _threading.Event()
+
+    def _stall(*_args, **_kwargs):
+        release.wait()
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    try:
+        assert (
+            reachability._resolved_addresses("late.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        assert reachability._dns_inflight  # stalled: kept for reuse while alive
+        release.set()
+        deadline = time.time() + 2
+        while reachability._dns_inflight and time.time() < deadline:
+            time.sleep(0.01)
+        assert not reachability._dns_inflight  # self-cleaned after the timeout
+    finally:
+        release.set()
+
+
+def test_summary_treats_plain_warning_as_needing_attention():
+    """Skill + audio green cannot mask a secondary warning without a note."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Current audio",
+                "status": "warning",
+                "message": (
+                    "Stream URL resolves only to private or internal addresses; "
+                    "Alexa cannot fetch it from the internet"
+                ),
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a false "good"
+    assert "1 of 3" in state["description"]
+    assert "warning" in state["description"]
+
+
+def test_summary_keeps_a_noted_warning_in_the_attention_branch():
+    """A noted endpoint problem (e.g. HTTP 404) must not hide behind the note."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Stream host",
+                "status": "warning",
+                "message": "HTTPS reachable (HTTP 404); test an actual audio URL",
+                "note": note,
+                # Not downgraded: the endpoint itself warned, so the banner
+                # must surface it instead of the generic note (issue #49 review).
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a false "good"
+    assert "need attention" in state["title"]  # not only "resolve internally"
+    assert "1 of 3" in state["description"]
+
+
+def test_failover_never_starts_an_attempt_without_budget(monkeypatch):
+    """No address may start a fresh timeout once the budget is spent."""
+    monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 0.0)
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+            ipaddress.ip_address("1.1.1.1"),
+        },
+    )
+
+    class DeadSession(Session):
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            raise requests.ConnectionError()
+
+    session = DeadSession(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    # The budget is already spent, so not even the first validated address
+    # gets a request (issue #53 review).
+    assert session.calls == []
+
+
+class SteppingTime:
+    """Stand-in for reachability's ``time`` module with a deterministic clock.
+
+    Each ``monotonic()`` call returns the current mark and advances it by
+    ``step``, so deadline arithmetic in the failover loop is exact instead
+    of depending on how fast the test process runs. ``time.time()`` keeps
+    answering with the real clock for the snapshot paths.
+    """
+
+    def __init__(self, step, start=1000.0):
+        self.now = start
+        self.step = step
+
+    def monotonic(self):
+        current = self.now
+        self.now += self.step
+        return current
+
+    def time(self):
+        return time.time()
+
+
+def test_failover_stops_once_a_failure_spends_the_budget(monkeypatch):
+    """The first failure can spend the budget: later addresses never start."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+            ipaddress.ip_address("1.1.1.1"),
+        },
+    )
+    # Each clock call advances 6s, so the 10s budget still covers the first
+    # attempt but is spent once that attempt fails — without relying on the
+    # real elapsed time of the test process (issue #53 review).
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=6.0))
+
+    class DeadSession(Session):
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            raise requests.ConnectionError()
+
+    session = DeadSession(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    # The budget is spent after the first failure, so the two remaining
+    # validated addresses never get their own fresh timeout (issue #49 review).
+    assert len(session.calls) == 1
+
+
+def test_attempt_timeouts_fit_the_remaining_failover_budget(monkeypatch):
+    """A fresh (3, 5) per address is scaled down to the budget left."""
+    monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 4.0)
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "reachable"
+    connect, read = session.calls[0][2]["timeout"]
+    # Fresh (3, 5) timeouts total 8s and could overrun a 4s budget on their
+    # own, so both are scaled to what is left: connect + read never exceeds
+    # it, and neither is the unbounded fresh timeout (issue #53 review).
+    assert connect + read <= 4.0
+    assert connect < 3.0 and read < 5.0
+
+
+def test_health_read_stops_at_the_deadline_before_the_next_chunk():
+    """No blocking read starts once the shared deadline has passed."""
+
+    class CountingResponse(Response):
+        def __init__(self):
+            super().__init__()
+            self.consumed = 0
+
+        def iter_content(self, _size):
+            for _ in range(100):
+                self.consumed += 1
+                yield b"x"
+
+    late = CountingResponse()
+    content = reachability._read_health_content(late, deadline=time.monotonic() - 1)
+    assert content == b""
+    assert late.consumed == 0  # the generator was never asked for a chunk
+    # Without a deadline the body is read exactly as before (up to the cap).
+    fresh = CountingResponse()
+    assert reachability._read_health_content(fresh) == b"x" * 100
+    assert fresh.consumed == 100
+
+
+def test_trickling_response_stops_at_the_shared_deadline(monkeypatch):
+    """A body that keeps dripping cannot outlive the failover budget."""
+
+    class TrickleResponse(Response):
+        def __init__(self):
+            super().__init__()
+            self.consumed = 0
+
+        def iter_content(self, _size):
+            while True:
+                self.consumed += 1
+                if self.consumed > 100:
+                    raise AssertionError("body read outlived the shared deadline")
+                yield b"x"
+
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
+    session = Session(TrickleResponse())
+    result = probe(
+        "Public audio delivery", "https://example.com/", "testaudio", session
+    )
+    # The check commits with the bytes it had instead of streaming forever:
+    # the reader stops at the deadline (issue #53 review).
+    assert result["status"] == "reachable"
+    assert 0 < session.response.consumed <= 5
+
+
+def test_stalled_pool_reports_unavailable_and_reclaims_capacity(monkeypatch):
+    """A full pool reports distinctly and recovers without an add-on restart."""
+    import threading as _threading
+
+    created = []
+    real_thread = _threading.Thread
+    release = _threading.Event()
+
+    def _counting_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    def _stall(*_args, **_kwargs):
+        release.wait()
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    monkeypatch.setattr(reachability, "_MAX_DNS_WORKERS", 1)
+    monkeypatch.setattr(reachability.threading, "Thread", _counting_thread)
+    try:
+        assert (
+            reachability._resolved_addresses("one.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        # The pool is full with a young entry: a distinct failure, not a
+        # misleading per-host timeout (issue #49 review).
+        assert (
+            reachability._resolved_addresses("two.example")
+            is reachability._DNS_UNAVAILABLE
+        )
+        assert len(created) == 1  # no extra blocked worker while full
+        # Age the stalled entry past the reaping bound: the slot is reclaimed
+        # and a fresh lookup runs — no add-on restart needed.
+        name, (stalled, found, started) = next(iter(reachability._dns_inflight.items()))
+        reachability._dns_inflight[name] = (
+            stalled,
+            found,
+            started - reachability._DNS_WORKER_MAX_AGE_SECONDS - 1,
+        )
+        assert (
+            reachability._resolved_addresses("three.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        assert len(created) == 2  # capacity recovered: a new worker started
+    finally:
+        release.set()  # let the blocked workers finish cleanly
+        for worker in created:
+            worker.join(2)
+        reachability._dns_inflight.clear()
+
+
+def test_refused_worker_start_fails_the_check_without_aborting(monkeypatch):
+    """A refused resolver thread is a bounded failure, not a crashed run."""
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+
+    class Refused(reachability.threading.Thread):
+        def start(self):
+            raise RuntimeError("simulated thread-start refusal")
+
+    monkeypatch.setattr(reachability.threading, "Thread", Refused)
+    try:
+        assert (
+            reachability._resolved_addresses("refused.example")
+            is reachability._DNS_UNAVAILABLE
+        )
+        # The in-flight entry was dropped: no unstarted worker lingers
+        # (issue #49 review).
+        assert reachability._dns_inflight == {}
+    finally:
+        reachability._dns_inflight.clear()
+
+
+def test_probe_reports_an_unavailable_resolver_without_requesting(monkeypatch):
+    """An unstartable lookup fails the check with its own message."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: reachability._DNS_UNAVAILABLE,
+    )
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    assert "unavailable" in result["message"]  # distinct from a timeout
+    assert session.calls == []  # never sends a request that would re-resolve
