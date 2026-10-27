@@ -52,22 +52,37 @@ def targets():
     return result
 
 
-def _read_health_content(response):
-    """Read at most 4096 bytes of a probe response body."""
+def _read_health_content(response, deadline=None):
+    """Read at most 4096 bytes of a probe response body.
+
+    The socket read timeout only bounds the wait *between* chunks, so a
+    server that keeps dripping small pieces could occupy the reachability
+    worker forever and never let the check commit. ``deadline`` — the same
+    shared budget the request itself runs under — is therefore checked
+    *before* each read, so no blocking read starts once it has passed
+    (issue #53 review).
+    """
     content = bytearray()
-    for chunk in response.iter_content(1024):
+    chunks = response.iter_content(1024)
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            break  # out of budget: stop consuming instead of blocking again
+        try:
+            chunk = next(chunks)
+        except StopIteration:
+            break
         content.extend(chunk)
         if len(content) > 4096:
             break
     return content
 
 
-def _classify_testaudio(code, response):
+def _classify_testaudio(code, response, deadline=None):
     """Classify the streamed test-audio GET (see _classify_response)."""
     if code == 200:
         content_type = (response.headers.get("Content-Type") or "").lower()
         if content_type.startswith("audio/"):
-            if _read_health_content(response):
+            if _read_health_content(response, deadline):
                 return "reachable", "Public audio delivered over HTTPS (HTTP 200)"
             return (
                 "failed",
@@ -83,11 +98,13 @@ def _classify_testaudio(code, response):
     )
 
 
-def _classify_response(kind, code, response):
+def _classify_response(kind, code, response, deadline=None):
     """Map a completed probe response to a (status, message) pair.
 
     Runs inside probe()'s try block, so JSON decoding errors propagate to
-    the same handlers as before.
+    the same handlers as before. ``deadline`` bounds the body read (see
+    ``_read_health_content``), so a trickling response cannot outlive the
+    shared failover budget (issue #53 review).
     """
     if kind == "skill":
         if code != 200:
@@ -95,7 +112,7 @@ def _classify_response(kind, code, response):
                 "failed",
                 f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
             )
-        content = _read_health_content(response)
+        content = _read_health_content(response, deadline)
         payload = json.loads(content) if len(content) <= 4096 else None
         if isinstance(payload, dict) and payload.get("status") == "ok":
             return "reachable", "HTTPS reachable; add-on health confirmed"
@@ -104,7 +121,7 @@ def _classify_response(kind, code, response):
             "HTTPS reachable, but response does not identify the add-on",
         )
     if kind == "testaudio":
-        return _classify_testaudio(code, response)
+        return _classify_testaudio(code, response, deadline)
     if 200 <= code < 300:
         return "reachable", f"HTTPS reachable (HTTP {code})"
     if kind == "host" and code == 405:
@@ -463,12 +480,16 @@ class _PinnedAdapter(requests.adapters.HTTPAdapter):
         return host_params, pool_kwargs
 
 
-# Every address attempt starts its own (3, 5) timeout, so a hostname with
-# many dead answers could hold the reachability check for minutes (issue
-# #49 review). One shared budget covers the whole failover: once it is
-# spent, the failure seen so far is classified instead of trying yet
-# another address.
+# Every address attempt starts its own fresh (3, 5) timeout (connect, read),
+# so a hostname with many dead answers could hold the reachability check for
+# minutes (issue #49 review) — and an attempt late in the failover could
+# start timeouts that outlive the shared budget entirely (issue #53 review).
+# One shared budget covers the whole failover: once it is spent, the failure
+# seen so far is classified instead of trying yet another address, and the
+# body read is cut off with it.
 _FAILOVER_BUDGET_SECONDS = 10.0
+_CONNECT_TIMEOUT_SECONDS = 3.0
+_READ_TIMEOUT_SECONDS = 5.0
 
 
 def _request_and_classify(session, kind, url, result, hostname, addresses):
@@ -480,19 +501,39 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
 
     The request is pinned to an address the preflight lookup already
     validated: resolving the host again inside the HTTP client would repeat
-    a system call the (3, 5) timeout does not bound (issue #49 review).
+    a system call the probe timeouts do not bound (issue #49 review).
     Every validated address is tried in turn — mirroring how the HTTP client
     walks one resolver answer — but never beyond the shared failover
-    budget, so a long address list cannot stretch the check indefinitely.
+    budget, so a long address list cannot stretch the check indefinitely:
+    each attempt starts only while budget remains, its fresh timeouts are
+    scaled down to what is left of it, and the body read shares the same
+    deadline (issue #53 review).
     """
     method = "GET" if kind in ("skill", "testaudio") else "HEAD"
     ordered = sorted(addresses, key=lambda address: (address.version, int(address)))
     deadline = time.monotonic() + _FAILOVER_BUDGET_SECONDS
     for index, address in enumerate(ordered):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Budget spent: another attempt would start fresh timeouts the
+            # shared budget no longer covers (issue #53 review).
+            raise requests.exceptions.Timeout(
+                "shared failover budget spent before the next address"
+            )
         session.mount("https://", _PinnedAdapter(hostname, address))
+        # Scale the fresh (3, 5) attempt timeouts to the budget left, so
+        # connect + read of this attempt cannot overrun it (issue #53 review).
+        share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
         try:
             opened = session.request(
-                method, url, timeout=(3, 5), allow_redirects=False, stream=True
+                method,
+                url,
+                timeout=(
+                    _CONNECT_TIMEOUT_SECONDS * share,
+                    _READ_TIMEOUT_SECONDS * share,
+                ),
+                allow_redirects=False,
+                stream=True,
             )
         except requests.exceptions.SSLError:
             raise  # certificate failure: every address would fail alike
@@ -506,7 +547,7 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         with opened as response:
             code = response.status_code
             result["http_status"] = code
-            status, message = _classify_response(kind, code, response)
+            status, message = _classify_response(kind, code, response, deadline)
             was_reachable = status == "reachable"
             result.update(
                 status=_downgrade_split_horizon_pass(status, result), message=message

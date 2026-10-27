@@ -1103,8 +1103,8 @@ def test_summary_keeps_a_noted_warning_in_the_attention_branch():
     assert "1 of 3" in state["description"]
 
 
-def test_failover_stops_when_the_shared_budget_is_spent(monkeypatch):
-    """One budget bounds the whole address failover, not just each attempt."""
+def test_failover_never_starts_an_attempt_without_budget(monkeypatch):
+    """No address may start a fresh timeout once the budget is spent."""
     monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 0.0)
     monkeypatch.setattr(
         reachability,
@@ -1124,9 +1124,124 @@ def test_failover_stops_when_the_shared_budget_is_spent(monkeypatch):
     session = DeadSession(Response())
     result = probe("Skill", "https://example.com/", "skill", session)
     assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    # The budget is already spent, so not even the first validated address
+    # gets a request (issue #53 review).
+    assert session.calls == []
+
+
+class SteppingTime:
+    """Stand-in for reachability's ``time`` module with a deterministic clock.
+
+    Each ``monotonic()`` call returns the current mark and advances it by
+    ``step``, so deadline arithmetic in the failover loop is exact instead
+    of depending on how fast the test process runs. ``time.time()`` keeps
+    answering with the real clock for the snapshot paths.
+    """
+
+    def __init__(self, step, start=1000.0):
+        self.now = start
+        self.step = step
+
+    def monotonic(self):
+        current = self.now
+        self.now += self.step
+        return current
+
+    def time(self):
+        return time.time()
+
+
+def test_failover_stops_once_a_failure_spends_the_budget(monkeypatch):
+    """The first failure can spend the budget: later addresses never start."""
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {
+            ipaddress.ip_address("8.8.8.8"),
+            ipaddress.ip_address("93.184.216.34"),
+            ipaddress.ip_address("1.1.1.1"),
+        },
+    )
+    # Each clock call advances 6s, so the 10s budget still covers the first
+    # attempt but is spent once that attempt fails — without relying on the
+    # real elapsed time of the test process (issue #53 review).
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=6.0))
+
+    class DeadSession(Session):
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            raise requests.ConnectionError()
+
+    session = DeadSession(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
     # The budget is spent after the first failure, so the two remaining
     # validated addresses never get their own fresh timeout (issue #49 review).
     assert len(session.calls) == 1
+
+
+def test_attempt_timeouts_fit_the_remaining_failover_budget(monkeypatch):
+    """A fresh (3, 5) per address is scaled down to the budget left."""
+    monkeypatch.setattr(reachability, "_FAILOVER_BUDGET_SECONDS", 4.0)
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "reachable"
+    connect, read = session.calls[0][2]["timeout"]
+    # Fresh (3, 5) timeouts total 8s and could overrun a 4s budget on their
+    # own, so both are scaled to what is left: connect + read never exceeds
+    # it, and neither is the unbounded fresh timeout (issue #53 review).
+    assert connect + read <= 4.0
+    assert connect < 3.0 and read < 5.0
+
+
+def test_health_read_stops_at_the_deadline_before_the_next_chunk():
+    """No blocking read starts once the shared deadline has passed."""
+
+    class CountingResponse(Response):
+        def __init__(self):
+            super().__init__()
+            self.consumed = 0
+
+        def iter_content(self, _size):
+            for _ in range(100):
+                self.consumed += 1
+                yield b"x"
+
+    late = CountingResponse()
+    content = reachability._read_health_content(late, deadline=time.monotonic() - 1)
+    assert content == b""
+    assert late.consumed == 0  # the generator was never asked for a chunk
+    # Without a deadline the body is read exactly as before (up to the cap).
+    fresh = CountingResponse()
+    assert reachability._read_health_content(fresh) == b"x" * 100
+    assert fresh.consumed == 100
+
+
+def test_trickling_response_stops_at_the_shared_deadline(monkeypatch):
+    """A body that keeps dripping cannot outlive the failover budget."""
+
+    class TrickleResponse(Response):
+        def __init__(self):
+            super().__init__()
+            self.consumed = 0
+
+        def iter_content(self, _size):
+            while True:
+                self.consumed += 1
+                if self.consumed > 100:
+                    raise AssertionError("body read outlived the shared deadline")
+                yield b"x"
+
+    monkeypatch.setattr(reachability, "time", SteppingTime(step=3.0))
+    session = Session(TrickleResponse())
+    result = probe(
+        "Public audio delivery", "https://example.com/", "testaudio", session
+    )
+    # The check commits with the bytes it had instead of streaming forever:
+    # the reader stops at the deadline (issue #53 review).
+    assert result["status"] == "reachable"
+    assert 0 < session.response.consumed <= 5
 
 
 def test_stalled_pool_reports_unavailable_and_reclaims_capacity(monkeypatch):
