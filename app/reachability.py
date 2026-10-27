@@ -138,43 +138,64 @@ _dns_inflight = {}
 _MAX_DNS_WORKERS = 4
 
 
+def _forget_worker(hostname):
+    """Drop hostname's in-flight entry once its worker has finished.
+
+    Runs from the worker itself, so entries disappear whenever a lookup
+    completes — including after its caller gave up on the timeout.
+    """
+    with _dns_lock:
+        held = _dns_inflight.get(hostname)
+        if held is not None and held[0] is threading.current_thread():
+            del _dns_inflight[hostname]
+
+
+def _spawn_lookup(hostname, found):
+    """Start the daemon lookup for hostname; the caller holds ``_dns_lock``."""
+
+    def _lookup():
+        try:
+            found["addrs"] = {
+                ipaddress.ip_address(info[4][0].partition("%")[0])
+                for info in socket.getaddrinfo(hostname, None)
+            }
+        except (OSError, ValueError):
+            found["addrs"] = None
+        finally:
+            _forget_worker(hostname)
+
+    worker = threading.Thread(target=_lookup, daemon=True)
+    _dns_inflight[hostname] = (worker, found)
+    worker.start()
+    return worker
+
+
+def _acquire_worker(hostname):
+    """(worker, found) for hostname, or (None, None) when the cap is reached."""
+    with _dns_lock:
+        entry = _dns_inflight.get(hostname)
+        if entry is not None and entry[0].is_alive():
+            return entry  # reuse the in-flight (possibly stalled) lookup
+        for name, (running, _found) in list(_dns_inflight.items()):
+            if not running.is_alive():
+                del _dns_inflight[name]  # defensive: workers self-clean
+        if len(_dns_inflight) >= _MAX_DNS_WORKERS:
+            # Every slot holds a still-blocked lookup: fail this name fast
+            # rather than leak one more blocked worker per hostname.
+            return None, None
+        found = {}
+        return _spawn_lookup(hostname, found), found
+
+
 def _resolved_addresses(hostname):
     """Local-view addresses, None when unresolved, or ``_DNS_TIMED_OUT`` if stalled.
 
     ``socket.getaddrinfo`` runs in a worker thread so a stalled system resolver
     degrades to a bounded timeout instead of hanging the check.
     """
-    with _dns_lock:
-        entry = _dns_inflight.get(hostname)
-        if entry is not None and entry[0].is_alive():
-            worker, found = entry  # reuse the in-flight (possibly stalled) lookup
-        else:
-            for name, (running, _found) in list(_dns_inflight.items()):
-                if not running.is_alive():
-                    del _dns_inflight[name]  # defensive: workers self-clean
-            if len(_dns_inflight) >= _MAX_DNS_WORKERS:
-                # Every slot holds a still-blocked lookup: fail this name fast
-                # rather than leak one more blocked worker per hostname.
-                return _DNS_TIMED_OUT
-            found = {}
-
-            def _lookup():
-                try:
-                    found["addrs"] = {
-                        ipaddress.ip_address(info[4][0].partition("%")[0])
-                        for info in socket.getaddrinfo(hostname, None)
-                    }
-                except (OSError, ValueError):
-                    found["addrs"] = None
-                finally:
-                    with _dns_lock:
-                        held = _dns_inflight.get(hostname)
-                        if held is not None and held[0] is threading.current_thread():
-                            del _dns_inflight[hostname]
-
-            worker = threading.Thread(target=_lookup, daemon=True)
-            _dns_inflight[hostname] = (worker, found)
-            worker.start()
+    worker, found = _acquire_worker(hostname)
+    if worker is None:
+        return _DNS_TIMED_OUT  # at the worker cap: every lookup is stalled
     worker.join(_DNS_TIMEOUT_SECONDS)
     if worker.is_alive():
         return _DNS_TIMED_OUT  # the worker clears its entry when it finishes
