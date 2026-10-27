@@ -585,6 +585,70 @@ _CONNECT_TIMEOUT_SECONDS = 3.0
 _READ_TIMEOUT_SECONDS = 5.0
 
 
+def _probe_request_kwargs(ranged, share):
+    """Request kwargs for one failover attempt, scaled to the budget left.
+
+    ``ranged`` asks for the first bytes of the body: only the Current audio
+    row does, and only its first 4 KiB — a live one-shot /flow/ URL must
+    never be drained by the check (issue #48).
+    """
+    kwargs = {
+        "timeout": (
+            _CONNECT_TIMEOUT_SECONDS * share,
+            _READ_TIMEOUT_SECONDS * share,
+        ),
+        "allow_redirects": False,
+        "stream": True,
+    }
+    if ranged:
+        kwargs["headers"] = _AUDIO_RANGE
+    return kwargs
+
+
+def _audio_range_fallback(session, url, request_kwargs, result):
+    """Fall back to the plain HEAD after the proxy refused the ranged GET.
+
+    Returns the (status, message) pair for the row. A HEAD proves
+    connectivity, not delivery, so a refused range request keeps the row
+    yellow rather than green: with no bytes seen, the row must not claim a
+    plain pass (issue #48 review).
+    """
+    fallback_kwargs = dict(request_kwargs)
+    fallback_kwargs.pop("headers", None)  # plain HEAD, no Range
+    with session.request("HEAD", url, **fallback_kwargs) as head:
+        code = head.status_code
+        if 200 <= code < 300:
+            outcome = (
+                "warning",
+                f"HTTPS reachable (HTTP {code}), but the proxy "
+                "refused a range request; audio bytes not verified",
+            )
+        else:
+            outcome = _classify_head_response("audio", code)
+        result["http_status"] = code
+        return outcome
+
+
+def _classify_probe(session, kind, url, request_kwargs, response, deadline, result):
+    """Classify a completed probe response and record its status code.
+
+    ``http_status`` is recorded only once the response has been classified:
+    a body read that fails mid-stream never records it, so diagnostics
+    cannot show HTTP 200 beside a timeout (issue #48 review). When the
+    proxy refuses the range request itself, the plain HEAD fallback
+    classifies instead (issue #48).
+    """
+    code = response.status_code
+    if kind == "audio" and code in _RANGE_UNSUPPORTED:
+        # The proxy rejected the range request, not the stream:
+        # conservatively fall back to the old HEAD probe rather than
+        # reporting the audio as broken.
+        return _audio_range_fallback(session, url, request_kwargs, result)
+    status, message = _classify_response(kind, code, response, deadline)
+    result["http_status"] = code
+    return status, message
+
+
 def _request_and_classify(session, kind, url, result, hostname, addresses):
     """Send the probe request for kind and record its classified outcome.
 
@@ -603,10 +667,7 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
     deadline (issue #53 review).
 
     The Current audio row reads real bytes instead of sending a HEAD: a
-    range-limited GET (see ``_AUDIO_RANGE``) so a live /flow/ session is
-    never consumed wholesale. A proxy that refuses the range request itself
-    falls back to the plain HEAD probe rather than reporting the stream as
-    broken (issue #48).
+    range-limited GET whose outcome ``_classify_probe`` records (issue #48).
     """
     method = "GET" if kind in ("skill", "testaudio", "audio") else "HEAD"
     ordered = sorted(addresses, key=lambda address: (address.version, int(address)))
@@ -623,15 +684,7 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         # Scale the fresh (3, 5) attempt timeouts to the budget left, so
         # connect + read of this attempt cannot overrun it (issue #53 review).
         share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
-        timeout = (
-            _CONNECT_TIMEOUT_SECONDS * share,
-            _READ_TIMEOUT_SECONDS * share,
-        )
-        request_kwargs = {"timeout": timeout, "allow_redirects": False, "stream": True}
-        if kind == "audio":
-            # Only the audio row asks for bytes, and only its first 4 KiB:
-            # a one-shot /flow/ URL must never be drained by the check.
-            request_kwargs["headers"] = _AUDIO_RANGE
+        request_kwargs = _probe_request_kwargs(kind == "audio", share)
         try:
             opened = session.request(method, url, **request_kwargs)
         except requests.exceptions.SSLError:
@@ -644,39 +697,9 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
                 raise
             continue
         with opened as response:
-            code = response.status_code
-            result["http_status"] = code
-            if kind == "audio" and code in _RANGE_UNSUPPORTED:
-                # The proxy rejected the range request itself, not the
-                # stream: conservatively fall back to the old HEAD probe
-                # rather than reporting the audio as broken. Drop the ranged
-                # GET's code first so a failed fallback cannot report it.
-                result.pop("http_status", None)
-                fallback_kwargs = dict(request_kwargs)
-                fallback_kwargs.pop("headers", None)  # plain HEAD, no Range
-                with session.request("HEAD", url, **fallback_kwargs) as head:
-                    code = head.status_code
-                    result["http_status"] = code
-                    if 200 <= code < 300:
-                        # A HEAD proves connectivity, not delivery: with the
-                        # range refused we never saw bytes, so this row must
-                        # not claim a plain pass (issue #48 review).
-                        status = "warning"
-                        message = (
-                            f"HTTPS reachable (HTTP {code}), but the proxy "
-                            "refused a range request; audio bytes not verified"
-                        )
-                    else:
-                        status, message = _classify_head_response(kind, code)
-            else:
-                try:
-                    status, message = _classify_response(kind, code, response, deadline)
-                except requests.exceptions.RequestException:
-                    # The body read failed: HTTP <code> describes the status
-                    # line, not delivery, so it must not sit beside the
-                    # failure in diagnostics (issue #48 review).
-                    result.pop("http_status", None)
-                    raise
+            status, message = _classify_probe(
+                session, kind, url, request_kwargs, response, deadline, result
+            )
             was_reachable = status == "reachable"
             result.update(
                 status=_downgrade_split_horizon_pass(status, result), message=message

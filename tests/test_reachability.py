@@ -1550,12 +1550,16 @@ def test_read_health_content_keeps_bytes_delivered_before_a_cut_off():
 
     assert reachability._read_health_content(CutShort()) == b"audio-bytes"
 
+
+def test_read_health_content_raises_when_nothing_was_delivered():
+    """An empty read is a real failure and must reach the caller."""
+
     class Dead(Response):
         def iter_content(self, _size):
             raise requests.ConnectionError()
 
     with pytest.raises(requests.ConnectionError):
-        reachability._read_health_content(Dead())  # nothing delivered: not ours
+        reachability._read_health_content(Dead())
 
 
 @pytest.mark.parametrize("kind", ["audio", "skill"])
