@@ -662,7 +662,7 @@ def test_audio_probe_blocks_lan_only_host_without_doh(monkeypatch):
 
 
 def test_resolved_addresses_bounds_a_stalled_resolver(monkeypatch):
-    """A stalled system resolver degrades to None instead of hanging."""
+    """A stalled system resolver times out instead of hanging the check."""
     import reachability
 
     def _stall(*_args, **_kwargs):
@@ -671,7 +671,12 @@ def test_resolved_addresses_bounds_a_stalled_resolver(monkeypatch):
 
     monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
-    assert reachability._resolved_addresses("example.com") is None
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    # A timeout is distinct from "does not resolve": the probe must fail the
+    # check rather than fire a second DNS lookup (issue #49 review).
+    assert (
+        reachability._resolved_addresses("example.com") is reachability._DNS_TIMED_OUT
+    )
 
 
 def test_summary_flags_internal_resolution_on_secondary_checks():
@@ -703,19 +708,160 @@ def test_testaudio_player_survives_split_horizon_downgrade():
     from reachability import html
 
     note = "Resolves internally (LAN) — this check does not test the public/Echo path"
-    check = {
+    # A genuine split-horizon pass: the bytes were confirmed, then probe()
+    # downgraded the check to a warning and set downgraded=True.
+    downgraded = {
         "label": "Public audio delivery",
         "kind": "testaudio",
         "status": "warning",
         "message": "ok",
         "note": note,
         "url": "https://example.com/test-audio.mp3",
+        "downgraded": True,
     }
-    rendered = html({"checks": [check], "checking": False, "perspective": "p"})
+    rendered = html({"checks": [downgraded], "checking": False, "perspective": "p"})
     assert "<audio controls" in rendered  # confirmed audio keeps its player
 
-    # A plain non-audio warning (no split-horizon note) still gets no player.
-    plain = dict(check, note=None, message="not audio")
+    # A non-audio warning never verified the bytes, so it gets no player —
+    # even when it carries a split-horizon note (issue #48 review).
+    non_audio = dict(downgraded, downgraded=None, message="not audio")
     assert "<audio controls" not in html(
-        {"checks": [plain], "checking": False, "perspective": "p"}
+        {"checks": [non_audio], "checking": False, "perspective": "p"}
     )
+
+
+# --- review follow-up: DNS timeout, LAN-only green, player, summary ---------
+
+
+def test_probe_fails_fast_when_local_dns_times_out(monkeypatch):
+    """A stalled local resolver fails the check without a second DNS lookup."""
+    import reachability
+
+    monkeypatch.setattr(
+        reachability, "_resolved_addresses", lambda _host: reachability._DNS_TIMED_OUT
+    )
+    session = Session(Response())
+    result = probe("Skill", "https://example.com/", "skill", session)
+    assert result["status"] == "failed"
+    assert "timed out" in result["message"]
+    assert session.calls == []  # never sends a request that would re-resolve
+
+
+def test_stalled_resolver_worker_is_reused_not_leaked(monkeypatch):
+    """A stalled resolver reuses one worker instead of leaking one per run."""
+    import threading as _threading
+
+    import reachability
+
+    created = []
+    real_thread = _threading.Thread
+
+    def _counting_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    def _stall(*_args, **_kwargs):
+        time.sleep(0.4)
+        raise OSError("simulated resolver stall")
+
+    monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(reachability.socket, "getaddrinfo", _stall)
+    monkeypatch.setattr(reachability, "_dns_inflight", {})
+    monkeypatch.setattr(reachability.threading, "Thread", _counting_thread)
+    try:
+        assert (
+            reachability._resolved_addresses("stalled.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        assert (
+            reachability._resolved_addresses("stalled.example")
+            is reachability._DNS_TIMED_OUT
+        )
+        # Two lookups, one worker: a stalled resolver is not leaked per run.
+        assert len(created) == 1
+    finally:
+        reachability._dns_inflight.clear()
+
+
+def test_could_have_public_view_rejects_reserved_names():
+    """IANA-reserved/special-use names never reach a public resolver."""
+    import reachability
+
+    # ".example" is deliberately absent: the test suite uses it as the mock
+    # public namespace (e.g. streams.example).
+    for hostname in ("host.test", "foo.onion", "x.invalid"):
+        assert reachability._could_have_public_view(hostname) is False
+
+
+def test_could_have_public_view_rejects_legacy_ip_forms():
+    """Legacy IPv4 spellings resolvers accept never reach DoH."""
+    import reachability
+
+    for hostname in ("127.1", "10.0.0.1", "192.168.1.50%eth0"):
+        assert reachability._could_have_public_view(hostname) is False
+
+
+def test_skill_probe_flags_empty_public_view(monkeypatch):
+    """A skill host with an empty public view is flagged internal, not green."""
+    result, session = _audio_probe_with_views(
+        monkeypatch,
+        {ipaddress.ip_address("10.0.0.5")},
+        set(),
+        kind="skill",
+    )
+    assert session.calls  # still probed, but never a plain green pass
+    assert result["status"] == "warning"
+    assert "Resolves internally (LAN)" in result["note"]
+
+
+def test_summary_surfaces_failed_check_alongside_reachable_skill_audio():
+    """A failed secondary check is not masked by skill+audio being green."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {"label": "Skill endpoint", "status": "reachable", "message": "ok"},
+            {"label": "Public audio delivery", "status": "reachable", "message": "ok"},
+            {
+                "label": "Stream host",
+                "status": "failed",
+                "message": "DNS",
+                "note": note,
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"
+    assert "1 of 3" in state["description"]
+    assert "failed" in state["description"]
+    assert "resolve internally" not in state["title"]
+
+
+def test_testaudio_non_audio_warning_gets_no_player(monkeypatch):
+    """A non-audio warning with a split-horizon note renders no player."""
+    import reachability
+    from reachability import html
+
+    monkeypatch.setattr(
+        reachability,
+        "_resolved_addresses",
+        lambda _host: {ipaddress.ip_address("10.0.0.5")},
+    )
+    monkeypatch.setattr(
+        reachability,
+        "_public_addresses",
+        lambda _host: {ipaddress.ip_address("93.184.216.34")},
+    )
+    session = Session(Response(headers={"Content-Type": "text/html"}))
+    result = probe(
+        "Public audio delivery", "https://example.com/", "testaudio", session
+    )
+    assert result["status"] == "warning"  # reachable but not audio
+    assert result.get("note")  # split-horizon note present
+    assert "downgraded" not in result  # audio never confirmed
+    rendered = html({"checks": [result], "checking": False, "perspective": "p"})
+    assert "<audio controls" not in rendered

@@ -121,31 +121,52 @@ def _classify_response(kind, code, response):
 
 
 # A stalled system resolver must not hold the check thread — and the status
-# page — indefinitely (issue #49 review).
+# page — indefinitely (issue #49 review). A timed-out lookup is distinct from
+# one that simply does not resolve: the former must not be probed, because the
+# request's own DNS lookup could hang or resolve inward.
 _DNS_TIMEOUT_SECONDS = 5.0
+_DNS_TIMED_OUT = object()  # sentinel: the resolver stalled past its bound
+
+# One in-flight worker per hostname so a stalled resolver is reused, not
+# re-spawned on every check run (which would slowly leak blocked daemon
+# threads). Only a still-alive worker is reused; a completed one drops out so
+# the next run re-resolves fresh.
+_dns_lock = threading.Lock()
+_dns_inflight = {}
 
 
 def _resolved_addresses(hostname):
-    """Local-view addresses for hostname, or None when it does not resolve.
+    """Local-view addresses, None when unresolved, or ``_DNS_TIMED_OUT`` if stalled.
 
-    ``socket.getaddrinfo`` is bounded by a worker-thread timeout so a stalled
-    system resolver degrades to "unresolved" instead of hanging the check.
+    ``socket.getaddrinfo`` runs in a worker thread so a stalled system resolver
+    degrades to a bounded timeout instead of hanging the check.
     """
-    found = {}
+    with _dns_lock:
+        entry = _dns_inflight.get(hostname)
+        if entry is not None and entry[0].is_alive():
+            worker, found = entry  # reuse the in-flight (possibly stalled) lookup
+        else:
+            found = {}
 
-    def _lookup():
-        try:
-            found["addrs"] = {
-                ipaddress.ip_address(info[4][0].partition("%")[0])
-                for info in socket.getaddrinfo(hostname, None)
-            }
-        except (OSError, ValueError):
-            found["addrs"] = None
+            def _lookup():
+                try:
+                    found["addrs"] = {
+                        ipaddress.ip_address(info[4][0].partition("%")[0])
+                        for info in socket.getaddrinfo(hostname, None)
+                    }
+                except (OSError, ValueError):
+                    found["addrs"] = None
 
-    worker = threading.Thread(target=_lookup, daemon=True)
-    worker.start()
+            worker = threading.Thread(target=_lookup, daemon=True)
+            _dns_inflight[hostname] = (worker, found)
+            worker.start()
     worker.join(_DNS_TIMEOUT_SECONDS)
-    return found.get("addrs")  # None when unresolved or timed out
+    if worker.is_alive():
+        return _DNS_TIMED_OUT  # keep the entry so later runs reuse this worker
+    with _dns_lock:
+        if _dns_inflight.get(hostname, (None,))[0] is worker:
+            del _dns_inflight[hostname]  # done: the next run re-resolves fresh
+    return found.get("addrs")
 
 
 def _public_addresses(hostname):
@@ -163,6 +184,35 @@ def _public_addresses(hostname):
     return None
 
 
+def _parse_doh_payload(payload):
+    """(answers, failed) for one DoH response; failed means try the next resolver.
+
+    NOERROR or NXDOMAIN is a valid answer. A non-object JSON body, a bad
+    status, or a malformed Answer collection all count as a resolver failure
+    so the fallback resolver still runs (issue #49 review) — never an
+    AttributeError that aborts the whole check run before it can commit.
+    """
+    if not isinstance(payload, dict) or payload.get("Status") not in (0, 3):
+        return None, True
+    answers = payload.get("Answer")
+    if answers is None:
+        return [], False
+    if not isinstance(answers, list):
+        return None, True
+    return answers, False
+
+
+def _collect_doh_addresses(found, answers):
+    """Add every parseable address in answers to found, skipping CNAME hops."""
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue  # stray non-object entry
+        try:
+            found.add(ipaddress.ip_address(answer["data"]))
+        except (KeyError, ValueError, TypeError):
+            pass  # CNAME hops carry a hostname, not an address
+
+
 def _doh_lookup(endpoint, hostname):
     """(addresses, failed) for one resolver; failed means try the next one."""
     found = set()
@@ -178,25 +228,10 @@ def _doh_lookup(endpoint, hostname):
                 ).json()
             except (requests.RequestException, ValueError):
                 return found, True
-            # NOERROR or NXDOMAIN; a non-object JSON body is malformed and
-            # must count as a resolver failure, not an AttributeError that
-            # aborts the whole check run before it can commit (issue #49).
-            if not isinstance(payload, dict) or payload.get("Status") not in (0, 3):
+            answers, failed = _parse_doh_payload(payload)
+            if failed:
                 return found, True
-            answers = payload.get("Answer")
-            if answers is None:
-                answers = []
-            elif not isinstance(answers, list):
-                # A malformed Answer collection is a resolver failure too, so
-                # the fallback resolver still runs (issue #49 review).
-                return found, True
-            for answer in answers:
-                if not isinstance(answer, dict):
-                    continue  # stray non-object entry
-                try:
-                    found.add(ipaddress.ip_address(answer["data"]))
-                except (KeyError, ValueError, TypeError):
-                    pass  # CNAME hops carry a hostname, not an address
+            _collect_doh_addresses(found, answers)
     return found, False
 
 
@@ -217,17 +252,29 @@ _LAN_ONLY_SUFFIXES = (
     ".corp",
     ".localhost",
     ".homenetwork",
+    ".test",  # IANA-reserved (RFC 6761): never publicly routable
+    ".invalid",
+    ".onion",  # Tor
+    # ".example" is RFC-reserved too, but the test suite uses it as the mock
+    # public namespace (e.g. streams.example), so it is deliberately not
+    # blocked here.
 )
 
 
 def _could_have_public_view(hostname):
     """False for names only the LAN can resolve, so no DoH query leaks them."""
+    host = hostname.partition("%")[0]
     try:
-        ipaddress.ip_address(hostname.partition("%")[0])
+        ipaddress.ip_address(host)
         return False  # IP literal: nothing to resolve, and DoH would leak it
     except ValueError:
         pass
-    name = hostname.lower().rstrip(".")
+    try:
+        socket.inet_aton(host)
+        return False  # legacy IPv4 spelling (e.g. "127.1") resolvers accept
+    except OSError:
+        pass
+    name = host.lower().rstrip(".")
     if "." not in name:
         return False  # single-label (e.g. "music-assistant") is LAN-only
     return not name.endswith(_LAN_ONLY_SUFFIXES)
@@ -246,7 +293,11 @@ def _resolution_views(hostname, cache=None):
     if cache is not None and hostname in cache:
         return cache[hostname]
     local = _resolved_addresses(hostname)
-    if not local or all(address.is_global for address in local):
+    if local is _DNS_TIMED_OUT:
+        # A stalled resolver is not "unresolved": probing would send a second
+        # DNS lookup that can hang or resolve inward (issue #49 review).
+        views = _DNS_TIMED_OUT, None
+    elif not local or all(address.is_global for address in local):
         views = local, None  # public (or unresolvable) locally — no DoH query
     elif not _could_have_public_view(hostname):
         # LAN-only name: it cannot have a public view, so record an empty one
@@ -270,17 +321,19 @@ def _must_not_probe(local, public):
 
 
 def _resolves_internally(local, public):
-    """True when only the local view points inward (split-horizon DNS).
+    """True when only the local view points inward (split-horizon or LAN-only).
 
     A local rewrite (e.g. AdGuard Home) makes this add-on's probes succeed
     via the LAN while the Echo's public path is never exercised, so the
-    check must not report a plain pass.
+    check must not report a plain pass. An empty public view — a LAN-only
+    name that cannot resolve publicly at all — is even more clearly
+    internal-only, so it is flagged too (issue #49 review).
     """
     return (
         bool(local)
         and not all(address.is_global for address in local)
         and public is not None
-        and any(address.is_global for address in public)
+        and (any(address.is_global for address in public) or not public)
     )
 
 
@@ -314,6 +367,34 @@ def _downgrade_split_horizon_pass(status, result):
     return status
 
 
+def _request_and_classify(session, kind, url, result):
+    """Send the probe request for kind and record its classified outcome.
+
+    A split-horizon pass is downgraded to a warning but keeps its
+    ``downgraded`` flag, so the test-tone player survives only for a real
+    pass (issue #48/#49 review).
+    """
+    with session.request(
+        "GET" if kind in ("skill", "testaudio") else "HEAD",
+        url,
+        timeout=(3, 5),
+        allow_redirects=False,
+        stream=True,
+    ) as response:
+        code = response.status_code
+        result["http_status"] = code
+        status, message = _classify_response(kind, code, response)
+        was_reachable = status == "reachable"
+        result.update(
+            status=_downgrade_split_horizon_pass(status, result), message=message
+        )
+        if was_reachable and result["status"] == "warning":
+            # Bytes/route were confirmed; only the public path is unverified,
+            # so the test-tone player may stay (issue #48 review). A non-audio
+            # warning never set this flag.
+            result["downgraded"] = True
+
+
 def probe(label, value, kind, session, views_cache=None):
     """Check a public target and classify its HTTPS response for its purpose."""
     result = {"label": label, "status": "unconfigured", "message": "Not configured"}
@@ -327,6 +408,14 @@ def probe(label, value, kind, session, views_cache=None):
         # One resolution pass feeds both the block guard and the
         # split-horizon note, so a probe never sends a second DoH query.
         local, public = _resolution_views(parsed.hostname, views_cache)
+        if local is _DNS_TIMED_OUT:
+            # A stalled resolver is not "unresolved": do not send a second DNS
+            # lookup that can hang or resolve inward (issue #49 review).
+            result.update(
+                status="failed",
+                message="DNS lookup timed out; could not confirm the host resolves publicly",
+            )
+            return result
         if kind == "audio" and _must_not_probe(local, public):
             # Caller-influenced URL: never turn a reachability check into a
             # request toward hosts Alexa itself could not resolve.
@@ -345,19 +434,7 @@ def probe(label, value, kind, session, views_cache=None):
         url = _kind_probe_url(url, result["url"], kind)
         if kind == "testaudio":
             result["url"] = url
-        with session.request(
-            "GET" if kind in ("skill", "testaudio") else "HEAD",
-            url,
-            timeout=(3, 5),
-            allow_redirects=False,
-            stream=True,
-        ) as response:
-            code = response.status_code
-            result["http_status"] = code
-            status, message = _classify_response(kind, code, response)
-            result.update(
-                status=_downgrade_split_horizon_pass(status, result), message=message
-            )
+        _request_and_classify(session, kind, url, result)
     except requests.exceptions.SSLError:
         result.update(status="failed", message="TLS certificate validation failed")
     except requests.exceptions.Timeout:
@@ -451,12 +528,14 @@ def html(result):
                 kind,
             )
         )
-        # Keep the test-tone player for a split-horizon pass downgraded to a
-        # warning: the audio was confirmed, only the public path is unverified
-        # (issue #49 review). A plain non-audio warning has no note.
+        # Keep the test-tone player only for a real pass: a reachable check,
+        # or a split-horizon pass downgraded to a warning (the bytes were
+        # confirmed; only the public path is unverified). A non-audio warning
+        # never verified audio, so it gets no player (issue #48 review).
         testaudio = check.get("kind") == "testaudio" and check.get("url")
-        downgraded = check.get("status") == "warning" and note
-        if testaudio and (check.get("status") == "reachable" or downgraded):
+        if testaudio and (
+            check.get("status") == "reachable" or check.get("downgraded")
+        ):
             parts.append(
                 f'<div><audio controls preload="none" src="{escape(check["url"])}"></audio> '
                 f'<span class="muted">Play the test tone through the same public route an Echo uses.</span></div>'
@@ -506,6 +585,20 @@ def summary(result):
             "description": "Running the add-on reachability checks.",
         }
     if skill == "reachable" and audio == "reachable":
+        failed = [check for check in result["checks"] if check["status"] == "failed"]
+        if failed:
+            # A failed check outweighs the internal-resolution note: report it
+            # rather than the softer note-only warning that would mask it
+            # (issue #49 review).
+            return {
+                "kind": "warning",
+                "title": "Some checks need attention",
+                "description": (
+                    f"{len(failed)} of {len(result['checks'])} reachability "
+                    "checks failed even though the skill endpoint and audio "
+                    "route are reachable. Review Connectivity below."
+                ),
+            }
         if any(check.get("note") for check in result["checks"]):
             # Skill + audio are green, but another check resolved only via the
             # LAN, so part of the Echo path is unverified (issue #49 review).
