@@ -1558,8 +1558,9 @@ def test_read_health_content_raises_when_nothing_was_delivered():
         def iter_content(self, _size):
             raise requests.ConnectionError()
 
+    dead = Dead()
     with pytest.raises(requests.ConnectionError):
-        reachability._read_health_content(Dead())
+        reachability._read_health_content(dead)
 
 
 @pytest.mark.parametrize("kind", ["audio", "skill"])
