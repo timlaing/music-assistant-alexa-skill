@@ -763,7 +763,7 @@ def test_stalled_resolver_worker_is_reused_not_leaked(monkeypatch):
         return thread
 
     def _stall(*_args, **_kwargs):
-        release.wait(2)  # stay alive (deterministically) until released
+        release.wait()  # stay blocked until the test releases us (no timeout)
         raise OSError("simulated resolver stall")
 
     monkeypatch.setattr(reachability, "_DNS_TIMEOUT_SECONDS", 0.05)
