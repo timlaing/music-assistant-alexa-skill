@@ -867,3 +867,33 @@ def test_testaudio_non_audio_warning_gets_no_player(monkeypatch):
     assert "downgraded" not in result  # audio never confirmed
     rendered = html({"checks": [result], "checking": False, "perspective": "p"})
     assert "<audio controls" not in rendered
+
+
+def test_summary_treats_downgraded_split_horizon_as_warning_not_error():
+    """A split-horizon pass on skill/test-tone is a warning, not a red error."""
+    from reachability import summary
+
+    base = {"checked_at": 1.0, "checking": False, "perspective": "p"}
+    note = "Resolves internally (LAN) — this check does not test the public/Echo path"
+    result = dict(
+        base,
+        checks=[
+            {
+                "label": "Skill endpoint",
+                "status": "warning",
+                "message": "ok",
+                "note": note,
+                "downgraded": True,
+            },
+            {
+                "label": "Public audio delivery",
+                "status": "warning",
+                "message": "ok",
+                "note": note,
+                "downgraded": True,
+            },
+        ],
+    )
+    state = summary(result)
+    assert state["kind"] == "warning"  # not a red "error"
+    assert "resolve internally" in state["title"]

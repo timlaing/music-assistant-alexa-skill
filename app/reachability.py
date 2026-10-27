@@ -573,18 +573,31 @@ def diagnostics(result):
     return "\n".join(lines)
 
 
+def _counts_ready(check):
+    """True when a check passed: plainly, or as a downgraded split-horizon pass.
+
+    A split-horizon pass is downgraded to a warning but did confirm the
+    service, so it must not trip the not-ready error (issue #49 review). A
+    genuine warning (e.g. non-audio response, HTTP error) has no downgraded
+    flag and does not count.
+    """
+    if not check:
+        return False
+    return check["status"] == "reachable" or check.get("downgraded") is True
+
+
 def summary(result):
     """Readiness banner state derived from the reachability checks."""
-    checks = {check["label"]: check["status"] for check in result["checks"]}
-    skill = checks.get("Skill endpoint")
-    audio = checks.get(_AUDIO_CHECK)
+    by_label = {check["label"]: check for check in result["checks"]}
+    skill = by_label.get("Skill endpoint")
+    audio = by_label.get(_AUDIO_CHECK)
     if result["checking"] and not result["checked_at"]:
         return {
             "kind": "neutral",
             "title": "Checking public reachability…",
             "description": "Running the add-on reachability checks.",
         }
-    if skill == "reachable" and audio == "reachable":
+    if _counts_ready(skill) and _counts_ready(audio):
         failed = [check for check in result["checks"] if check["status"] == "failed"]
         if failed:
             # A failed check outweighs the internal-resolution note: report it
@@ -620,7 +633,9 @@ def summary(result):
                 "Play a track on your Echo to verify end-to-end playback."
             ),
         }
-    if skill in (None, "unconfigured") or audio in (None, "unconfigured"):
+    skill_status = skill["status"] if skill else None
+    audio_status = audio["status"] if audio else None
+    if skill_status in (None, "unconfigured") or audio_status in (None, "unconfigured"):
         return {
             "kind": "warning",
             "title": "Public URLs need attention",
