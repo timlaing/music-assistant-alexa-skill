@@ -235,7 +235,8 @@ def test_testaudio_probe_streams_get_and_requires_data():
         "audio",
         audio_session,
     )
-    assert audio_session.calls[0][0] == "HEAD"
+    assert audio_session.calls[0][0] == "GET"
+    assert audio_session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
 
 
 def test_checks_cached_and_status_does_not_block(monkeypatch):
@@ -421,9 +422,10 @@ def test_audio_probe_allows_split_dns_public_view(monkeypatch):
         {ipaddress.ip_address("93.184.216.34")},
     )
     assert session.calls
-    assert session.calls[0][0] == "HEAD"
-    # Issue #49: the probe only exercised the LAN rewrite, so it must not
-    # report a plain pass.
+    # Issue #48: the audio row reads real bytes via a range GET, and issue
+    # #49 still requires the split-horizon pass to stay yellow.
+    assert session.calls[0][0] == "GET"
+    assert session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
     assert result["status"] == "warning"
     assert result["note"] == (
         "Resolves internally (LAN) — this check does not test the public/Echo path"
@@ -503,6 +505,138 @@ def test_split_horizon_note_renders_as_warning_not_green():
     assert "ma-state ma-ok" not in rendered
     assert "Resolves internally (LAN)" in rendered
     assert "[Resolves internally (LAN)" in diagnostics(result)
+
+
+# --- Current audio: range-limited byte delivery (issue #48) -----------------
+
+
+class SequenceSession(Session):
+    """Session returning a different response per call (e.g. GET then HEAD)."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.mounts = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class EmptyAudio(Response):
+    def iter_content(self, _size):
+        return iter(())
+
+
+def test_audio_probe_reports_bytes_it_received():
+    """The audio row is green only after real audio bytes arrive."""
+    session = Session(Response())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3?token=secret",
+        "audio",
+        session,
+    )
+    method, url, kwargs = session.calls[0]
+    assert method == "GET"
+    assert kwargs["headers"] == {"Range": "bytes=0-4095"}
+    assert kwargs["allow_redirects"] is False
+    assert kwargs["stream"] is True  # never buffer the one-shot body eagerly
+    assert url.endswith("/flow/track.mp3?token=secret")  # live token preserved
+    assert result["status"] == "reachable"
+    delivered = len(json.dumps({"status": "ok"}).encode())  # the fixture body
+    assert f"{delivered} bytes of audio/mpeg" in result["message"]
+    assert "secret" not in result["url"]  # query still stripped for display
+
+
+def test_audio_probe_fails_when_no_bytes_are_delivered():
+    """A 200/206 that delivers nothing is a failure, not a green row."""
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(EmptyAudio()),
+    )
+    assert result["status"] == "failed"
+    assert "delivered no data" in result["message"]
+
+
+def test_audio_probe_warns_on_non_audio_content_type():
+    """Bytes that are not audio stay visible as a warning."""
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        Session(Response(headers={"Content-Type": "text/html"})),
+    )
+    assert result["status"] == "warning"
+    assert "not audio" in result["message"]
+
+
+@pytest.mark.parametrize("code", [406, 416, 501])
+def test_audio_probe_falls_back_to_head_when_range_unsupported(code):
+    """Rejected range requests fall back to the previous HEAD probe."""
+    session = SequenceSession(Response(code), Response(200))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert session.calls[0][0] == "GET"
+    assert session.calls[0][2]["headers"] == {"Range": "bytes=0-4095"}
+    fallback_method, _url, fallback_kwargs = session.calls[1]
+    assert fallback_method == "HEAD"
+    assert "headers" not in fallback_kwargs  # plain HEAD, no Range
+    # A HEAD cannot prove byte delivery, so a refused range request keeps the
+    # row yellow rather than green.
+    assert result["status"] == "warning"
+    assert result["http_status"] == 200
+    assert "not verified" in result["message"]
+
+
+def test_audio_probe_fallback_failure_reports_no_stale_status():
+    """A failed HEAD fallback must not keep the ranged GET's HTTP code."""
+    session = SequenceSession(Response(416), requests.Timeout())
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert "http_status" not in result  # no stale 416 beside a timeout
+
+
+def test_audio_probe_fallback_still_reports_head_failure():
+    """The HEAD fallback keeps the old failure classification too."""
+    session = SequenceSession(Response(416), Response(404))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert result["http_status"] == 404
+
+
+def test_audio_probe_does_not_follow_redirects():
+    """Redirect behaviour is unchanged: a 3xx still fails the row."""
+    session = Session(Response(302))
+    result = probe(
+        "Current audio",
+        "https://streams.example.com/flow/track.mp3",
+        "audio",
+        session,
+    )
+    assert result["status"] == "failed"
+    assert result["http_status"] == 302
+    assert len(session.calls) == 1  # no fallback, no redirect follow
+    assert session.calls[0][2]["allow_redirects"] is False
 
 
 def test_public_addresses_reads_doh_answers_and_falls_back(monkeypatch):

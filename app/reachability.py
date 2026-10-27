@@ -17,6 +17,16 @@ from ui_markup import row as markup_row
 
 _AUDIO_CHECK = "Public audio delivery"
 
+# The Current audio row streams a range-limited GET instead of a HEAD: a
+# proxy can answer HEAD 200 while the Echo's real GET is buffered, challenged
+# or broken. /flow/ URLs are one-shot per session, so only the first bytes
+# are requested and an unbounded body is never read.
+_AUDIO_RANGE = {"Range": "bytes=0-4095"}
+
+# Statuses that mean the range request itself was rejected, not the stream;
+# these fall back to the previous HEAD probe rather than reporting failure.
+_RANGE_UNSUPPORTED = (406, 416, 501)
+
 # Public resolvers consulted only when local DNS points inward, so split-DNS
 # setups (private local view, public internet view) are judged the way Alexa
 # resolves them. Cloudflare first, Google as the fallback.
@@ -98,6 +108,56 @@ def _classify_testaudio(code, response, deadline=None):
     )
 
 
+def _classify_audio_stream(code, response, deadline=None):
+    """Classify the range-limited GET on the stored stream URL.
+
+    Mirrors _classify_testaudio: green only when real bytes with an audio
+    Content-Type arrived, so "Current audio: HTTP 200" can no longer sit
+    beside a PlaybackFailed at offset 0.
+    """
+    if 200 <= code < 300:
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        received = len(_read_health_content(response, deadline))
+        if received and content_type.startswith("audio/"):
+            return (
+                "reachable",
+                f"Audio bytes delivered over HTTPS (HTTP {code}; "
+                f"{received} bytes of {content_type})",
+            )
+        if not received:
+            return (
+                "failed",
+                f"Stream returned HTTP {code} but delivered no data; "
+                "check proxy buffering",
+            )
+        return (
+            "warning",
+            f"HTTPS reachable (HTTP {code}), but the {received} buffered bytes "
+            f"are not audio; check proxy routing",
+        )
+    return (
+        "failed",
+        f"Stream URL returned HTTP {code}; check proxy routing/access",
+    )
+
+
+def _classify_head_response(kind, code):
+    """Classify a plain HEAD response with no body (generic connectivity)."""
+    if 200 <= code < 300:
+        return "reachable", f"HTTPS reachable (HTTP {code})"
+    if kind == "host" and code == 405:
+        return "reachable", "HTTPS reachable (HTTP 405; HEAD not supported)"
+    if kind == "host" and code == 404:
+        return (
+            "warning",
+            f"HTTPS reachable (HTTP {code}); test an actual audio URL to confirm playback access",
+        )
+    return (
+        "failed",
+        f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
+    )
+
+
 def _classify_response(kind, code, response, deadline=None):
     """Map a completed probe response to a (status, message) pair.
 
@@ -122,19 +182,9 @@ def _classify_response(kind, code, response, deadline=None):
         )
     if kind == "testaudio":
         return _classify_testaudio(code, response, deadline)
-    if 200 <= code < 300:
-        return "reachable", f"HTTPS reachable (HTTP {code})"
-    if kind == "host" and code == 405:
-        return "reachable", "HTTPS reachable (HTTP 405; HEAD not supported)"
-    if kind == "host" and code == 404:
-        return (
-            "warning",
-            f"HTTPS reachable (HTTP {code}); test an actual audio URL to confirm playback access",
-        )
-    return (
-        "failed",
-        f"HTTPS connected, but URL returned HTTP {code}; check proxy routing/access",
-    )
+    if kind == "audio":
+        return _classify_audio_stream(code, response, deadline)
+    return _classify_head_response(kind, code)
 
 
 # A stalled system resolver must not hold the check thread — and the status
@@ -508,8 +558,14 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
     each attempt starts only while budget remains, its fresh timeouts are
     scaled down to what is left of it, and the body read shares the same
     deadline (issue #53 review).
+
+    The Current audio row reads real bytes instead of sending a HEAD: a
+    range-limited GET (see ``_AUDIO_RANGE``) so a live /flow/ session is
+    never consumed wholesale. A proxy that refuses the range request itself
+    falls back to the plain HEAD probe rather than reporting the stream as
+    broken (issue #48).
     """
-    method = "GET" if kind in ("skill", "testaudio") else "HEAD"
+    method = "GET" if kind in ("skill", "testaudio", "audio") else "HEAD"
     ordered = sorted(addresses, key=lambda address: (address.version, int(address)))
     deadline = time.monotonic() + _FAILOVER_BUDGET_SECONDS
     for index, address in enumerate(ordered):
@@ -524,17 +580,17 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         # Scale the fresh (3, 5) attempt timeouts to the budget left, so
         # connect + read of this attempt cannot overrun it (issue #53 review).
         share = min(1.0, remaining / (_CONNECT_TIMEOUT_SECONDS + _READ_TIMEOUT_SECONDS))
+        timeout = (
+            _CONNECT_TIMEOUT_SECONDS * share,
+            _READ_TIMEOUT_SECONDS * share,
+        )
+        request_kwargs = {"timeout": timeout, "allow_redirects": False, "stream": True}
+        if kind == "audio":
+            # Only the audio row asks for bytes, and only its first 4 KiB:
+            # a one-shot /flow/ URL must never be drained by the check.
+            request_kwargs["headers"] = _AUDIO_RANGE
         try:
-            opened = session.request(
-                method,
-                url,
-                timeout=(
-                    _CONNECT_TIMEOUT_SECONDS * share,
-                    _READ_TIMEOUT_SECONDS * share,
-                ),
-                allow_redirects=False,
-                stream=True,
-            )
+            opened = session.request(method, url, **request_kwargs)
         except requests.exceptions.SSLError:
             raise  # certificate failure: every address would fail alike
         except requests.exceptions.ConnectionError:
@@ -547,7 +603,30 @@ def _request_and_classify(session, kind, url, result, hostname, addresses):
         with opened as response:
             code = response.status_code
             result["http_status"] = code
-            status, message = _classify_response(kind, code, response, deadline)
+            if kind == "audio" and code in _RANGE_UNSUPPORTED:
+                # The proxy rejected the range request itself, not the
+                # stream: conservatively fall back to the old HEAD probe
+                # rather than reporting the audio as broken. Drop the ranged
+                # GET's code first so a failed fallback cannot report it.
+                result.pop("http_status", None)
+                fallback_kwargs = dict(request_kwargs)
+                fallback_kwargs.pop("headers", None)  # plain HEAD, no Range
+                with session.request("HEAD", url, **fallback_kwargs) as head:
+                    code = head.status_code
+                    result["http_status"] = code
+                    if 200 <= code < 300:
+                        # A HEAD proves connectivity, not delivery: with the
+                        # range refused we never saw bytes, so this row must
+                        # not claim a plain pass (issue #48 review).
+                        status = "warning"
+                        message = (
+                            f"HTTPS reachable (HTTP {code}), but the proxy "
+                            "refused a range request; audio bytes not verified"
+                        )
+                    else:
+                        status, message = _classify_head_response(kind, code)
+            else:
+                status, message = _classify_response(kind, code, response, deadline)
             was_reachable = status == "reachable"
             result.update(
                 status=_downgrade_split_horizon_pass(status, result), message=message
