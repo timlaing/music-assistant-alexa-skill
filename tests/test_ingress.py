@@ -64,11 +64,13 @@ def test_ma_control_fields_sit_outside_advanced_settings(client, monkeypatch):
     fields_start = page.index('id="ma_api_url"')
     token_index = page.index('id="ma_api_token"')
     advanced_start = page.index('<details class="ma-detail">')
+    advanced_end = page.index("</details>", advanced_start)
 
     assert fields_start < advanced_start, "API URL must not be inside Advanced"
     assert token_index < advanced_start, "access token must not be inside Advanced"
-    # The genuinely-advanced toggle stays behind the disclosure.
-    assert page.index('id="skip_url_validation"') > advanced_start
+    # The genuinely-advanced toggle stays inside the disclosure.
+    toggle_index = page.index('id="skip_url_validation"')
+    assert advanced_start < toggle_index < advanced_end
 
 
 def test_spoofed_ingress_headers_and_wrong_port_cannot_bypass_auth(client, monkeypatch):
