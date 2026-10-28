@@ -26,20 +26,33 @@ def set_ma(payload):
     global _ma, _version
     with _lock:
         _version += 1
-        old_stream = _ma.get("streamUrl") if _ma else None
-        old_first_seen = _ma.get("streamFirstSeen") if _ma else None
+        player = payload.get("playerId") or player_from_stream(payload.get("streamUrl"))
+
+        # Get the previous snapshot for this player (if any) to preserve streamFirstSeen
+        old_snapshot = _player_snapshots.get(player) if player else None
+        old_stream = (
+            old_snapshot.get("streamUrl")
+            if old_snapshot
+            else (_ma.get("streamUrl") if _ma else None)
+        )
+        old_first_seen = (
+            old_snapshot.get("streamFirstSeen")
+            if old_snapshot
+            else (_ma.get("streamFirstSeen") if _ma else None)
+        )
+
         new_stream = payload.get("streamUrl")
         _ma = deepcopy(payload)
-        # Newer MA versions name the player; older ones only in the stream URL.
-        player = payload.get("playerId") or player_from_stream(new_stream)
-        # Track when this stream URL was first pushed. Only reset if the URL changed.
+
+        # Track when this stream URL was first pushed. Only reset if the URL changed
+        # for this specific player (using per-player snapshot when available).
         # This prevents repeated pushes of the same stream from restarting the
         # grace window and hiding a dead channel.
         # Use the same stream identity logic as _stream_key in echo_position.py:
-        # compare path without extension, ignoring query parameters, to handle
-        # cases where same stream has different query tokens or host differences.
+        # compare path without extension, ignoring query parameters.
         from skill import echo_position
 
+        # Use player-specific old stream for comparison when available
         if (
             old_stream
             and new_stream
