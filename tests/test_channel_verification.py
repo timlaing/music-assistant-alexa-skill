@@ -681,6 +681,42 @@ def test_v13_channel_states(monkeypatch):
     assert check["state"] == "pass"
     assert "playing the stream" in check["detail"]
 
+    # A retained pre-push report showing stopped playback proves nothing
+    # about the fresh push — it must not count as an acknowledgement.
+    set_reports(
+        {
+            "Echo Dot 1": {
+                "playerId": "Echo Dot 1",
+                "current": True,
+                "activity": "FINISHED",
+                "observedAt": time.time() - 600,
+                "ageSeconds": 600.0,
+            }
+        }
+    )
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 120)
+    )
+    assert check["state"] == "warning"
+
+    # Playback that started FOR the push and ended since still proves the
+    # channel worked: a report observed after the push counts as an ack.
+    set_reports(
+        {
+            "Echo Dot 1": {
+                "playerId": "Echo Dot 1",
+                "current": True,
+                "activity": "FINISHED",
+                "observedAt": time.time(),
+                "ageSeconds": 0.0,
+            }
+        }
+    )
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 120)
+    )
+    assert check["state"] == "pass"
+
     # A second Echo happily playing must NOT mask the dead channel: only the
     # pushed player's report counts.
     set_reports(
@@ -723,6 +759,61 @@ def test_v13_channel_states(monkeypatch):
     # An unreadable timestamp cannot be judged.
     check = verification._v13_channel(_store(timestamp="not-a-number"))
     assert check["state"] == "unknown"
+
+
+def test_v13_re_reads_the_store_when_a_push_lands_mid_read(monkeypatch):
+    """The store captured by run_checks must not outlive the report read."""
+    from skill import echo_position
+
+    shared_store.set_ma(_store(playerId="Echo One"))
+    stale = shared_store.get_ma()  # what run_checks captured before V3/V4 ran
+    shared_store.set_ma(_store(playerId="Echo Two"))
+    monkeypatch.setattr(
+        echo_position,
+        "latest_reports",
+        lambda: {
+            "Echo Two": {
+                "playerId": "Echo Two",
+                "current": True,
+                "activity": "PLAYING",
+                "observedAt": time.time(),
+                "ageSeconds": 0.0,
+            }
+        },
+    )
+    check = verification._v13_channel(stale)
+    # The re-read must adopt the newer push (its version moved) and correlate
+    # Echo Two's acknowledgement — not the captured push for Echo One, whose
+    # untouched report set would only reach the grace-window branch.
+    assert check["state"] == "pass"
+    assert check["detail"].startswith("Echo Two")
+
+
+def test_v13_acknowledges_through_the_real_report_reader(monkeypatch):
+    """V13 must acknowledge through the production latest_reports() path."""
+    from skill import echo_position
+
+    stream = "https://streams.example.com/music/flow/session/queue/item/One.flac"
+    shared_store.set_ma(_store(playerId="Echo Dot 1", streamUrl=stream))
+    # The Echo reports the stream as it receives it: public host, MP3.
+    monkeypatch.setattr(
+        echo_position,
+        "_reports",
+        {
+            "Echo Dot 1": {
+                "token": stream[:-5] + ".mp3",
+                "offsetMs": 480,
+                "activity": "PLAYING",
+                "observedAt": time.time(),
+            }
+        },
+    )
+    # latest_reports() is deliberately NOT stubbed: report() must resolve
+    # current=True from the stored snapshot, or V13 can only fall back to
+    # the grace-window branch and this assertion fails.
+    check = verification._v13_channel(shared_store.get_ma())
+    assert check["state"] == "pass"
+    assert check["detail"].startswith("Echo Dot 1 is playing")
 
 
 # --- composition -----------------------------------------------------------

@@ -980,6 +980,23 @@ def _v12_invocation(state):
     return _check("v12", _TITLE_INVOCATION, "pass", detail)
 
 
+def _acknowledged(report, push_at):
+    """This Echo engaged with the pushed stream, not merely its path.
+
+    Activity that means the Echo still holds the stream counts immediately
+    (Alexa reports PAUSED around every voice request, so a mid-stream pause
+    is not a dead channel). Otherwise the Echo must have reported the stream
+    AFTER the push arrived — a retained pre-push report showing stopped or
+    finished playback proves nothing about this push.
+    """
+    if not report.get("current"):
+        return False
+    if report.get("activity") in ("PLAYING", "PAUSED", "BUFFERING"):
+        return True
+    observed = report.get("observedAt")
+    return bool(observed and observed >= push_at)
+
+
 def _v13_channel(store):
     """The pushed stream was acknowledged by its Echo — the MA->Amazon leg works.
 
@@ -993,6 +1010,20 @@ def _v13_channel(store):
     """
     from skill import echo_position
 
+    # Judge one push end to end: a push landing between the caller's store
+    # read and these report reads would pair one push's player and timestamp
+    # with another push's acknowledgement. shared_store bumps `version` in
+    # the same locked update as the snapshot the reports read, so a changed
+    # version means re-read with the newer store (bounded, then best effort).
+    for _ in range(3):
+        reports = echo_position.latest_reports()
+        latest = shared_store.get_ma() or {}
+        if not latest or latest.get("version") == store.get("version"):
+            break
+        store = latest
+    else:
+        reports = echo_position.latest_reports()
+
     timestamp = store.get("timestamp")
     if not timestamp:
         return _check(
@@ -1003,7 +1034,7 @@ def _v13_channel(store):
             "Assistant to exercise the channel.",
         )
     try:
-        age = max(0.0, time.time() - float(timestamp))
+        push_at = float(timestamp)
     except (TypeError, ValueError):
         return _check(
             "v13",
@@ -1011,14 +1042,24 @@ def _v13_channel(store):
             "unknown",
             "The stored push timestamp is unreadable.",
         )
+    age = max(0.0, time.time() - push_at)
     label = _age_label(age)
+    if age > FRESH_PUSH_SECONDS:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            f"The last push arrived {label}; too old to judge the channel "
+            "now. Press play in Music Assistant to test it live.",
+        )
     player = store.get("playerId")
-    reports = echo_position.latest_reports()
     if player:
-        acknowledged = bool(reports.get(player, {}).get("current"))
+        acknowledged = _acknowledged(reports.get(player) or {}, push_at)
     else:
         # The push named no player; any Echo reporting the stream proves the leg.
-        acknowledged = any(report.get("current") for report in reports.values())
+        acknowledged = any(
+            _acknowledged(report, push_at) for report in reports.values()
+        )
     if acknowledged:
         where = player or "An Alexa player"
         return _check(
@@ -1034,14 +1075,6 @@ def _v13_channel(store):
             _TITLE_CHANNEL,
             "pass",
             f"The last push arrived {label} — too early to expect the Echo's report.",
-        )
-    if age > FRESH_PUSH_SECONDS:
-        return _check(
-            "v13",
-            _TITLE_CHANNEL,
-            "unknown",
-            f"The last push arrived {label}; too old to judge the channel "
-            "now. Press play in Music Assistant to test it live.",
         )
     where = player or "its Alexa player"
     return _check(
