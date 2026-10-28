@@ -768,12 +768,17 @@ def test_v13_re_reads_the_store_when_a_push_lands_mid_read(monkeypatch):
     shared_store.set_ma(_store(playerId="Echo One"))
     stale = shared_store.get_ma()  # what run_checks captured before V3/V4 ran
 
-    # Trigger Echo Two push AND the report read inside the same stub
-    # This ensures the push happens AFTER the initial version check in _v13_channel
-    monkeypatch.setattr(
-        echo_position,
-        "latest_reports",
-        lambda: {
+    # Trigger Echo Two push from inside the report reader stub,
+    # after _v13_channel has performed its initial version check
+    pushed_echo_two = False
+
+    def reports_with_race():
+        nonlocal pushed_echo_two
+        if not pushed_echo_two:
+            # Push Echo Two after _v13_channel reads the initial store
+            shared_store.set_ma(_store(playerId="Echo Two"))
+            pushed_echo_two = True
+        return {
             "Echo Two": {
                 "playerId": "Echo Two",
                 "current": True,
@@ -781,11 +786,9 @@ def test_v13_re_reads_the_store_when_a_push_lands_mid_read(monkeypatch):
                 "observedAt": time.time(),
                 "ageSeconds": 0.0,
             }
-        },
-    )
+        }
 
-    # Push Echo Two while _v13_channel is running (inside latest_reports stub)
-    shared_store.set_ma(_store(playerId="Echo Two"))
+    monkeypatch.setattr(echo_position, "latest_reports", reports_with_race)
 
     check = verification._v13_channel(stale)
     # The re-read must adopt the newer push (its version moved) and correlate
