@@ -1070,9 +1070,7 @@ def _get_consistent_store_and_reports(store):
 
     # Exhausted retries — best effort with the latest store and reports.
     # If versions don't match, we can't reliably pair the store and reports.
-    latest = shared_store.get_ma() or {}
     reports = echo_position.latest_reports()
-    # Re-read the store after getting reports to check for races
     latest_after_reports = shared_store.get_ma() or {}
     if not latest_after_reports or latest_after_reports.get("version") != store.get(
         "version"
