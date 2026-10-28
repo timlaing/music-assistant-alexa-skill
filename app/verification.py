@@ -1058,8 +1058,6 @@ def _get_consistent_store_and_reports(store):
 
 def _determine_v13_result(store, reports, push_at, first_seen, label):
     """Determine the V13 check result based on acknowledgement status."""
-    from skill import echo_position
-
     age = max(0.0, time.time() - first_seen)
     player = store.get("playerId")
     if player:
