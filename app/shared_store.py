@@ -38,12 +38,13 @@ def set_ma(payload):
         # Use the same stream identity logic as _stream_key in echo_position.py:
         # compare path without extension, ignoring query parameters, to handle
         # cases where same stream has different query tokens or host differences.
-        from app.skill.echo_position import _stream_key
+        from skill import echo_position
 
         if (
             old_stream
             and new_stream
-            and _stream_key(old_stream) == _stream_key(new_stream)
+            and echo_position._stream_key(old_stream)
+            == echo_position._stream_key(new_stream)
             and old_first_seen is not None
         ):
             stream_first_seen = old_first_seen
