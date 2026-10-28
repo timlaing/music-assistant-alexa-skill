@@ -32,24 +32,38 @@ def set_ma(payload):
         old_snapshot = _player_snapshots.get(player) if player else None
 
         # Extract player-specific old stream for comparison
+        old_stream = None
         if old_snapshot:
-            old_snapshot.get("streamUrl")
+            old_stream = old_snapshot.get("streamUrl")
         elif _ma:
-            _ma.get("streamUrl")
+            old_stream = _ma.get("streamUrl")
 
         # Extract player-specific old first_seen for comparison
+        old_first_seen = None
         if old_snapshot:
-            old_snapshot.get("streamFirstSeen")
+            old_first_seen = old_snapshot.get("streamFirstSeen")
         elif _ma:
-            _ma.get("streamFirstSeen")
+            old_first_seen = _ma.get("streamFirstSeen")
 
         new_stream = payload.get("streamUrl")
         _ma = deepcopy(payload)
 
-        # Track when this stream URL was first pushed. For each new push, reset
-        # streamFirstSeen to handle long-running streams and metadata re-pushes
-        # correctly. A new playback time is tracked even when the same URL is reused.
-        stream_first_seen = time.time()
+        # Track when this stream URL was first pushed. Preserve stream_first_seen
+        # when the same player continues playing the same stream URL (re-push of
+        # same stream), and only reset when the playback identity changes.
+        from skill import echo_position
+
+        # Use player-specific old stream for comparison when available
+        if (
+            old_stream
+            and new_stream
+            and echo_position._stream_key(old_stream)
+            == echo_position._stream_key(new_stream)
+            and old_first_seen is not None
+        ):
+            stream_first_seen = old_first_seen
+        else:
+            stream_first_seen = time.time()
         _ma.update(
             playerId=player,
             version=_version,
