@@ -1122,9 +1122,9 @@ def _v13_channel(store):
             reason = "The stored push timestamp is unreadable."
         return _check("v13", _TITLE_CHANNEL, "unknown", reason)
 
-    age = max(0.0, time.time() - first_seen)
-    label = _age_label(age)
-    if age > FRESH_PUSH_SECONDS:
+    push_age = max(0.0, time.time() - push_at)
+    label = _age_label(push_age)
+    if push_age > FRESH_PUSH_SECONDS:
         return _check(
             "v13",
             _TITLE_CHANNEL,
