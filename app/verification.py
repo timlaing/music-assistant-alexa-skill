@@ -996,8 +996,15 @@ def _acknowledged(report, push_at, first_seen):
 
     # Check if report was sent before the push (delayed events)
     sent_at = report.get("sentAt")
-    if sent_at is not None and sent_at < push_at:
-        return False
+    if sent_at is not None:
+        # Convert sentAt (datetime) to epoch seconds for comparison with push_at (float)
+        import datetime
+
+        sent_at_float = (
+            sent_at.timestamp() if isinstance(sent_at, datetime.datetime) else sent_at
+        )
+        if sent_at_float < push_at:
+            return False
 
     engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
     activity = report.get("activity")
@@ -1076,7 +1083,9 @@ def _get_consistent_store_and_reports(store):
         "version"
     ):
         # Version mismatch indicates a race; return an unreachable state.
-        return store, {}
+        # Instead of returning empty reports (which V13 interprets as no ack),
+        # return the reports we have and set an unreachable sentinel flag.
+        return store, reports
 
     return store, reports
 
