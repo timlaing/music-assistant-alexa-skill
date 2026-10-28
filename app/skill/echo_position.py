@@ -109,5 +109,6 @@ def report(player):
         "offsetMs": latest["offsetMs"],
         "activity": latest["activity"],
         "observedAt": latest["observedAt"],
+        "sentAt": latest.get("sentAt"),
         "ageSeconds": max(0.0, time.time() - latest["observedAt"]),
     }

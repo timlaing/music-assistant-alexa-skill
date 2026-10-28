@@ -32,41 +32,24 @@ def set_ma(payload):
         old_snapshot = _player_snapshots.get(player) if player else None
 
         # Extract player-specific old stream for comparison
-        old_stream = None
         if old_snapshot:
-            old_stream = old_snapshot.get("streamUrl")
+            old_snapshot.get("streamUrl")
         elif _ma:
-            old_stream = _ma.get("streamUrl")
+            _ma.get("streamUrl")
 
         # Extract player-specific old first_seen for comparison
-        old_first_seen = None
         if old_snapshot:
-            old_first_seen = old_snapshot.get("streamFirstSeen")
+            old_snapshot.get("streamFirstSeen")
         elif _ma:
-            old_first_seen = _ma.get("streamFirstSeen")
+            _ma.get("streamFirstSeen")
 
         new_stream = payload.get("streamUrl")
         _ma = deepcopy(payload)
 
-        # Track when this stream URL was first pushed. Only reset if the URL changed
-        # for this specific player (using per-player snapshot when available).
-        # This prevents repeated pushes of the same stream from restarting the
-        # grace window and hiding a dead channel.
-        # Use the same stream identity logic as _stream_key in echo_position.py:
-        # compare path without extension, ignoring query parameters.
-        from skill import echo_position
-
-        # Use player-specific old stream for comparison when available
-        if (
-            old_stream
-            and new_stream
-            and echo_position._stream_key(old_stream)
-            == echo_position._stream_key(new_stream)
-            and old_first_seen is not None
-        ):
-            stream_first_seen = old_first_seen
-        else:
-            stream_first_seen = time.time()
+        # Track when this stream URL was first pushed. For each new push, reset
+        # streamFirstSeen to handle long-running streams and metadata re-pushes
+        # correctly. A new playback time is tracked even when the same URL is reused.
+        stream_first_seen = time.time()
         _ma.update(
             playerId=player,
             version=_version,
