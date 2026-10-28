@@ -1016,6 +1016,7 @@ def _acknowledged(report, push_at, first_seen):
 
     # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
     # sent after the push - a retained pre-push report proves nothing.
+    # These activities use the same check as engaged activities.
     if activity in ("STOPPED", "FINISHED"):
         return bool(observed and observed >= push_at)
 
