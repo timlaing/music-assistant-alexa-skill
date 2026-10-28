@@ -980,18 +980,25 @@ def _v12_invocation(state):
     return _check("v12", _TITLE_INVOCATION, "pass", detail)
 
 
-def _acknowledged(report, first_seen):
+def _acknowledged(report, push_at, first_seen):
     """This Echo engaged with the pushed stream, not merely its path.
 
-    Uses first_seen (the time the stream URL was first pushed) to handle
-    repeated pushes of the same stream. An engaged activity (PLAYING/PAUSED/
-    BUFFERING/BUFFER_UNDERRUN) must have been observed after the first push
-    AND still be fresh (within FRESH window) to count immediately. A STOPPED
-    or FINISHED report never counts as an acknowledgement — we need evidence
-    of the push leading to playback.
+    Uses push_at (the time of the latest push) for time-based comparisons with
+    Alexa's sentAt timestamp, and first_seen for the grace window. An engaged
+    activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) must have been sent
+    after the push AND still be fresh (within FRESH window) to count
+    immediately. A STOPPED or FINISHED report never counts as an acknowledgement
+    unless it proves the push led to playback.
     """
     if not report.get("current"):
         return False
+
+    sent_at = report.get("sentAt")
+    if sent_at:
+        # A pre-push activity report sent before the push should not count.
+        if sent_at < push_at:
+            return False
+
     engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
     activity = report.get("activity")
     observed = report.get("observedAt")
@@ -1001,19 +1008,19 @@ def _acknowledged(report, first_seen):
     if observed is None and age_seconds is not None:
         observed = time.time() - age_seconds
 
-    # Engaged activity: must be observed after the first push AND still be fresh.
+    # Engaged activity: must be sent after the push AND still be fresh.
     if activity in engaged_activities:
         return bool(
-            observed and observed >= first_seen and age_seconds <= FRESH_PUSH_SECONDS
+            observed and observed >= push_at and age_seconds <= FRESH_PUSH_SECONDS
         )
 
     # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
-    # observed after the push - a retained pre-push report proves nothing.
+    # sent after the push - a retained pre-push report proves nothing.
     if activity in ("STOPPED", "FINISHED"):
-        return bool(observed and observed >= first_seen)
+        return bool(observed and observed >= push_at)
 
-    # Other activity (or none): must be observed after the first push.
-    return bool(observed and observed >= first_seen)
+    # Other activity does not prove the Echo engaged with the stream.
+    return False
 
 
 def _parse_stream_timestamp(store):
@@ -1053,9 +1060,16 @@ def _get_consistent_store_and_reports(store):
         if not latest or latest.get("version") == store.get("version"):
             return store, reports
         store = latest
+
     # Exhausted retries — best effort with the latest store and reports.
-    # A race is possible but retry minimizes it.
-    return shared_store.get_ma() or {}, echo_position.latest_reports()
+    # If versions don't match, we can't reliably pair the store and reports.
+    latest = shared_store.get_ma() or {}
+    reports = echo_position.latest_reports()
+    if not latest or latest.get("version") != store.get("version"):
+        # Version mismatch indicates a race; return an unreachable state.
+        return store, {}
+
+    return store, reports
 
 
 def _determine_v13_result(store, reports, push_at, first_seen, label):
@@ -1063,11 +1077,11 @@ def _determine_v13_result(store, reports, push_at, first_seen, label):
     age = max(0.0, time.time() - first_seen)
     player = store.get("playerId")
     if player:
-        acknowledged = _acknowledged(reports.get(player) or {}, first_seen)
+        acknowledged = _acknowledged(reports.get(player) or {}, push_at, first_seen)
     else:
         # The push named no player; any Echo reporting the stream proves the leg.
         acknowledged = any(
-            _acknowledged(report, first_seen) for report in reports.values()
+            _acknowledged(report, push_at, first_seen) for report in reports.values()
         )
     if acknowledged:
         where = player or "An Alexa player"

@@ -82,10 +82,16 @@ def latest_reports():
     return {player: report(player) for player in players}
 
 
-def _stream_key(url):
+def _stream_key(url, include_query=False):
     # The Echo gets the pushed URL rewritten to MP3; compare the path without extension.
-    path = unquote(urlsplit(url or "").path)
-    return path.rsplit(".", 1)[0] if path else ""
+    # When include_query is True, also compare the query string to handle cases where
+    # the same path has different query tokens (e.g., auth tokens, stream IDs).
+    parsed = urlsplit(url or "")
+    path = unquote(parsed.path)
+    base = path.rsplit(".", 1)[0] if path else ""
+    if include_query:
+        return f"{base}?{parsed.query}" if parsed.query else base
+    return base
 
 
 def report(player):
@@ -96,9 +102,10 @@ def report(player):
         return {"playerId": player, "current": False}
     snapshot = shared_store.get_player_snapshot(player) or {}
     pushed = _stream_key(snapshot.get("streamUrl"))
+    token_key = _stream_key(latest["token"], include_query=True)
     return {
         "playerId": player,
-        "current": bool(pushed) and _stream_key(latest["token"]) == pushed,
+        "current": bool(pushed) and token_key == pushed,
         "offsetMs": latest["offsetMs"],
         "activity": latest["activity"],
         "observedAt": latest["observedAt"],
