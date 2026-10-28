@@ -980,6 +980,64 @@ def _v12_invocation(state):
     return _check("v12", _TITLE_INVOCATION, "pass", detail)
 
 
+def _is_report_current(report):
+    """Check if report is for the current stream."""
+    return bool(report.get("current"))
+
+
+def _is_report_before_push(report, push_at):
+    """Check if report was sent before the push (delayed events)."""
+    sent_at = report.get("sentAt")
+    if sent_at is None:
+        return False
+
+    # Convert sentAt (datetime) to epoch seconds for comparison with push_at (float)
+    import datetime
+
+    sent_at_float = (
+        sent_at.timestamp() if isinstance(sent_at, datetime.datetime) else sent_at
+    )
+    return sent_at_float < push_at
+
+
+def _check_engaged_report(report, push_at):
+    """Check if an engaged activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) acknowledges the push."""
+    engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
+    activity = report.get("activity")
+
+    if activity not in engaged_activities:
+        return False
+
+    observed = report.get("observedAt")
+    age_seconds = report.get("ageSeconds", 0.0)
+
+    # If observedAt is missing but ageSeconds is provided, compute observed.
+    if observed is None and age_seconds is not None:
+        observed = time.time() - age_seconds
+
+    # Must be observed after the push
+    if observed is None or observed < push_at:
+        return False
+
+    # Fresh and engaged - count it
+    if age_seconds <= FRESH_PUSH_SECONDS:
+        return True
+
+    # Age exceeded - check if report is still current (proves stream continues)
+    return report.get("current")
+
+
+def _check_stopped_report(report, push_at):
+    """Check if STOPPED/FINISHED report acknowledges the push."""
+    activity = report.get("activity")
+
+    if activity not in ("STOPPED", "FINISHED"):
+        return False
+
+    observed = report.get("observedAt")
+    return bool(observed is not None and observed >= push_at)
+
+
 def _acknowledged(report, push_at, first_seen):
     """This Echo engaged with the pushed stream, not merely its path.
 
@@ -991,47 +1049,20 @@ def _acknowledged(report, push_at, first_seen):
     A STOPPED or FINISHED report counts only when observed after the push.
     """
     # A current report must be present to acknowledge the stream
-    if not report.get("current"):
+    if not _is_report_current(report):
         return False
 
     # Check if report was sent before the push (delayed events)
-    sent_at = report.get("sentAt")
-    if sent_at is not None:
-        # Convert sentAt (datetime) to epoch seconds for comparison with push_at (float)
-        import datetime
-
-        sent_at_float = (
-            sent_at.timestamp() if isinstance(sent_at, datetime.datetime) else sent_at
-        )
-        if sent_at_float < push_at:
-            return False
-
-    engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
-    activity = report.get("activity")
-    observed = report.get("observedAt")
-    age_seconds = report.get("ageSeconds", 0.0)
-
-    # If observedAt is missing but ageSeconds is provided, compute observed.
-    if observed is None and age_seconds is not None:
-        observed = time.time() - age_seconds
-
-    # Engaged activity: must be sent after the push AND still be fresh,
-    # OR have a matching stream token (which proves it's still playing).
-    if activity in engaged_activities:
-        # For engaged activities, we have special handling for long-running streams
-        # that may not have sent recent updates
-        if observed is not None and observed >= push_at:
-            # Fresh and engaged - count it
-            if age_seconds <= FRESH_PUSH_SECONDS:
-                return True
-            # Age exceeded - check if report is still current (proves stream continues)
-            return report.get("current")
+    if _is_report_before_push(report, push_at):
         return False
 
-    # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
-    # sent after the push - a retained pre-push report proves nothing.
-    if activity in ("STOPPED", "FINISHED"):
-        return bool(observed is not None and observed >= push_at)
+    # Check engaged activity
+    if _check_engaged_report(report, push_at):
+        return True
+
+    # Check stopped/finished activity
+    if _check_stopped_report(report, push_at):
+        return True
 
     # Other activity does not prove the Echo engaged with the stream.
     return False
