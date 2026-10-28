@@ -983,17 +983,34 @@ def _v12_invocation(state):
 def _acknowledged(report, push_at):
     """This Echo engaged with the pushed stream, not merely its path.
 
-    Activity that means the Echo still holds the stream counts immediately
-    (Alexa reports PAUSED around every voice request, so a mid-stream pause
-    is not a dead channel). Otherwise the Echo must have reported the stream
-    AFTER the push arrived — a retained pre-push report showing stopped or
-    finished playback proves nothing about this push.
+    An engaged activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) must have
+    been observed after the push AND still be fresh (within FRESH window) to
+    count immediately. A STOPPED or FINISHED report never counts as an
+    acknowledgement — we need evidence of the push leading to playback.
     """
     if not report.get("current"):
         return False
-    if report.get("activity") in ("PLAYING", "PAUSED", "BUFFERING"):
-        return True
+    engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
+    activity = report.get("activity")
     observed = report.get("observedAt")
+    age_seconds = report.get("ageSeconds", 0.0)
+
+    # If observedAt is missing but ageSeconds is provided, compute observed.
+    if observed is None and age_seconds is not None:
+        observed = time.time() - age_seconds
+
+    # Engaged activity: must be observed after the push AND still be fresh.
+    if activity in engaged_activities:
+        return bool(
+            observed and observed >= push_at and age_seconds <= FRESH_PUSH_SECONDS
+        )
+
+    # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
+    # observed after the push - a retained pre-push report proves nothing.
+    if activity in ("STOPPED", "FINISHED"):
+        return bool(observed and observed >= push_at)
+
+    # Other activity (or none): must be observed after the push.
     return bool(observed and observed >= push_at)
 
 
@@ -1022,7 +1039,10 @@ def _v13_channel(store):
             break
         store = latest
     else:
+        # Exhausted retries — best effort with the latest store and reports.
+        # A race is possible but retry minimizes it.
         reports = echo_position.latest_reports()
+        store = shared_store.get_ma() or {}
 
     timestamp = store.get("timestamp")
     if not timestamp:
@@ -1042,7 +1062,12 @@ def _v13_channel(store):
             "unknown",
             "The stored push timestamp is unreadable.",
         )
-    age = max(0.0, time.time() - push_at)
+    # Use the first-seen time for the grace window, not latest push, to handle
+    # repeated pushes of the same stream (S3).
+    first_seen = store.get("streamFirstSeen")
+    if first_seen is None:
+        first_seen = push_at
+    age = max(0.0, time.time() - first_seen)
     label = _age_label(age)
     if age > FRESH_PUSH_SECONDS:
         return _check(

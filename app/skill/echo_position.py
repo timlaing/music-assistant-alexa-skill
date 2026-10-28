@@ -20,6 +20,10 @@ EVENT_ACTIVITY = {
     "AudioPlayer.PlaybackStopped": "STOPPED",
     "AudioPlayer.PlaybackFinished": "FINISHED",
 }
+# Alexa's player activity values that denote the Echo is still holding the stream.
+# BUFFER_UNDERRUN means there's a temporary buffer underrun but the Echo still
+# holds the stream and will resume.
+_ENGAGED = {"PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN"}
 
 _lock = threading.Lock()
 _reports = {}

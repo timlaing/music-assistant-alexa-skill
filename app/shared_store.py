@@ -26,11 +26,24 @@ def set_ma(payload):
     global _ma, _version
     with _lock:
         _version += 1
+        old_stream = _ma.get("streamUrl") if _ma else None
+        new_stream = payload.get("streamUrl")
         _ma = deepcopy(payload)
         # Newer MA versions name the player; older ones only in the stream URL.
-        player = payload.get("playerId") or player_from_stream(payload.get("streamUrl"))
-        _ma.update(playerId=player, version=_version, timestamp=time.time())
-        if player and payload.get("streamUrl"):
+        player = payload.get("playerId") or player_from_stream(new_stream)
+        # Track when this stream URL was first pushed. Only reset if the URL changed.
+        # This prevents repeated pushes of the same stream from restarting the
+        # grace window and hiding a dead channel.
+        stream_first_seen = _ma.get("streamFirstSeen")
+        if old_stream != new_stream:
+            stream_first_seen = time.time()
+        _ma.update(
+            playerId=player,
+            version=_version,
+            timestamp=time.time(),
+            streamFirstSeen=stream_first_seen,
+        )
+        if player and new_stream:
             _player_snapshots[player] = deepcopy(_ma)
         elif not player:
             # The push may replace any player's stream; serve it to all, as upstream
