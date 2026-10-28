@@ -28,11 +28,17 @@
         >Public HTTPS address Amazon calls for this skill. Leave blank to use the public audio URL’s origin followed by /ma-alexa-skill/. Override it when your skill is served from a different public host than your streams — the callback URL on the next step follows whatever is saved here.</small
       ></label
     >
-    <details class="ma-detail">
-      <summary>Advanced connection settings</summary>
+    <section class="ma-formsection" aria-labelledby="ma-control-heading">
+      <h3 id="ma-control-heading">Music Assistant control API</h3>
+      <p class="ma-muted ma-small">
+        Optional, and not needed for basic playback — but without them Music Assistant can’t report what it’s
+        playing, and several status checks stay <em>Unknown</em>. Set them to unlock the Now playing and Alexa
+        players checks, the player picker on Devices, voice pause/resume/stop, and recovery when a one-shot
+        stream URL has expired.
+      </p>
       <label class="ma-field"
         >Music Assistant API URL<input id="ma_api_url" type="url" placeholder="http://music-assistant:8095" /><small
-          >Optional local connection for mapped voice controls.</small
+          >The local address of your Music Assistant server, normally port 8095.</small
         ></label
       >
       <label class="ma-field"
@@ -40,6 +46,9 @@
       ></label
       >
       <label class="ma-check"><input id="clear_ma_api_token" type="checkbox" /> Remove saved Music Assistant token</label>
+    </section>
+    <details class="ma-detail">
+      <summary>Advanced connection settings</summary>
       <label class="ma-check"><input id="skip_url_validation" type="checkbox" /> Skip stream URL validation</label>
       <p>Leave validation enabled unless local routing prevents the add-on checking a stream your Echo can reach.</p>
     </details>

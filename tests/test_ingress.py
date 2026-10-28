@@ -51,6 +51,28 @@ def test_ingress_pages_no_app_auth_and_urls_keep_prefix(client, monkeypatch):
     )  # no configured standalone API credentials
 
 
+def test_ma_control_fields_sit_outside_advanced_settings(client, monkeypatch):
+    """The Music Assistant control fields must stay visible, not collapsed.
+
+    Issue #87: with them hidden behind "Advanced connection settings", users
+    hit Unknown status checks and an empty player picker without knowing a
+    setting was missing. This pins them to the main form.
+    """
+    monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
+    page = gateway(client, "/setup/step/1").text
+
+    fields_start = page.index('id="ma_api_url"')
+    token_index = page.index('id="ma_api_token"')
+    advanced_start = page.index('<details class="ma-detail">')
+    advanced_end = page.index("</details>", advanced_start)
+
+    assert fields_start < advanced_start, "API URL must not be inside Advanced"
+    assert token_index < advanced_start, "access token must not be inside Advanced"
+    # The genuinely-advanced toggle stays inside the disclosure.
+    toggle_index = page.index('id="skip_url_validation"')
+    assert advanced_start < toggle_index < advanced_end
+
+
 def test_spoofed_ingress_headers_and_wrong_port_cannot_bypass_auth(client, monkeypatch):
     monkeypatch.setenv("HA_INGRESS_ENABLED", "true")
     for source, port in [("127.0.0.1", "8099"), ("172.30.32.2", "5000")]:
