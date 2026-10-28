@@ -1034,59 +1034,33 @@ def _parse_stream_timestamp(store):
     return push_at, first_seen
 
 
-def _v13_channel(store):
-    """The pushed stream was acknowledged by its Echo — the MA->Amazon leg works.
+def _get_consistent_store_and_reports(store):
+    """Get store and reports with retry on version mismatch.
 
-    MA's play_media pushes the stream URL here FIRST, then asks Amazon to
-    invoke the skill (issue #71). With a dead MA->Amazon session the push
-    still lands but no Echo ever reports the pushed stream as current, while
-    every other check stays green (issue #86). A metadata re-push of the SAME
-    stream keeps the Echo's report current, so the current-stream flag — not
-    recency — is what is compared; only the pushed player's report counts, so
-    a second Echo happily playing cannot mask a dead channel.
+    A push landing between the caller's store read and these report reads would
+    pair one push's player and timestamp with another push's acknowledgement.
+    shared_store bumps `version` in the same locked update as the snapshot the
+    reports read, so a changed version means re-read with the newer store
+    (bounded, then best effort).
     """
     from skill import echo_position
 
-    # Judge one push end to end: a push landing between the caller's store
-    # read and these report reads would pair one push's player and timestamp
-    # with another push's acknowledgement. shared_store bumps `version` in
-    # the same locked update as the snapshot the reports read, so a changed
-    # version means re-read with the newer store (bounded, then best effort).
     for _ in range(3):
         reports = echo_position.latest_reports()
         latest = shared_store.get_ma() or {}
         if not latest or latest.get("version") == store.get("version"):
-            break
+            return store, reports
         store = latest
-    else:
-        # Exhausted retries — best effort with the latest store and reports.
-        # A race is possible but retry minimizes it.
-        reports = echo_position.latest_reports()
-        store = shared_store.get_ma() or {}
+    # Exhausted retries — best effort with the latest store and reports.
+    # A race is possible but retry minimizes it.
+    return shared_store.get_ma() or {}, echo_position.latest_reports()
 
-    push_at, first_seen = _parse_stream_timestamp(store)
-    if push_at is None:
-        # Determine if it's a missing timestamp or unreadable.
-        if not store.get("timestamp"):
-            reason = (
-                "No stream push has been stored yet — press play in Music "
-                "Assistant to exercise the channel."
-            )
-        else:
-            reason = "The stored push timestamp is unreadable."
-        return _check("v13", _TITLE_CHANNEL, "unknown", reason)
-    # Age is calculated from first_seen to handle repeated pushes of the same
-    # stream within the freshness window (S3).
+
+def _determine_v13_result(store, reports, push_at, first_seen, label):
+    """Determine the V13 check result based on acknowledgement status."""
+    from skill import echo_position
+
     age = max(0.0, time.time() - first_seen)
-    label = _age_label(age)
-    if age > FRESH_PUSH_SECONDS:
-        return _check(
-            "v13",
-            _TITLE_CHANNEL,
-            "unknown",
-            f"The last push arrived {label}; too old to judge the channel "
-            "now. Press play in Music Assistant to test it live.",
-        )
     player = store.get("playerId")
     if player:
         acknowledged = _acknowledged(reports.get(player) or {}, push_at)
@@ -1121,6 +1095,45 @@ def _v13_channel(store):
         "Alexa provider with Amazon (separate from this add-on's 'Connect to "
         "Amazon' step). Every other check can stay green through this fault.",
     )
+
+
+def _v13_channel(store):
+    """The pushed stream was acknowledged by its Echo — the MA->Amazon leg works.
+
+    MA's play_media pushes the stream URL here FIRST, then asks Amazon to
+    invoke the skill (issue #71). With a dead MA->Amazon session the push
+    still lands but no Echo ever reports the pushed stream as current, while
+    every other check stays green (issue #86). A metadata re-push of the SAME
+    stream keeps the Echo's report current, so the current-stream flag — not
+    recency — is what is compared; only the pushed player's report counts, so
+    a second Echo happily playing cannot mask a dead channel.
+    """
+    store, reports = _get_consistent_store_and_reports(store)
+
+    push_at, first_seen = _parse_stream_timestamp(store)
+    if push_at is None:
+        # Determine if it's a missing timestamp or unreadable.
+        if not store.get("timestamp"):
+            reason = (
+                "No stream push has been stored yet — press play in Music "
+                "Assistant to exercise the channel."
+            )
+        else:
+            reason = "The stored push timestamp is unreadable."
+        return _check("v13", _TITLE_CHANNEL, "unknown", reason)
+
+    age = max(0.0, time.time() - first_seen)
+    label = _age_label(age)
+    if age > FRESH_PUSH_SECONDS:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            f"The last push arrived {label}; too old to judge the channel "
+            "now. Press play in Music Assistant to test it live.",
+        )
+
+    return _determine_v13_result(store, reports, push_at, first_seen, label)
 
 
 def _summary(checks):
