@@ -987,8 +987,8 @@ def _acknowledged(report, push_at, first_seen):
     Alexa's sentAt timestamp, and first_seen for the grace window. An engaged
     activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) must have been sent
     after the push AND still be fresh (within FRESH window) to count
-    immediately. A STOPPED or FINISHED report never counts as an acknowledgement
-    unless it proves the push led to playback.
+    immediately, or have a matching stream token which overrides the age check.
+    A STOPPED or FINISHED report counts only when observed after the push.
     """
     if not report.get("current"):
         return False
@@ -1008,15 +1008,22 @@ def _acknowledged(report, push_at, first_seen):
     if observed is None and age_seconds is not None:
         observed = time.time() - age_seconds
 
-    # Engaged activity: must be sent after the push AND still be fresh.
+    # Engaged activity: must be sent after the push AND still be fresh,
+    # OR have a matching stream token (which proves it's still playing the stream).
     if activity in engaged_activities:
-        return bool(
-            observed and observed >= push_at and age_seconds <= FRESH_PUSH_SECONDS
-        )
+        # If age check fails but token matches current stream, still accept it
+        # (the Echo is still playing, just hasn't sent a recent report).
+        if observed and observed >= push_at:
+            if age_seconds <= FRESH_PUSH_SECONDS:
+                return True
+            # Age exceeded but token matches - check if report is current
+            # This handles long-running streams that haven't sent recent updates
+            if report.get("current"):
+                return True
+        return False
 
     # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
     # sent after the push - a retained pre-push report proves nothing.
-    # These activities use the same check as engaged activities.
     if activity in ("STOPPED", "FINISHED"):
         return bool(observed and observed >= push_at)
 

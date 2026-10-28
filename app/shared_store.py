@@ -35,8 +35,17 @@ def set_ma(payload):
         # Track when this stream URL was first pushed. Only reset if the URL changed.
         # This prevents repeated pushes of the same stream from restarting the
         # grace window and hiding a dead channel.
-        # Carry forward the previous first_seen if URL unchanged and value exists.
-        if old_stream == new_stream and old_first_seen is not None:
+        # Use the same stream identity logic as _stream_key in echo_position.py:
+        # compare path without extension, ignoring query parameters, to handle
+        # cases where same stream has different query tokens or host differences.
+        from app.skill.echo_position import _stream_key
+
+        if (
+            old_stream
+            and new_stream
+            and _stream_key(old_stream) == _stream_key(new_stream)
+            and old_first_seen is not None
+        ):
             stream_first_seen = old_first_seen
         else:
             stream_first_seen = time.time()
