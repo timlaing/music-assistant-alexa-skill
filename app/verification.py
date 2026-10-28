@@ -1014,6 +1014,26 @@ def _acknowledged(report, push_at):
     return bool(observed and observed >= push_at)
 
 
+def _parse_stream_timestamp(store):
+    """Extract and validate the push timestamp from the store.
+
+    Returns (push_at, first_seen) as floats, or (None, None) on error.
+    """
+    timestamp = store.get("timestamp")
+    if not timestamp:
+        return None, None
+    try:
+        push_at = float(timestamp)
+    except (TypeError, ValueError):
+        return None, None
+    # Use the first-seen time for the grace window, not latest push, to handle
+    # repeated pushes of the same stream (S3).
+    first_seen = store.get("streamFirstSeen")
+    if first_seen is None:
+        first_seen = push_at
+    return push_at, first_seen
+
+
 def _v13_channel(store):
     """The pushed stream was acknowledged by its Echo — the MA->Amazon leg works.
 
@@ -1044,29 +1064,19 @@ def _v13_channel(store):
         reports = echo_position.latest_reports()
         store = shared_store.get_ma() or {}
 
-    timestamp = store.get("timestamp")
-    if not timestamp:
-        return _check(
-            "v13",
-            _TITLE_CHANNEL,
-            "unknown",
-            "No stream push has been stored yet — press play in Music "
-            "Assistant to exercise the channel.",
-        )
-    try:
-        push_at = float(timestamp)
-    except (TypeError, ValueError):
-        return _check(
-            "v13",
-            _TITLE_CHANNEL,
-            "unknown",
-            "The stored push timestamp is unreadable.",
-        )
-    # Use the first-seen time for the grace window, not latest push, to handle
-    # repeated pushes of the same stream (S3).
-    first_seen = store.get("streamFirstSeen")
-    if first_seen is None:
-        first_seen = push_at
+    push_at, first_seen = _parse_stream_timestamp(store)
+    if push_at is None:
+        # Determine if it's a missing timestamp or unreadable.
+        if not store.get("timestamp"):
+            reason = (
+                "No stream push has been stored yet — press play in Music "
+                "Assistant to exercise the channel."
+            )
+        else:
+            reason = "The stored push timestamp is unreadable."
+        return _check("v13", _TITLE_CHANNEL, "unknown", reason)
+    # Age is calculated from first_seen to handle repeated pushes of the same
+    # stream within the freshness window (S3).
     age = max(0.0, time.time() - first_seen)
     label = _age_label(age)
     if age > FRESH_PUSH_SECONDS:
