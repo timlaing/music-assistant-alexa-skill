@@ -1,4 +1,4 @@
-"""Tests for the read-only Music Assistant channel verification (V1–V12)."""
+"""Tests for the read-only Music Assistant channel verification (V1–V13)."""
 
 import asyncio
 import json
@@ -6,6 +6,7 @@ import time
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
+import pytest
 import shared_store
 import verification
 from endpoints import status
@@ -26,7 +27,17 @@ CHECK_IDS = [
     "v10",
     "v11",
     "v12",
+    "v13",
 ]
+
+
+@pytest.fixture(autouse=True)
+def no_echo_reports(monkeypatch):
+    """V13 reads the Echo's playback reports; keep them empty by default."""
+    from skill import echo_position
+
+    monkeypatch.setattr(echo_position, "_reports", {})
+    monkeypatch.setattr(echo_position, "_playing_devices", {})
 
 
 def _channel(**overrides):
@@ -619,6 +630,101 @@ def test_v12_invocation_states(monkeypatch):
     assert verification._v12_invocation(None)["state"] == "unknown"
 
 
+# --- V13: MA -> Amazon channel ---------------------------------------------
+
+
+def test_v13_channel_states(monkeypatch):
+    from skill import echo_position
+
+    def set_reports(payload):
+        monkeypatch.setattr(echo_position, "latest_reports", lambda: payload)
+
+    # Nothing pushed yet: there is no channel to correlate.
+    check = verification._v13_channel({})
+    assert check["state"] == "unknown"
+    assert "No stream push" in check["detail"]
+
+    # Push inside the grace window: the Echo's report may still be landing,
+    # so it must not warn yet.
+    set_reports({})
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 10)
+    )
+    assert check["state"] == "pass"
+    assert "too early" in check["detail"]
+
+    # Fresh push (past grace) its player never acknowledged: MA's Amazon
+    # session is dead — the exact issue #86/#71 failure where every other
+    # check stays green.
+    set_reports({})
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 120)
+    )
+    assert check["state"] == "warning"
+    assert "Amazon session looks dead" in check["detail"]
+    assert "re-authenticate" in check["detail"].lower()
+
+    # The pushed player acknowledged the stream: the channel works.
+    set_reports(
+        {
+            "Echo Dot 1": {
+                "playerId": "Echo Dot 1",
+                "current": True,
+                "activity": "PLAYING",
+                "ageSeconds": 2.0,
+            }
+        }
+    )
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 120)
+    )
+    assert check["state"] == "pass"
+    assert "playing the stream" in check["detail"]
+
+    # A second Echo happily playing must NOT mask the dead channel: only the
+    # pushed player's report counts.
+    set_reports(
+        {
+            "Echo Other": {
+                "playerId": "Echo Other",
+                "current": True,
+                "activity": "PLAYING",
+                "ageSeconds": 2.0,
+            }
+        }
+    )
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 120)
+    )
+    assert check["state"] == "warning"
+
+    # A push that named no player is proven by ANY Echo acknowledging it.
+    set_reports(
+        {
+            "Echo Dot 1": {
+                "playerId": "Echo Dot 1",
+                "current": True,
+                "activity": "PLAYING",
+                "ageSeconds": 2.0,
+            }
+        }
+    )
+    check = verification._v13_channel(_store(timestamp=time.time() - 120))
+    assert check["state"] == "pass"
+
+    # A stale push is history, not a live signal (V5 reports its age).
+    set_reports({})
+    check = verification._v13_channel(
+        _store(playerId="Echo Dot 1", timestamp=time.time() - 7200)
+    )
+    assert check["state"] == "unknown"
+    assert "too old" in check["detail"]
+
+    # An unreadable timestamp cannot be judged.
+    check = verification._v13_channel(_store(timestamp="not-a-number"))
+    assert check["state"] == "unknown"
+
+
 # --- composition -----------------------------------------------------------
 
 
@@ -692,10 +798,11 @@ def test_run_checks_composes_all_checks(monkeypatch):
         "v10",
         "v11",
         "v12",
+        "v13",
     ]
     assert all(c["state"] in ("pass", "info") for c in result["checks"])
     assert result["summary"]["kind"] == "good"
-    assert result["summary"]["counts"]["pass"] == 12
+    assert result["summary"]["counts"]["pass"] == 13
     assert result["summary"]["counts"]["info"] == 1
     assert result["generated_at"]
     # F: the bundle carries the player inventory (states + availability).

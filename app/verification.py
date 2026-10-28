@@ -30,6 +30,11 @@ against the skill's own /ma/latest-url endpoint:
   V12  invocation name      the invocation name the skill deploys is the name
                             Music Assistant addresses in its start command and
                             in the control-command prefix (issue #71 class)
+  V13  MA to Amazon channel correlates the stream push with the Echo's own
+                            playback reports: a fresh push that its player
+                            never reports as current means MA's Amazon
+                            session is dead (issue #86 class — every other
+                            check stays green)
 
 Failures become check states, never exceptions.
 """
@@ -50,6 +55,10 @@ FETCH_TIMEOUT_SECONDS = 5
 MA_TIMEOUT_SECONDS = 8
 FRESH_PUSH_SECONDS = 3600
 FRESH_INTENT_SECONDS = 86400
+# MA's play sequence is push URL -> ask Amazon -> Alexa invokes the skill ->
+# the Echo reports AudioPlayer.PlaybackStarted. The last leg takes seconds;
+# a shorter window would warn on a playback that is still starting.
+CHANNEL_GRACE_SECONDS = 60
 
 _PILL = {
     "pass": ("Passed", "success"),
@@ -81,6 +90,7 @@ _TITLE_PLAYERS = "Alexa players"
 _TITLE_AMAZON = "Amazon account link"
 _TITLE_REACH = "Public reachability"
 _TITLE_INVOCATION = "Invocation name"
+_TITLE_CHANNEL = "MA to Amazon channel"
 
 # Music Assistant's start commands (ALEXA_LANGUAGE_COMMANDS in
 # music-assistant/server music_assistant/providers/alexa/__init__.py;
@@ -970,6 +980,81 @@ def _v12_invocation(state):
     return _check("v12", _TITLE_INVOCATION, "pass", detail)
 
 
+def _v13_channel(store):
+    """The pushed stream was acknowledged by its Echo — the MA->Amazon leg works.
+
+    MA's play_media pushes the stream URL here FIRST, then asks Amazon to
+    invoke the skill (issue #71). With a dead MA->Amazon session the push
+    still lands but no Echo ever reports the pushed stream as current, while
+    every other check stays green (issue #86). A metadata re-push of the SAME
+    stream keeps the Echo's report current, so the current-stream flag — not
+    recency — is what is compared; only the pushed player's report counts, so
+    a second Echo happily playing cannot mask a dead channel.
+    """
+    from skill import echo_position
+
+    timestamp = store.get("timestamp")
+    if not timestamp:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            "No stream push has been stored yet — press play in Music "
+            "Assistant to exercise the channel.",
+        )
+    try:
+        age = max(0.0, time.time() - float(timestamp))
+    except (TypeError, ValueError):
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            "The stored push timestamp is unreadable.",
+        )
+    label = _age_label(age)
+    player = store.get("playerId")
+    reports = echo_position.latest_reports()
+    if player:
+        acknowledged = bool(reports.get(player, {}).get("current"))
+    else:
+        # The push named no player; any Echo reporting the stream proves the leg.
+        acknowledged = any(report.get("current") for report in reports.values())
+    if acknowledged:
+        where = player or "An Alexa player"
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "pass",
+            f"{where} is playing the stream pushed {label}.",
+        )
+    if age <= CHANNEL_GRACE_SECONDS:
+        # MA pushes, then asks Amazon; the Echo's report takes seconds to land.
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "pass",
+            f"The last push arrived {label} — too early to expect the Echo's report.",
+        )
+    if age > FRESH_PUSH_SECONDS:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            f"The last push arrived {label}; too old to judge the channel "
+            "now. Press play in Music Assistant to test it live.",
+        )
+    where = player or "its Alexa player"
+    return _check(
+        "v13",
+        _TITLE_CHANNEL,
+        "warning",
+        f"The stream pushed {label} has not been acknowledged by {where}. "
+        "Music Assistant's Amazon session looks dead — re-authenticate its "
+        "Alexa provider with Amazon (separate from this add-on's 'Connect to "
+        "Amazon' step). Every other check can stay green through this fault.",
+    )
+
+
 def _summary(checks):
     counts = {"pass": 0, "fail": 0, "warning": 0, "unknown": 0, "info": 0}
     for check in checks:
@@ -986,7 +1071,7 @@ def _summary(checks):
 
 
 def run_checks():
-    """Run V1–V12. Never raises — every failure becomes a check state."""
+    """Run V1–V13. Never raises — every failure becomes a check state."""
     try:
         return _run_checks()
     except Exception as exc:  # pragma: no cover - defensive
@@ -1055,6 +1140,7 @@ def _run_checks():
         _v10_alexa_link(state),
         _v11_reachability(_reachability_snapshot()),
         _v12_invocation(state),
+        _v13_channel(store),
     ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

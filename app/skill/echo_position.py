@@ -71,6 +71,13 @@ def record(envelope):
         }
 
 
+def latest_reports():
+    """Latest report per player with its current-stream flag (read-only)."""
+    with _lock:
+        players = list(_reports)
+    return {player: report(player) for player in players}
+
+
 def _stream_key(url):
     # The Echo gets the pushed URL rewritten to MP3; compare the path without extension.
     path = unquote(urlsplit(url or "").path)
