@@ -980,13 +980,15 @@ def _v12_invocation(state):
     return _check("v12", _TITLE_INVOCATION, "pass", detail)
 
 
-def _acknowledged(report, push_at):
+def _acknowledged(report, first_seen):
     """This Echo engaged with the pushed stream, not merely its path.
 
-    An engaged activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) must have
-    been observed after the push AND still be fresh (within FRESH window) to
-    count immediately. A STOPPED or FINISHED report never counts as an
-    acknowledgement — we need evidence of the push leading to playback.
+    Uses first_seen (the time the stream URL was first pushed) to handle
+    repeated pushes of the same stream. An engaged activity (PLAYING/PAUSED/
+    BUFFERING/BUFFER_UNDERRUN) must have been observed after the first push
+    AND still be fresh (within FRESH window) to count immediately. A STOPPED
+    or FINISHED report never counts as an acknowledgement — we need evidence
+    of the push leading to playback.
     """
     if not report.get("current"):
         return False
@@ -999,19 +1001,19 @@ def _acknowledged(report, push_at):
     if observed is None and age_seconds is not None:
         observed = time.time() - age_seconds
 
-    # Engaged activity: must be observed after the push AND still be fresh.
+    # Engaged activity: must be observed after the first push AND still be fresh.
     if activity in engaged_activities:
         return bool(
-            observed and observed >= push_at and age_seconds <= FRESH_PUSH_SECONDS
+            observed and observed >= first_seen and age_seconds <= FRESH_PUSH_SECONDS
         )
 
     # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
     # observed after the push - a retained pre-push report proves nothing.
     if activity in ("STOPPED", "FINISHED"):
-        return bool(observed and observed >= push_at)
+        return bool(observed and observed >= first_seen)
 
-    # Other activity (or none): must be observed after the push.
-    return bool(observed and observed >= push_at)
+    # Other activity (or none): must be observed after the first push.
+    return bool(observed and observed >= first_seen)
 
 
 def _parse_stream_timestamp(store):
@@ -1061,11 +1063,11 @@ def _determine_v13_result(store, reports, push_at, first_seen, label):
     age = max(0.0, time.time() - first_seen)
     player = store.get("playerId")
     if player:
-        acknowledged = _acknowledged(reports.get(player) or {}, push_at)
+        acknowledged = _acknowledged(reports.get(player) or {}, first_seen)
     else:
         # The push named no player; any Echo reporting the stream proves the leg.
         acknowledged = any(
-            _acknowledged(report, push_at) for report in reports.values()
+            _acknowledged(report, first_seen) for report in reports.values()
         )
     if acknowledged:
         where = player or "An Alexa player"
