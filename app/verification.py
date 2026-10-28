@@ -990,14 +990,14 @@ def _acknowledged(report, push_at, first_seen):
     immediately, or have a matching stream token which overrides the age check.
     A STOPPED or FINISHED report counts only when observed after the push.
     """
+    # A current report must be present to acknowledge the stream
     if not report.get("current"):
         return False
 
+    # Check if report was sent before the push (delayed events)
     sent_at = report.get("sentAt")
-    if sent_at:
-        # A pre-push activity report sent before the push should not count.
-        if sent_at < push_at:
-            return False
+    if sent_at is not None and sent_at < push_at:
+        return False
 
     engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
     activity = report.get("activity")
@@ -1009,23 +1009,22 @@ def _acknowledged(report, push_at, first_seen):
         observed = time.time() - age_seconds
 
     # Engaged activity: must be sent after the push AND still be fresh,
-    # OR have a matching stream token (which proves it's still playing the stream).
+    # OR have a matching stream token (which proves it's still playing).
     if activity in engaged_activities:
-        # If age check fails but token matches current stream, still accept it
-        # (the Echo is still playing, just hasn't sent a recent report).
-        if observed and observed >= push_at:
+        # For engaged activities, we have special handling for long-running streams
+        # that may not have sent recent updates
+        if observed is not None and observed >= push_at:
+            # Fresh and engaged - count it
             if age_seconds <= FRESH_PUSH_SECONDS:
                 return True
-            # Age exceeded but token matches - check if report is current
-            # This handles long-running streams that haven't sent recent updates
-            if report.get("current"):
-                return True
+            # Age exceeded - check if report is still current (proves stream continues)
+            return report.get("current")
         return False
 
     # STOPPED/FINISHED reports can prove a push succeeded ONLY if they were
     # sent after the push - a retained pre-push report proves nothing.
     if activity in ("STOPPED", "FINISHED"):
-        return bool(observed and observed >= push_at)
+        return bool(observed is not None and observed >= push_at)
 
     # Other activity does not prove the Echo engaged with the stream.
     return False

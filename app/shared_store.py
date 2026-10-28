@@ -30,16 +30,20 @@ def set_ma(payload):
 
         # Get the previous snapshot for this player (if any) to preserve streamFirstSeen
         old_snapshot = _player_snapshots.get(player) if player else None
-        old_stream = (
-            old_snapshot.get("streamUrl")
-            if old_snapshot
-            else (_ma.get("streamUrl") if _ma else None)
-        )
-        old_first_seen = (
-            old_snapshot.get("streamFirstSeen")
-            if old_snapshot
-            else (_ma.get("streamFirstSeen") if _ma else None)
-        )
+
+        # Extract player-specific old stream for comparison
+        old_stream = None
+        if old_snapshot:
+            old_stream = old_snapshot.get("streamUrl")
+        elif _ma:
+            old_stream = _ma.get("streamUrl")
+
+        # Extract player-specific old first_seen for comparison
+        old_first_seen = None
+        if old_snapshot:
+            old_first_seen = old_snapshot.get("streamFirstSeen")
+        elif _ma:
+            old_first_seen = _ma.get("streamFirstSeen")
 
         new_stream = payload.get("streamUrl")
         _ma = deepcopy(payload)
