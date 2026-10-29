@@ -53,14 +53,17 @@ def set_ma(payload):
         # Track when this stream URL was first pushed. Preserve stream_first_seen
         # when the same player continues playing the same stream URL (re-push of
         # same stream), and only reset when the playback identity changes.
+        # The query string is part of the identity: a changed query (a new
+        # playback's token) resets the grace window, while a byte-identical URL
+        # preserves it.
         from skill import echo_position
 
         # Use player-specific old stream for comparison when available
         if (
             old_stream
             and new_stream
-            and echo_position._stream_key(old_stream)
-            == echo_position._stream_key(new_stream)
+            and echo_position._stream_key(old_stream, include_query=True)
+            == echo_position._stream_key(new_stream, include_query=True)
             and old_first_seen is not None
         ):
             stream_first_seen = old_first_seen

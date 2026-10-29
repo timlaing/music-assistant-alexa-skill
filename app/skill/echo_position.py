@@ -101,7 +101,9 @@ def report(player):
     if latest is None:
         return {"playerId": player, "current": False}
     snapshot = shared_store.get_player_snapshot(player) or {}
-    pushed = _stream_key(snapshot.get("streamUrl"))
+    # Both sides must include the query string so a token-bearing push URL
+    # compares consistently with the token the Echo reports back.
+    pushed = _stream_key(snapshot.get("streamUrl"), include_query=True)
     token_key = _stream_key(latest["token"], include_query=True)
     return {
         "playerId": player,
