@@ -999,7 +999,11 @@ class LocalizationInterceptor(AbstractRequestInterceptor):
             i18n = gettext.translation(
                 "data", localedir="locales", languages=[locale_file_name], fallback=True
             )
-            handler_input.attributes_manager.request_attributes["_"] = i18n.gettext
+            # gettext("") returns the catalog header, not "": keep empty
+            # messages (STOP_MSG, WELCOME_MSG) empty so nothing is spoken.
+            handler_input.attributes_manager.request_attributes["_"] = lambda message: (
+                i18n.gettext(message) if message else message
+            )
         else:
             handler_input.attributes_manager.request_attributes["_"] = gettext.gettext
 
