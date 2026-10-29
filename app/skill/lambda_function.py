@@ -970,6 +970,17 @@ class RequestLogger(AbstractRequestInterceptor):
         logger.debug("Alexa Request: %s", request)
 
 
+def _keep_empty_untranslated(translator):
+    """Wrap a gettext function so empty messages stay empty.
+
+    gettext("") returns the catalog header, not "": without this guard
+    STOP_MSG/WELCOME_MSG would be spoken as SSML and Alexa rejects the
+    whole response (INVALID_RESPONSE: Invalid SSML). Applies to the
+    localized catalog and to the global gettext default alike.
+    """
+    return lambda message: translator(message) if message else message
+
+
 class LocalizationInterceptor(AbstractRequestInterceptor):
     """Process the locale in request and load localized strings for response.
 
@@ -999,13 +1010,13 @@ class LocalizationInterceptor(AbstractRequestInterceptor):
             i18n = gettext.translation(
                 "data", localedir="locales", languages=[locale_file_name], fallback=True
             )
-            # gettext("") returns the catalog header, not "": keep empty
-            # messages (STOP_MSG, WELCOME_MSG) empty so nothing is spoken.
-            handler_input.attributes_manager.request_attributes["_"] = lambda message: (
-                i18n.gettext(message) if message else message
+            handler_input.attributes_manager.request_attributes["_"] = (
+                _keep_empty_untranslated(i18n.gettext)
             )
         else:
-            handler_input.attributes_manager.request_attributes["_"] = gettext.gettext
+            handler_input.attributes_manager.request_attributes["_"] = (
+                _keep_empty_untranslated(gettext.gettext)
+            )
 
 
 class ResponseLogger(AbstractResponseInterceptor):
