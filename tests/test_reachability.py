@@ -1309,6 +1309,24 @@ def test_pinned_adapter_targets_the_preflight_address():
     assert host_params["host"] == "93.184.216.34"
     assert pool_kwargs["server_hostname"] == "example.com"
     assert pool_kwargs["assert_hostname"] == "example.com"
+    # urllib3 derives the HTTP Host header from the pool host; the adapter
+    # must pin it back to the real hostname so name-based origins route the
+    # probe correctly.
+    assert request.headers["Host"] == "example.com"
+
+
+def test_pinned_adapter_keeps_the_host_header_on_the_real_host():
+    """The pinned address must not leak into the Host header (v1.6.0 regression)."""
+    from reachability import _PinnedAdapter
+
+    request = requests.Request("GET", "https://example.com/x").prepare()
+    assert "Host" not in request.headers
+    adapter = _PinnedAdapter("example.com", ipaddress.ip_address("93.184.216.34"))
+    try:
+        adapter.build_connection_pool_key_attributes(request, True)
+    finally:
+        adapter.close()
+    assert request.headers["Host"] == "example.com"
 
 
 def test_probe_fails_over_to_the_next_validated_address(monkeypatch):

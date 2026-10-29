@@ -782,7 +782,10 @@ class _PinnedAdapter(requests.adapters.HTTPAdapter):
     a blocking system call the probe timeouts do not bound. The pool
     connects straight to the validated address instead, while
     ``server_hostname`` keeps SNI and certificate verification on the real
-    host name (issue #49 review).
+    host name, and the Host header stays on the real host so a name-based
+    origin still routes the probe (issue #49 review; v1.6.0 regression:
+    sending ``Host: <ip>`` made every check report "DNS lookup or connection
+    failed").
     """
 
     def __init__(self, hostname, address):
@@ -797,6 +800,9 @@ class _PinnedAdapter(requests.adapters.HTTPAdapter):
         host_params["host"] = self.address
         pool_kwargs["server_hostname"] = self.hostname
         pool_kwargs["assert_hostname"] = self.hostname
+        # urllib3 derives the HTTP Host header from the pool host (the
+        # pinned address); override so the origin vhost still matches.
+        request.headers["Host"] = self.hostname
         return host_params, pool_kwargs
 
 
