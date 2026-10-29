@@ -1,6 +1,8 @@
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
+from dateutil.tz import tzutc
 from skill import device_mapping, echo_position, playback_requests
 from test_playback import AUTH, event, invoke, push
 
@@ -38,6 +40,7 @@ def test_pause_for_a_voice_request_is_reported_for_the_current_stream(playing):
         "offsetMs": 90_500,
         "activity": "STOPPED",
         "observedAt": 1000.0,
+        "sentAt": datetime(2026, 10, 2, 20, 0, tzinfo=tzutc()),
         "ageSeconds": 3.0,
     }
 

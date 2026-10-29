@@ -30,6 +30,11 @@ against the skill's own /ma/latest-url endpoint:
   V12  invocation name      the invocation name the skill deploys is the name
                             Music Assistant addresses in its start command and
                             in the control-command prefix (issue #71 class)
+  V13  MA to Amazon channel correlates the stream push with the Echo's own
+                            playback reports: a fresh push that its player
+                            never reports as current means MA's Amazon
+                            session is dead (issue #86 class — every other
+                            check stays green)
 
 Failures become check states, never exceptions.
 """
@@ -50,6 +55,10 @@ FETCH_TIMEOUT_SECONDS = 5
 MA_TIMEOUT_SECONDS = 8
 FRESH_PUSH_SECONDS = 3600
 FRESH_INTENT_SECONDS = 86400
+# MA's play sequence is push URL -> ask Amazon -> Alexa invokes the skill ->
+# the Echo reports AudioPlayer.PlaybackStarted. The last leg takes seconds;
+# a shorter window would warn on a playback that is still starting.
+CHANNEL_GRACE_SECONDS = 60
 
 _PILL = {
     "pass": ("Passed", "success"),
@@ -81,6 +90,7 @@ _TITLE_PLAYERS = "Alexa players"
 _TITLE_AMAZON = "Amazon account link"
 _TITLE_REACH = "Public reachability"
 _TITLE_INVOCATION = "Invocation name"
+_TITLE_CHANNEL = "MA to Amazon channel"
 
 # Music Assistant's start commands (ALEXA_LANGUAGE_COMMANDS in
 # music-assistant/server music_assistant/providers/alexa/__init__.py;
@@ -970,6 +980,234 @@ def _v12_invocation(state):
     return _check("v12", _TITLE_INVOCATION, "pass", detail)
 
 
+def _is_report_current(report):
+    """Check if report is for the current stream."""
+    return bool(report.get("current"))
+
+
+def _is_report_before_push(report, push_at):
+    """Check if report was sent before the push (delayed events)."""
+    sent_at = report.get("sentAt")
+    if sent_at is None:
+        return False
+
+    # Convert sentAt (datetime) to epoch seconds for comparison with push_at (float)
+    import datetime
+
+    sent_at_float = (
+        sent_at.timestamp() if isinstance(sent_at, datetime.datetime) else sent_at
+    )
+    return sent_at_float < push_at
+
+
+def _check_engaged_report(report, push_at):
+    """Check if an engaged activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) acknowledges the push."""
+    engaged_activities = ("PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN")
+    activity = report.get("activity")
+
+    if activity not in engaged_activities:
+        return False
+
+    observed = report.get("observedAt")
+    age_seconds = report.get("ageSeconds", 0.0)
+
+    # If observedAt is missing but ageSeconds is provided, compute observed.
+    if observed is None and age_seconds is not None:
+        observed = time.time() - age_seconds
+
+    # Must be observed after the push
+    if observed is None or observed < push_at:
+        return False
+
+    # Fresh and engaged - count it
+    if age_seconds <= FRESH_PUSH_SECONDS:
+        return True
+
+    # Age exceeded - check if report is still current (proves stream continues)
+    return report.get("current")
+
+
+def _check_stopped_report(report, push_at):
+    """Check if STOPPED/FINISHED report acknowledges the push."""
+    activity = report.get("activity")
+
+    if activity not in ("STOPPED", "FINISHED"):
+        return False
+
+    observed = report.get("observedAt")
+    return bool(observed is not None and observed >= push_at)
+
+
+def _acknowledged(report, push_at, first_seen):
+    """This Echo engaged with the pushed stream, not merely its path.
+
+    Uses push_at (the time of the latest push) for time-based comparisons with
+    Alexa's sentAt timestamp, and first_seen for the grace window. An engaged
+    activity (PLAYING/PAUSED/BUFFERING/BUFFER_UNDERRUN) must have been sent
+    after the push AND still be fresh (within FRESH window) to count
+    immediately, or have a matching stream token which overrides the age check.
+    A STOPPED or FINISHED report counts only when observed after the push.
+    """
+    # A current report must be present to acknowledge the stream
+    if not _is_report_current(report):
+        return False
+
+    # Check if report was sent before the push (delayed events)
+    if _is_report_before_push(report, push_at):
+        return False
+
+    # Check engaged activity
+    if _check_engaged_report(report, push_at):
+        return True
+
+    # Check stopped/finished activity
+    if _check_stopped_report(report, push_at):
+        return True
+
+    # Other activity does not prove the Echo engaged with the stream.
+    return False
+
+
+def _parse_stream_timestamp(store):
+    """Extract and validate the push timestamp from the store.
+
+    Returns (push_at, first_seen) as floats, or (None, None) on error.
+    """
+    timestamp = store.get("timestamp")
+    if not timestamp:
+        return None, None
+    try:
+        push_at = float(timestamp)
+    except (TypeError, ValueError):
+        return None, None
+    # Use the first-seen time for the grace window, not latest push, to handle
+    # repeated pushes of the same stream (S3).
+    first_seen = store.get("streamFirstSeen")
+    if first_seen is None:
+        first_seen = push_at
+    return push_at, first_seen
+
+
+def _get_consistent_store_and_reports(store):
+    """Get store and reports with retry on version mismatch.
+
+    A push landing between the caller's store read and these report reads would
+    pair one push's player and timestamp with another push's acknowledgement.
+    shared_store bumps `version` in the same locked update as the snapshot the
+    reports read, so a changed version means re-read with the newer store
+    (bounded, then best effort).
+    """
+    from skill import echo_position
+
+    for _ in range(3):
+        reports = echo_position.latest_reports()
+        latest = shared_store.get_ma() or {}
+        if not latest or latest.get("version") == store.get("version"):
+            return store, reports
+        store = latest
+
+    # Exhausted retries — best effort with the latest store and reports.
+    # If versions don't match, we can't reliably pair the store and reports.
+    reports = echo_position.latest_reports()
+    latest_after_reports = shared_store.get_ma() or {}
+    if not latest_after_reports or latest_after_reports.get("version") != store.get(
+        "version"
+    ):
+        # Version mismatch indicates a race; return a sentinel that V13
+        # recognizes as unknown.
+        return None, None
+
+    return store, reports
+
+
+def _determine_v13_result(store, reports, push_at, first_seen, label):
+    """Determine the V13 check result based on acknowledgement status."""
+    age = max(0.0, time.time() - first_seen)
+    player = store.get("playerId")
+    if player:
+        acknowledged = _acknowledged(reports.get(player) or {}, push_at, first_seen)
+    else:
+        # The push named no player; any Echo reporting the stream proves the leg.
+        acknowledged = any(
+            _acknowledged(report, push_at, first_seen) for report in reports.values()
+        )
+    if acknowledged:
+        where = player or "An Alexa player"
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "pass",
+            f"{where} is playing the stream pushed {label}.",
+        )
+    if age <= CHANNEL_GRACE_SECONDS:
+        # MA pushes, then asks Amazon; the Echo's report takes seconds to land.
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "pass",
+            f"The last push arrived {label} — too early to expect the Echo's report.",
+        )
+    where = player or "its Alexa player"
+    return _check(
+        "v13",
+        _TITLE_CHANNEL,
+        "warning",
+        f"The stream pushed {label} has not been acknowledged by {where}. "
+        "Music Assistant's Amazon session looks dead — re-authenticate its "
+        "Alexa provider with Amazon (separate from this add-on's 'Connect to "
+        "Amazon' step). Every other check can stay green through this fault.",
+    )
+
+
+def _v13_channel(store):
+    """The pushed stream was acknowledged by its Echo — the MA->Amazon leg works.
+
+    MA's play_media pushes the stream URL here FIRST, then asks Amazon to
+    invoke the skill (issue #71). With a dead MA->Amazon session the push
+    still lands but no Echo ever reports the pushed stream as current, while
+    every other check stays green (issue #86). A metadata re-push of the SAME
+    stream keeps the Echo's report current, so the current-stream flag — not
+    recency — is what is compared; only the pushed player's report counts, so
+    a second Echo happily playing cannot mask a dead channel.
+    """
+    store, reports = _get_consistent_store_and_reports(store)
+
+    # Version mismatch (None, None) indicates a persistent race
+    if store is None:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            "The stream push state race-confirmed but could not be paired "
+            "with the Echo's report — press play in Music Assistant to re-test.",
+        )
+
+    push_at, first_seen = _parse_stream_timestamp(store)
+    if push_at is None:
+        # Determine if it's a missing timestamp or unreadable.
+        if not store.get("timestamp"):
+            reason = (
+                "No stream push has been stored yet — press play in Music "
+                "Assistant to exercise the channel."
+            )
+        else:
+            reason = "The stored push timestamp is unreadable."
+        return _check("v13", _TITLE_CHANNEL, "unknown", reason)
+
+    push_age = max(0.0, time.time() - push_at)
+    label = _age_label(push_age)
+    if push_age > FRESH_PUSH_SECONDS:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            f"The last push arrived {label}; too old to judge the channel "
+            "now. Press play in Music Assistant to test it live.",
+        )
+
+    return _determine_v13_result(store, reports, push_at, first_seen, label)
+
+
 def _summary(checks):
     counts = {"pass": 0, "fail": 0, "warning": 0, "unknown": 0, "info": 0}
     for check in checks:
@@ -986,7 +1224,7 @@ def _summary(checks):
 
 
 def run_checks():
-    """Run V1–V12. Never raises — every failure becomes a check state."""
+    """Run V1–V13. Never raises — every failure becomes a check state."""
     try:
         return _run_checks()
     except Exception as exc:  # pragma: no cover - defensive
@@ -1055,6 +1293,7 @@ def _run_checks():
         _v10_alexa_link(state),
         _v11_reachability(_reachability_snapshot()),
         _v12_invocation(state),
+        _v13_channel(store),
     ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
