@@ -35,14 +35,16 @@ def set_ma(payload):
         old_stream = None
         if old_snapshot:
             old_stream = old_snapshot.get("streamUrl")
-        elif _ma:
+        elif _ma and player and player == _ma.get("playerId"):
+            # Only use global _ma history if its playerId matches the resolved player
             old_stream = _ma.get("streamUrl")
 
         # Extract player-specific old first_seen for comparison
         old_first_seen = None
         if old_snapshot:
             old_first_seen = old_snapshot.get("streamFirstSeen")
-        elif _ma:
+        elif _ma and player and player == _ma.get("playerId"):
+            # Only use global _ma history if its playerId matches the resolved player
             old_first_seen = _ma.get("streamFirstSeen")
 
         new_stream = payload.get("streamUrl")

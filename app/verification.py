@@ -1113,10 +1113,9 @@ def _get_consistent_store_and_reports(store):
     if not latest_after_reports or latest_after_reports.get("version") != store.get(
         "version"
     ):
-        # Version mismatch indicates a race; return an unreachable state.
-        # Instead of returning empty reports (which V13 interprets as no ack),
-        # return the reports we have and set an unreachable sentinel flag.
-        return store, reports
+        # Version mismatch indicates a race; return a sentinel that V13
+        # recognizes as unknown.
+        return None, None
 
     return store, reports
 
@@ -1172,6 +1171,16 @@ def _v13_channel(store):
     a second Echo happily playing cannot mask a dead channel.
     """
     store, reports = _get_consistent_store_and_reports(store)
+
+    # Version mismatch (None, None) indicates a persistent race
+    if store is None:
+        return _check(
+            "v13",
+            _TITLE_CHANNEL,
+            "unknown",
+            "The stream push state race-confirmed but could not be paired "
+            "with the Echo's report — press play in Music Assistant to re-test.",
+        )
 
     push_at, first_seen = _parse_stream_timestamp(store)
     if push_at is None:
