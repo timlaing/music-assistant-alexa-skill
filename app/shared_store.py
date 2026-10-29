@@ -26,11 +26,56 @@ def set_ma(payload):
     global _ma, _version
     with _lock:
         _version += 1
-        _ma = deepcopy(payload)
-        # Newer MA versions name the player; older ones only in the stream URL.
         player = payload.get("playerId") or player_from_stream(payload.get("streamUrl"))
-        _ma.update(playerId=player, version=_version, timestamp=time.time())
-        if player and payload.get("streamUrl"):
+
+        # Get the previous snapshot for this player (if any) to preserve streamFirstSeen
+        old_snapshot = _player_snapshots.get(player) if player else None
+
+        # Extract player-specific old stream for comparison
+        old_stream = None
+        if old_snapshot:
+            old_stream = old_snapshot.get("streamUrl")
+        elif _ma and player and player == _ma.get("playerId"):
+            # Only use global _ma history if its playerId matches the resolved player
+            old_stream = _ma.get("streamUrl")
+
+        # Extract player-specific old first_seen for comparison
+        old_first_seen = None
+        if old_snapshot:
+            old_first_seen = old_snapshot.get("streamFirstSeen")
+        elif _ma and player and player == _ma.get("playerId"):
+            # Only use global _ma history if its playerId matches the resolved player
+            old_first_seen = _ma.get("streamFirstSeen")
+
+        new_stream = payload.get("streamUrl")
+        _ma = deepcopy(payload)
+
+        # Track when this stream URL was first pushed. Preserve stream_first_seen
+        # when the same player continues playing the same stream URL (re-push of
+        # same stream), and only reset when the playback identity changes.
+        # The query string is part of the identity: a changed query (a new
+        # playback's token) resets the grace window, while a byte-identical URL
+        # preserves it.
+        from skill import echo_position
+
+        # Use player-specific old stream for comparison when available
+        if (
+            old_stream
+            and new_stream
+            and echo_position._stream_key(old_stream, include_query=True)
+            == echo_position._stream_key(new_stream, include_query=True)
+            and old_first_seen is not None
+        ):
+            stream_first_seen = old_first_seen
+        else:
+            stream_first_seen = time.time()
+        _ma.update(
+            playerId=player,
+            version=_version,
+            timestamp=time.time(),
+            streamFirstSeen=stream_first_seen,
+        )
+        if player and new_stream:
             _player_snapshots[player] = deepcopy(_ma)
         elif not player:
             # The push may replace any player's stream; serve it to all, as upstream

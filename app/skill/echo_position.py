@@ -20,6 +20,10 @@ EVENT_ACTIVITY = {
     "AudioPlayer.PlaybackStopped": "STOPPED",
     "AudioPlayer.PlaybackFinished": "FINISHED",
 }
+# Alexa's player activity values that denote the Echo is still holding the stream.
+# BUFFER_UNDERRUN means there's a temporary buffer underrun but the Echo still
+# holds the stream and will resume.
+_ENGAGED = {"PLAYING", "PAUSED", "BUFFERING", "BUFFER_UNDERRUN"}
 
 _lock = threading.Lock()
 _reports = {}
@@ -71,10 +75,23 @@ def record(envelope):
         }
 
 
-def _stream_key(url):
+def latest_reports():
+    """Latest report per player with its current-stream flag (read-only)."""
+    with _lock:
+        players = list(_reports)
+    return {player: report(player) for player in players}
+
+
+def _stream_key(url, include_query=False):
     # The Echo gets the pushed URL rewritten to MP3; compare the path without extension.
-    path = unquote(urlsplit(url or "").path)
-    return path.rsplit(".", 1)[0] if path else ""
+    # When include_query is True, also compare the query string to handle cases where
+    # the same path has different query tokens (e.g., auth tokens, stream IDs).
+    parsed = urlsplit(url or "")
+    path = unquote(parsed.path)
+    base = path.rsplit(".", 1)[0] if path else ""
+    if include_query:
+        return f"{base}?{parsed.query}" if parsed.query else base
+    return base
 
 
 def report(player):
@@ -84,12 +101,16 @@ def report(player):
     if latest is None:
         return {"playerId": player, "current": False}
     snapshot = shared_store.get_player_snapshot(player) or {}
-    pushed = _stream_key(snapshot.get("streamUrl"))
+    # Both sides must include the query string so a token-bearing push URL
+    # compares consistently with the token the Echo reports back.
+    pushed = _stream_key(snapshot.get("streamUrl"), include_query=True)
+    token_key = _stream_key(latest["token"], include_query=True)
     return {
         "playerId": player,
-        "current": bool(pushed) and _stream_key(latest["token"]) == pushed,
+        "current": bool(pushed) and token_key == pushed,
         "offsetMs": latest["offsetMs"],
         "activity": latest["activity"],
         "observedAt": latest["observedAt"],
+        "sentAt": latest.get("sentAt"),
         "ageSeconds": max(0.0, time.time() - latest["observedAt"]),
     }
