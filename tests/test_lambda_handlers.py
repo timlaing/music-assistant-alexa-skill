@@ -1,6 +1,7 @@
 """Focused tests for skill/lambda_function.py handlers and interceptors."""
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -500,15 +501,63 @@ def test_localization_interceptor_loads_locale(locale):
     assert callable(handler.attributes_manager.request_attributes["_"])
 
 
-def test_localization_interceptor_without_locale_uses_gettext():
+@pytest.mark.parametrize(
+    "locale", ["fr-FR", "fr-CA", "de-DE", "es-ES", "it-IT", "pt-BR", "nl-NL"]
+)
+def test_localization_interceptor_keeps_empty_messages_empty(locale, monkeypatch):
+    # gettext("") returns the catalog header ("Project-Id-Version: ...
+    # Report-Msgid-Bugs-To: EMAIL@ADDRESS ..."); spoken as SSML, Alexa rejects it.
+    # localedir is relative: run from app/ as the image does (/app/src).
+    monkeypatch.chdir(Path(__file__).resolve().parent.parent / "app")
+    handler = SimpleNamespace(
+        request_envelope=SimpleNamespace(request=SimpleNamespace(locale=locale)),
+        attributes_manager=SimpleNamespace(request_attributes={}),
+    )
+    handlers.LocalizationInterceptor().process(handler)
+    _ = handler.attributes_manager.request_attributes["_"]
+    # The committed catalog must really be loaded, or the test proves nothing:
+    # NullTranslations (fallback) also returns "" for "".
+    assert _(data.UNHANDLED_MSG) != data.UNHANDLED_MSG
+    assert _(data.STOP_MSG) == ""
+    assert _(data.WELCOME_MSG) == ""
+
+
+def test_localization_interceptor_never_translates_empty_message(monkeypatch):
+    # Independent of the .mo files: a catalog whose gettext("") is its header.
+    class HeaderCatalog:
+        def gettext(self, message):
+            return "Report-Msgid-Bugs-To: EMAIL@ADDRESS" if message == "" else "ok"
+
+    monkeypatch.setattr(
+        handlers.gettext, "translation", lambda *args, **kwargs: HeaderCatalog()
+    )
+    handler = SimpleNamespace(
+        request_envelope=SimpleNamespace(request=SimpleNamespace(locale="fr-FR")),
+        attributes_manager=SimpleNamespace(request_attributes={}),
+    )
+    handlers.LocalizationInterceptor().process(handler)
+    _ = handler.attributes_manager.request_attributes["_"]
+    assert _(data.STOP_MSG) == ""
+    assert _(data.UNHANDLED_MSG) == "ok"
+
+
+def test_localization_interceptor_without_locale_keeps_empty_messages_empty(
+    monkeypatch,
+):
+    # The no-locale branch gets the same empty-message guard as the catalog
+    # branch: a global catalog whose gettext("") is its header must not leak.
+    def header_gettext(message):
+        return "Report-Msgid-Bugs-To: EMAIL@ADDRESS" if message == "" else "ok"
+
+    monkeypatch.setattr(handlers.gettext, "gettext", header_gettext)
     handler = SimpleNamespace(
         request_envelope=SimpleNamespace(request=SimpleNamespace(locale=None)),
         attributes_manager=SimpleNamespace(request_attributes={}),
     )
     handlers.LocalizationInterceptor().process(handler)
-    import gettext
-
-    assert handler.attributes_manager.request_attributes["_"] is gettext.gettext
+    _ = handler.attributes_manager.request_attributes["_"]
+    assert _(data.STOP_MSG) == ""
+    assert _(data.UNHANDLED_MSG) == "ok"
 
 
 def test_response_logger_is_noop():
