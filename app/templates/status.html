@@ -14,6 +14,12 @@
             <summary>Connection diagnostics</summary>
             <pre class="ma-code" id="conn-diag">{{ conn_diag }}</pre>
         </details>
+        <div class="ma-detail" style="margin-top:12px">
+            <summary>Test public path (external)</summary>
+            <p class="ma-muted ma-small">This uses <a href="https://check-host.net" target="_blank" rel="noopener">check-host.net</a> to verify the three core endpoints from multiple global vantage points. It runs outside your LAN, so it tests the true public path that an Echo would use.</p>
+            <button class="ma-button" type="button" id="run-external-check">Run external check</button>
+            <div id="external-check-results" style="margin-top:8px"></div>
+        </div>
     </section>
     <section class="ma-panel" aria-labelledby="skill-heading">
         <div class="ma-panelhead"><h2 id="skill-heading">Alexa skill</h2></div>
@@ -141,5 +147,88 @@ function setFragment(id, html){
         });
     });
 })();
+
+    // External check-host.net public path verification
+    (function(){
+        var button = document.getElementById('run-external-check');
+        var results = document.getElementById('external-check-results');
+        if(!button || !results){ return; }
+        button.addEventListener('click', function(){
+            button.disabled = true;
+            results.innerHTML = '<p class="ma-muted">Starting external checks via check-host.net\u2026</p>';
+            fetch('/status/check-host/start', {method: 'POST'})
+                .then(r => r.json())
+                .then(start => {
+                    if (!start.request_ids || start.request_ids.every(id => !id)) {
+                        results.innerHTML = '<p class="ma-small ma-error">Failed to start external checks.</p>';
+                        button.disabled = false;
+                        return;
+                    }
+                    results.innerHTML = '<p class="ma-muted">Checks started. Polling for results\u2026</p>';
+                    pollExternalResults(start.request_ids, 0);
+                })
+                .catch(() => {
+                    results.innerHTML = '<p class="ma-small ma-error">Could not start external checks.</p>';
+                    button.disabled = false;
+                });
+        });
+
+        function pollExternalResults(requestIds, attempt) {
+            var pending = requestIds.filter(function(id) { return id; });
+            if (pending.length === 0) {
+                results.innerHTML = '<p class="ma-small ma-error">No valid request IDs.</p>';
+                button.disabled = false;
+                return;
+            }
+            var completed = 0;
+            var allResults = [];
+            pending.forEach(function(rid) {
+                fetch('/status/check-host/result/' + rid)
+                    .then(r => r.json())
+                    .then(data => {
+                        completed++;
+                        allResults.push(data);
+                        if (completed === pending.length) {
+                            renderExternalResults(allResults);
+                        } else if (attempt < 30) { // max ~60 seconds
+                            setTimeout(function() { pollExternalResults(requestIds, attempt + 1); }, 2000);
+                        }
+                    })
+                    .catch(function() {
+                        completed++;
+                        if (completed === pending.length) {
+                            renderExternalResults(allResults);
+                        }
+                    });
+            });
+        }
+
+        function renderExternalResults(allResults) {
+            var html = '<table class="ma-table"><thead><tr><th>Endpoint</th><th>Node</th><th>Status</th><th>HTTP</th><th>Time (s)</th><th>IP</th></tr></thead><tbody>';
+            var endpointNames = ["Skill endpoint", "Stream host", "Public audio delivery"];
+            allResults.forEach(function(data, idx) {
+                var parsed = data.parsed || [];
+                if (parsed.length === 0) {
+                    html += '<tr><td colspan="6" class="ma-muted">' + endpointNames[idx] + ': no results yet</td></tr>';
+                } else {
+                    parsed.forEach(function(p) {
+                        var statusClass = p.status === 1 ? 'ma-ok' : 'ma-error';
+                        html += '<tr>' +
+                            '<td>' + endpointNames[idx] + '</td>' +
+                            '<td>' + p.node + '</td>' +
+                            '<td><span class="ma-dot ' + statusClass + '"></span>' + (p.status === 1 ? 'OK' : 'FAIL') + '</td>' +
+                            '<td>' + p.code + '</td>' +
+                            '<td>' + p.time.toFixed(3) + '</td>' +
+                            '<td>' + p.ip + '</td>' +
+                        '</tr>';
+                    });
+                }
+            });
+            html += '</tbody></table>';
+            html += '<p class="ma-small ma-muted">Source: <a href="https://check-host.net" target="_blank" rel="noopener">check-host.net</a> (external service). Green = reachable from that vantage point.</p>';
+            results.innerHTML = html;
+            button.disabled = false;
+        }
+    })();
 </script>
 {% endblock %}

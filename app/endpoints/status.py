@@ -10,6 +10,8 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 from app_settings import get_setting, store
 from env_secrets import get_env_secret
 from flask import (
@@ -966,3 +968,136 @@ def diagnostics_download():
         f'attachment; filename="ma-alexa-skill-diagnostics-{stamp}.json"'
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# check-host.net integration for external public-path verification
+# ---------------------------------------------------------------------------
+
+
+def _get_public_base():
+    """Return the public base URL (https://host) for the skill."""
+    from public_urls import public_base
+
+    return public_base()
+
+
+def _check_host_start(hostname, max_nodes=10):
+    """Start a check-host.net HTTP check for the three core endpoints.
+    Returns the request_id for polling."""
+    base = _get_public_base()
+    # We'll check the three endpoints sequentially to avoid rate limits
+    endpoints = [
+        f"{base}/ma-alexa-skill/health",
+        f"{base}/",
+        f"{base}/ma-alexa-skill/test-audio.mp3",
+    ]
+    request_ids = []
+    for ep in endpoints:
+        params = {
+            "host": ep,
+            "max_nodes": max_nodes,
+            "format": "json",
+        }
+        try:
+            resp = requests.get(
+                "https://check-host.net/check-http", params=params, timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            request_ids.append(data.get("request_id"))
+        except Exception as e:
+            _log.warning("check-host.net start failed for %s: %s", ep, e)
+            request_ids.append(None)
+    return request_ids
+
+
+def _check_host_result(request_id):
+    """Poll check-host.net for a single request_id."""
+    if not request_id:
+        return {"error": "no request_id"}
+    try:
+        resp = requests.get(
+            f"https://check-host.net/check-result/{request_id}", timeout=10
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _parse_check_host_result(raw):
+    """Parse raw check-host result into a list of {node, status, code, time, ip}."""
+    if not raw or isinstance(raw, dict) and raw.get("error"):
+        return []
+    results = []
+    for node_key, node_data in raw.items():
+        # node_data is a list of checks; each check is [status, time, status_text, code, ip]
+        for check in node_data:
+            if isinstance(check, list) and len(check) >= 5:
+                results.append(
+                    {
+                        "node": node_key,
+                        "status": check[0],
+                        "time": check[1],
+                        "status_text": check[2],
+                        "code": check[3],
+                        "ip": check[4],
+                    }
+                )
+    return results
+
+
+@status_bp.route("/status/public-targets", methods=["GET"])
+def status_public_targets():
+    """Return the three public endpoints and host header for external checking."""
+    base = _get_public_base()
+    hostname = urllib.parse.urlparse(base).hostname
+    return jsonify(
+        {
+            "host_header": hostname,
+            "checks": [
+                {
+                    "name": "Skill endpoint",
+                    "url": f"{base}/ma-alexa-skill/health",
+                    "method": "HEAD",
+                },
+                {"name": "Stream host", "url": f"{base}/", "method": "HEAD"},
+                {
+                    "name": "Public audio delivery",
+                    "url": f"{base}/ma-alexa-skill/test-audio.mp3",
+                    "method": "GET",
+                    "headers": {"Range": "bytes=0-4095"},
+                },
+            ],
+            "note": 'Run these from OUTSIDE your LAN (cellular, VPN, CI). Example: curl -H "Host: <host_header>" <url>',
+        }
+    )
+
+
+@status_bp.route("/status/check-host/start", methods=["POST"])
+def status_check_host_start():
+    """Start a check-host.net check for the three core endpoints."""
+    base = _get_public_base()
+    hostname = urllib.parse.urlparse(base).hostname
+    request_ids = _check_host_start(hostname)
+    return jsonify(
+        {
+            "request_ids": request_ids,
+            "note": "Started check-host.net checks. Poll /status/check-host/result/<request_id> for results. This uses an external service (check-host.net).",
+        }
+    )
+
+
+@status_bp.route("/status/check-host/result/<request_id>", methods=["GET"])
+def status_check_host_result(request_id):
+    """Get the result of a check-host.net check."""
+    raw = _check_host_result(request_id)
+    parsed = _parse_check_host_result(raw)
+    return jsonify(
+        {
+            "request_id": request_id,
+            "raw": raw,
+            "parsed": parsed,
+        }
+    )
