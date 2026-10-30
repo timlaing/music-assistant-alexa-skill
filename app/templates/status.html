@@ -189,7 +189,7 @@ function setFragment(id, html){
         });
 
         function pollExternalResults(requestIds, attempt) {
-            var pending = requestIds.filter(function(id) { return id; });
+            var pending = requestIds.filter(Boolean);
             if (pending.length === 0) {
                 results.innerHTML = '<p class="ma-small ma-error">No valid request IDs.</p>';
                 button.disabled = false;

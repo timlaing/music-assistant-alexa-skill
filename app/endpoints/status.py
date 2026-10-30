@@ -1175,49 +1175,13 @@ def status_check_host_start():
 @status_bp.route("/status/check-host/result/<request_id>", methods=["GET"])
 def status_check_host_result(request_id):
     """Get the result of a check-host.net check."""
-    # Find which endpoint this request_id belongs to
-    start_results = _get_start_results()
-    endpoint = None
-    for r in start_results:
-        if r.get("request_id") == request_id:
-            endpoint = r.get("endpoint")
-            break
-
+    endpoint = _find_endpoint_for_request(request_id)
     raw = _check_host_result(request_id, endpoint)
     parsed = _parse_check_host_result(raw)
 
-    # Determine if this endpoint passed all nodes
-    endpoint_passed = False
-    if parsed:
-        endpoint_passed = all(p.get("status") == 1 for p in parsed)
-
-    # Store in Reachability for banner/badge updates (merging with other endpoints)
+    endpoint_passed = _all_nodes_passed(parsed)
     if endpoint_passed:
-        checker = current_app.extensions.get("reachability")
-        if checker:
-            # Group parsed results by label for storage
-            by_label = {}
-            for p in parsed:
-                label = p.get("label", "Unknown")
-                if label not in by_label:
-                    by_label[label] = []
-                by_label[label].append(p)
-
-            # Store grouped results as a list - set_external_result will merge
-            external_results = []
-            for label, items in by_label.items():
-                passed_count = sum(1 for p in items if p.get("status") == 1)
-                total_count = len(items)
-                external_results.append(
-                    {
-                        "label": label,
-                        "passed": True,
-                        "passed_nodes": passed_count,
-                        "total_nodes": total_count,
-                        "items": items,
-                    }
-                )
-            checker.set_external_result(True, external_results)
+        _store_external_result(parsed)
 
     return jsonify(
         {
@@ -1227,3 +1191,38 @@ def status_check_host_result(request_id):
             "all_passed": endpoint_passed,
         }
     )
+
+
+def _find_endpoint_for_request(request_id):
+    """Find the endpoint URL for a given request_id from stored start results."""
+    for r in _get_start_results():
+        if r.get("request_id") == request_id:
+            return r.get("endpoint")
+    return None
+
+
+def _all_nodes_passed(parsed):
+    """Check if all nodes in parsed results passed (status == 1)."""
+    return bool(parsed) and all(p.get("status") == 1 for p in parsed)
+
+
+def _store_external_result(parsed):
+    """Group parsed results by label and store in Reachability."""
+    checker = current_app.extensions.get("reachability")
+    if not checker:
+        return
+    by_label = {}
+    for p in parsed:
+        label = p.get("label", "Unknown")
+        by_label.setdefault(label, []).append(p)
+    external_results = [
+        {
+            "label": label,
+            "passed": True,
+            "passed_nodes": sum(1 for p in items if p.get("status") == 1),
+            "total_nodes": len(items),
+            "items": items,
+        }
+        for label, items in by_label.items()
+    ]
+    checker.set_external_result(True, external_results)
