@@ -42,6 +42,6 @@
   },
   "slug": "music_assistant_skill",
   "startup": "services",
-  "version": "0.0.42-beta",
+  "version": "0.0.43-beta",
   "webui": "http://[HOST]:[PORT:5000]"
 }
