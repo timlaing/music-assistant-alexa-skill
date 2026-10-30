@@ -1,3 +1,4 @@
 # Templates contain Flask/Jinja constructs and inline JS assertions in
 # tests; out of the pre-commit prettier hook scope (json/yaml/markdown).
 app/templates/
+.sensitive_allowlist
