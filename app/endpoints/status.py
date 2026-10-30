@@ -970,6 +970,15 @@ def diagnostics_download():
     return response
 
 
+# Store for tracking check-host.net start results
+_CHECK_HOST_START_RESULTS = []
+
+
+def _get_start_results():
+    """Get the stored start results."""
+    return _CHECK_HOST_START_RESULTS
+
+
 # ---------------------------------------------------------------------------
 # check-host.net integration for external public-path verification
 # ---------------------------------------------------------------------------
@@ -1039,7 +1048,7 @@ def _check_host_start(hostname, max_nodes=10):
     return results
 
 
-def _check_host_result(request_id):
+def _check_host_result(request_id, endpoint=None):
     """Poll check-host.net for a single request_id."""
     if not request_id:
         return {"error": "no request_id"}
@@ -1048,7 +1057,10 @@ def _check_host_result(request_id):
             f"https://check-host.net/check-result/{request_id}", timeout=10
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if endpoint:
+            data["_endpoint"] = endpoint
+        return data
     except requests.exceptions.Timeout:
         return {"error": "timeout", "detail": "Polling check-host.net timed out"}
     except requests.exceptions.ConnectionError as e:
@@ -1066,11 +1078,23 @@ def _check_host_result(request_id):
 
 
 def _parse_check_host_result(raw):
-    """Parse raw check-host result into a list of {node, status, code, time, ip}."""
+    """Parse raw check-host result into a list of {node, status, code, time, ip, label}."""
     if not raw or isinstance(raw, dict) and raw.get("error"):
         return []
     results = []
+    endpoint = raw.get("_endpoint", "")
+    # Extract label from endpoint URL
+    label = "Unknown"
+    if "/ma-alexa-skill/health" in endpoint:
+        label = "Skill endpoint"
+    elif endpoint.endswith("/") or endpoint.endswith("/ma-alexa-skill/"):
+        label = "Stream host"
+    elif "/ma-alexa-skill/test-audio.mp3" in endpoint:
+        label = "Public audio delivery"
+
     for node_key, node_data in raw.items():
+        if node_key == "_endpoint":
+            continue
         # node_data may be None if check is still pending, or a list of checks
         # each check is [status, time, status_text, code, ip]
         if not node_data:
@@ -1085,6 +1109,7 @@ def _parse_check_host_result(raw):
                         "status_text": check[2],
                         "code": check[3],
                         "ip": check[4],
+                        "label": label,
                     }
                 )
     return results
@@ -1120,9 +1145,12 @@ def status_public_targets():
 @status_bp.route("/status/check-host/start", methods=["POST"])
 def status_check_host_start():
     """Start a check-host.net check for the three core endpoints."""
+    global _CHECK_HOST_START_RESULTS
     base = _get_public_base()
     hostname = urllib.parse.urlparse(base).hostname
     results = _check_host_start(hostname)
+    # Store for later lookup
+    _CHECK_HOST_START_RESULTS = results
     # Count successes
     success_count = sum(1 for r in results if "request_id" in r)
     return jsonify(
@@ -1138,7 +1166,15 @@ def status_check_host_start():
 @status_bp.route("/status/check-host/result/<request_id>", methods=["GET"])
 def status_check_host_result(request_id):
     """Get the result of a check-host.net check."""
-    raw = _check_host_result(request_id)
+    # Find which endpoint this request_id belongs to
+    start_results = _get_start_results()
+    endpoint = None
+    for r in start_results:
+        if r.get("request_id") == request_id:
+            endpoint = r.get("endpoint")
+            break
+
+    raw = _check_host_result(request_id, endpoint)
     parsed = _parse_check_host_result(raw)
 
     # Determine if all endpoints passed all nodes
@@ -1150,7 +1186,29 @@ def status_check_host_result(request_id):
     if all_passed:
         checker = current_app.extensions.get("reachability")
         if checker:
-            checker.set_external_result(True, parsed)
+            # Group parsed results by label for storage
+            by_label = {}
+            for p in parsed:
+                label = p.get("label", "Unknown")
+                if label not in by_label:
+                    by_label[label] = []
+                by_label[label].append(p)
+
+            # Store grouped results as a list
+            external_results = []
+            for label, items in by_label.items():
+                passed_count = sum(1 for p in items if p.get("status") == 1)
+                total_count = len(items)
+                external_results.append(
+                    {
+                        "label": label,
+                        "passed": True,
+                        "passed_nodes": passed_count,
+                        "total_nodes": total_count,
+                        "items": items,
+                    }
+                )
+            checker.set_external_result(True, external_results)
 
     return jsonify(
         {

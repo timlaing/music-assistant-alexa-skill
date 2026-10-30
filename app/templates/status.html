@@ -221,14 +221,14 @@ function setFragment(id, html){
         function renderExternalResults(allResults) {
             var endpointNames = ["Skill endpoint", "Stream host", "Public audio delivery"];
             var allPassed = true;
-            var html = '<table class="ma-table"><thead><tr><th>Endpoint</th><th>Nodes</th><th>Passed</th><th>Failed</th><th>HTTP</th><th>Latency (ms)</th></tr></thead><tbody>';
+            var html = '<table class="ma-table"><thead><tr><th>Endpoint</th><th>Passed</th><th>Failed</th><th>HTTP</th><th>Latency (ms)</th></tr></thead><tbody>';
             
             allResults.forEach(function(data, idx) {
                 var parsed = data.parsed || [];
                 var name = endpointNames[idx];
                 
                 if (parsed.length === 0) {
-                    html += '<tr><td colspan="6" class="ma-muted">' + name + ': no results yet</td></tr>';
+                    html += '<tr><td colspan="5" class="ma-muted">' + name + ': no results yet</td></tr>';
                     allPassed = false;
                     return;
                 }
@@ -250,7 +250,6 @@ function setFragment(id, html){
                 
                 html += '<tr>' +
                     '<td><strong>' + name + '</strong></td>' +
-                    '<td>' + total + ' vantage points</td>' +
                     '<td style="color: var(--success-color)">' + passed + '</td>' +
                     '<td style="color: ' + (failed > 0 ? 'var(--error-color)' : 'var(--success-color)') + '">' + failed + '</td>' +
                     '<td>' + codes + '</td>' +
