@@ -1071,7 +1071,10 @@ def _parse_check_host_result(raw):
         return []
     results = []
     for node_key, node_data in raw.items():
-        # node_data is a list of checks; each check is [status, time, status_text, code, ip]
+        # node_data may be None if check is still pending, or a list of checks
+        # each check is [status, time, status_text, code, ip]
+        if not node_data:
+            continue
         for check in node_data:
             if isinstance(check, list) and len(check) >= 5:
                 results.append(
