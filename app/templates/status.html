@@ -219,28 +219,56 @@ function setFragment(id, html){
         }
 
         function renderExternalResults(allResults) {
-            var html = '<table class="ma-table"><thead><tr><th>Endpoint</th><th>Node</th><th>Status</th><th>HTTP</th><th>Time (s)</th><th>IP</th></tr></thead><tbody>';
             var endpointNames = ["Skill endpoint", "Stream host", "Public audio delivery"];
+            var allPassed = true;
+            var html = '<table class="ma-table"><thead><tr><th>Endpoint</th><th>Nodes</th><th>Passed</th><th>Failed</th><th>HTTP</th><th>Latency (ms)</th></tr></thead><tbody>';
+            
             allResults.forEach(function(data, idx) {
                 var parsed = data.parsed || [];
+                var name = endpointNames[idx];
+                
                 if (parsed.length === 0) {
-                    html += '<tr><td colspan="6" class="ma-muted">' + endpointNames[idx] + ': no results yet</td></tr>';
-                } else {
-                    parsed.forEach(function(p) {
-                        var statusClass = p.status === 1 ? 'ma-ok' : 'ma-error';
-                        html += '<tr>' +
-                            '<td>' + endpointNames[idx] + '</td>' +
-                            '<td>' + p.node + '</td>' +
-                            '<td><span class="ma-dot ' + statusClass + '"></span>' + (p.status === 1 ? 'OK' : 'FAIL') + '</td>' +
-                            '<td>' + p.code + '</td>' +
-                            '<td>' + p.time.toFixed(3) + '</td>' +
-                            '<td>' + p.ip + '</td>' +
-                        '</tr>';
-                    });
+                    html += '<tr><td colspan="6" class="ma-muted">' + name + ': no results yet</td></tr>';
+                    allPassed = false;
+                    return;
                 }
+                
+                // Aggregate results
+                var total = parsed.length;
+                var passed = parsed.filter(function(p) { return p.status === 1; }).length;
+                var failed = total - passed;
+                var codes = [...new Set(parsed.map(function(p) { return p.code; }))].join(', ');
+                var times = parsed.map(function(p) { return Math.round(p.time * 1000); });
+                var minTime = Math.min.apply(null, times);
+                var maxTime = Math.max.apply(null, times);
+                var avgTime = Math.round(times.reduce(function(a, b) { return a + b; }, 0) / times.length);
+                
+                if (failed > 0) allPassed = false;
+                
+                var statusClass = failed === 0 ? 'ma-ok' : 'ma-warning';
+                var statusText = failed === 0 ? '✓ All passed' : failed + ' of ' + total + ' failed';
+                
+                html += '<tr>' +
+                    '<td><strong>' + name + '</strong></td>' +
+                    '<td>' + total + ' vantage points</td>' +
+                    '<td style="color: var(--success-color)">' + passed + '</td>' +
+                    '<td style="color: ' + (failed > 0 ? 'var(--error-color)' : 'var(--success-color)') + '">' + failed + '</td>' +
+                    '<td>' + codes + '</td>' +
+                    '<td>avg ' + avgTime + 'ms (min ' + minTime + 'ms, max ' + maxTime + 'ms)</td>' +
+                '</tr>';
             });
+            
             html += '</tbody></table>';
-            html += '<p class="ma-small ma-muted">Source: <a href="https://check-host.net" target="_blank" rel="noopener">check-host.net</a> (external service). Green = reachable from that vantage point.</p>';
+            html += '<p class="ma-small ma-muted">Source: <a href="https://check-host.net" target="_blank" rel="noopener">check-host.net</a> (external service).</p>';
+            
+            // If all endpoints passed all nodes, show a success banner and suggest green status
+            if (allPassed) {
+                html = '<div class="ma-banner ma-success" style="margin-bottom:12px">' +
+                    '<span class="ma-icon">✓</span>' +
+                    '<div><strong>External path check passed</strong><p>All 3 endpoints reachable from all check-host.net vantage points.</p></div>' +
+                '</div>' + html;
+            }
+            
             results.innerHTML = html;
             button.disabled = false;
         }
