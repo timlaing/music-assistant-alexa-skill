@@ -978,8 +978,9 @@ def diagnostics_download():
 def _get_public_base():
     """Return the public base URL (https://host) for the skill."""
     from public_urls import public_base
+    from app_settings import get_setting
 
-    return public_base()
+    return public_base(get_setting("MA_HOSTNAME", ""))
 
 
 def _check_host_start(hostname, max_nodes=10):
