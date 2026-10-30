@@ -159,13 +159,28 @@ function setFragment(id, html){
             fetch('/status/check-host/start', {method: 'POST'})
                 .then(r => r.json())
                 .then(start => {
-                    if (!start.request_ids || start.request_ids.every(id => !id)) {
-                        results.innerHTML = '<p class="ma-small ma-error">Failed to start external checks.</p>';
+                    if (!start.results || start.results.length === 0) {
+                        results.innerHTML = '<p class="ma-small ma-error">No results returned from check-host.net.</p>';
                         button.disabled = false;
                         return;
                     }
-                    results.innerHTML = '<p class="ma-muted">Checks started. Polling for results\u2026</p>';
-                    pollExternalResults(start.request_ids, 0);
+                    if (start.success_count === 0) {
+                        // All failed - show detailed errors
+                        var errorHtml = '<p class="ma-small ma-error">Could not start external checks:</p><ul>';
+                        start.results.forEach(function(r) {
+                            if (r.error) {
+                                errorHtml += '<li>' + r.endpoint + ': ' + r.detail + '</li>';
+                            }
+                        });
+                        errorHtml += '</ul>';
+                        results.innerHTML = errorHtml;
+                        button.disabled = false;
+                        return;
+                    }
+                    // Extract request_ids for polling
+                    var requestIds = start.results.map(function(r) { return r.request_id; });
+                    results.innerHTML = '<p class="ma-muted">Checks started (' + start.success_count + '/' + start.total + '). Polling for results\u2026</p>';
+                    pollExternalResults(requestIds, 0);
                 })
                 .catch(() => {
                     results.innerHTML = '<p class="ma-small ma-error">Could not start external checks.</p>';

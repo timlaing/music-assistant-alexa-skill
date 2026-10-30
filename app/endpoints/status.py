@@ -984,15 +984,14 @@ def _get_public_base():
 
 def _check_host_start(hostname, max_nodes=10):
     """Start a check-host.net HTTP check for the three core endpoints.
-    Returns the request_id for polling."""
+    Returns a list of dicts with request_id or error info."""
     base = _get_public_base()
-    # We'll check the three endpoints sequentially to avoid rate limits
     endpoints = [
         f"{base}/ma-alexa-skill/health",
         f"{base}/",
         f"{base}/ma-alexa-skill/test-audio.mp3",
     ]
-    request_ids = []
+    results = []
     for ep in endpoints:
         params = {
             "host": ep,
@@ -1005,11 +1004,38 @@ def _check_host_start(hostname, max_nodes=10):
             )
             resp.raise_for_status()
             data = resp.json()
-            request_ids.append(data.get("request_id"))
+            results.append({"request_id": data.get("request_id"), "endpoint": ep})
+        except requests.exceptions.Timeout:
+            _log.warning("check-host.net start timeout for %s", ep)
+            results.append(
+                {
+                    "error": "timeout",
+                    "endpoint": ep,
+                    "detail": "Connection to check-host.net timed out (10s)",
+                }
+            )
+        except requests.exceptions.ConnectionError as e:
+            _log.warning("check-host.net connection error for %s: %s", ep, e)
+            results.append(
+                {
+                    "error": "connection_error",
+                    "endpoint": ep,
+                    "detail": f"Cannot reach check-host.net: {e}",
+                }
+            )
+        except requests.exceptions.HTTPError as e:
+            _log.warning("check-host.net HTTP error for %s: %s", ep, e)
+            results.append(
+                {
+                    "error": "http_error",
+                    "endpoint": ep,
+                    "detail": f"check-host.net returned HTTP {e.response.status_code}",
+                }
+            )
         except Exception as e:
             _log.warning("check-host.net start failed for %s: %s", ep, e)
-            request_ids.append(None)
-    return request_ids
+            results.append({"error": "unknown", "endpoint": ep, "detail": str(e)})
+    return results
 
 
 def _check_host_result(request_id):
@@ -1022,8 +1048,20 @@ def _check_host_result(request_id):
         )
         resp.raise_for_status()
         return resp.json()
+    except requests.exceptions.Timeout:
+        return {"error": "timeout", "detail": "Polling check-host.net timed out"}
+    except requests.exceptions.ConnectionError as e:
+        return {
+            "error": "connection_error",
+            "detail": f"Cannot reach check-host.net: {e}",
+        }
+    except requests.exceptions.HTTPError as e:
+        return {
+            "error": "http_error",
+            "detail": f"check-host.net returned HTTP {e.response.status_code}",
+        }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": "unknown", "detail": str(e)}
 
 
 def _parse_check_host_result(raw):
@@ -1080,10 +1118,14 @@ def status_check_host_start():
     """Start a check-host.net check for the three core endpoints."""
     base = _get_public_base()
     hostname = urllib.parse.urlparse(base).hostname
-    request_ids = _check_host_start(hostname)
+    results = _check_host_start(hostname)
+    # Count successes
+    success_count = sum(1 for r in results if "request_id" in r)
     return jsonify(
         {
-            "request_ids": request_ids,
+            "results": results,
+            "success_count": success_count,
+            "total": len(results),
             "note": "Started check-host.net checks. Poll /status/check-host/result/<request_id> for results. This uses an external service (check-host.net).",
         }
     )
