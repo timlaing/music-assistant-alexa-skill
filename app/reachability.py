@@ -16,6 +16,9 @@ from public_urls import public_base, rewrite_url
 from shared_store import get_ma
 from ui_markup import row as markup_row
 
+# Label constants to avoid duplication (Sonar S1192)
+_SKILL_ENDPOINT_LABEL = "Skill endpoint"
+_STREAM_HOST_LABEL = "Stream host"
 _AUDIO_CHECK = "Public audio delivery"
 
 # The Current audio row streams a range-limited GET instead of a HEAD: a
@@ -47,7 +50,10 @@ _INTERNAL_NOTE = (
 def targets():
     stream = get_setting("MA_HOSTNAME", "").strip()
     skill = get_setting("SKILL_HOSTNAME", "").strip()
-    result = [("Skill endpoint", skill, "skill"), ("Stream host", stream, "host")]
+    result = [
+        (_SKILL_ENDPOINT_LABEL, skill, "skill"),
+        (_STREAM_HOST_LABEL, stream, "host"),
+    ]
     if skill:
         result.append((_AUDIO_CHECK, skill, "testaudio"))
     latest = get_ma() or {}
@@ -1154,7 +1160,7 @@ class Reachability:
             self.external_results = list(existing_by_label.values())
             self.external_checked = time.time()
             # external_passed is True only when all three core endpoints passed
-            core_labels = ["Skill endpoint", "Stream host", "Public audio delivery"]
+            core_labels = [_SKILL_ENDPOINT_LABEL, _STREAM_HOST_LABEL, _AUDIO_CHECK]
             self.external_passed = all(
                 any(
                     ext.get("label") == label and ext.get("passed")
@@ -1172,37 +1178,41 @@ class Reachability:
 
     def _apply_external_results(self, local_results):
         """Override local results with external check-host.net results when they pass."""
-        # External results are per-endpoint: we map by label
+        external_by_label = self._build_external_by_label()
+        return [
+            self._merge_local_with_external(local, external_by_label)
+            for local in local_results
+        ]
+
+    def _build_external_by_label(self):
+        """Build a mapping of label -> external result for passed endpoints."""
         external_by_label = {}
         if self.external_results:
             for ext in self.external_results:
-                for label in ["Skill endpoint", "Stream host", "Public audio delivery"]:
+                for label in [_SKILL_ENDPOINT_LABEL, _STREAM_HOST_LABEL, _AUDIO_CHECK]:
                     if ext.get("label") == label:
                         external_by_label[label] = ext
                         break
+        return external_by_label
 
-        new_results = []
-        for local in local_results:
-            label = local.get("label")
-            if label in external_by_label:
-                ext = external_by_label[label]
-                # If external passed, upgrade to reachable and remove note
-                if ext.get("passed"):
-                    new = dict(local)
-                    new["status"] = "reachable"
-                    new["message"] = (
-                        f"External check passed: {ext.get('passed_nodes', 0)}/{ext.get('total_nodes', 0)} nodes OK"
-                    )
-                    new.pop("note", None)  # Remove split-horizon note
-                    new["downgraded"] = False
-                    new["http_status"] = 200
-                    new["external_verified"] = True
-                    new_results.append(new)
-                else:
-                    new_results.append(local)
-            else:
-                new_results.append(local)
-        return new_results
+    def _merge_local_with_external(self, local, external_by_label):
+        """Merge a local result with its external counterpart if available."""
+        label = local.get("label")
+        if label not in external_by_label:
+            return local
+        ext = external_by_label[label]
+        if not ext.get("passed"):
+            return local
+        new = dict(local)
+        new["status"] = "reachable"
+        new["message"] = (
+            f"External check passed: {ext.get('passed_nodes', 0)}/{ext.get('total_nodes', 0)} nodes OK"
+        )
+        new.pop("note", None)
+        new["downgraded"] = False
+        new["http_status"] = 200
+        new["external_verified"] = True
+        return new
 
     def check(self, configured):
         # One resolution view per hostname for the whole run: the skill and
@@ -1303,108 +1313,144 @@ def diagnostics(result):
 
 
 def _counts_ready(check):
-    """True when a check passed: plainly, or as a downgraded split-horizon pass.
+    """True when a check passed: plainly, or as a downgraded split-horizon pass."""
+    return bool(check) and (
+        check["status"] == "reachable" or check.get("downgraded") is True
+    )
 
-    A split-horizon pass is downgraded to a warning but did confirm the
-    service, so it must not trip the not-ready error (issue #49 review). A
-    genuine warning (e.g. non-audio response, HTTP error) has no downgraded
-    flag and does not count.
-    """
-    if not check:
-        return False
-    return check["status"] == "reachable" or check.get("downgraded") is True
+
+def _failed_checks(checks):
+    return [c for c in checks if c["status"] == "failed"]
+
+
+def _attention_warnings(checks):
+    return [c for c in checks if c["status"] == "warning" and not c.get("downgraded")]
+
+
+def _has_notes(checks):
+    return any(c.get("note") for c in checks)
+
+
+def _external_passed(result):
+    return result.get("external_check", {}).get("passed", False)
+
+
+def _checking_banner():
+    return {
+        "kind": "neutral",
+        "title": "Checking public reachability…",
+        "description": "Running the add-on reachability checks.",
+    }
+
+
+def _failed_banner(failed, checks):
+    return {
+        "kind": "warning",
+        "title": "Some checks need attention",
+        "description": (
+            f"{len(failed)} of {len(checks)} reachability "
+            "checks failed even though the skill endpoint and audio "
+            "route are reachable. Review Connectivity below."
+        ),
+    }
+
+
+def _warning_banner(warnings, checks):
+    return {
+        "kind": "warning",
+        "title": "Some checks need attention",
+        "description": (
+            f"{len(warnings)} of {len(checks)} "
+            "reachability checks reported a warning even though the "
+            "skill endpoint and audio route are reachable. Review "
+            "Connectivity below."
+        ),
+    }
+
+
+def _notes_banner(external_passed):
+    if external_passed:
+        return {
+            "kind": "good",
+            "title": "External path check passed",
+            "description": (
+                "All 3 endpoints reachable from all check-host.net vantage points. "
+                "The public path is verified. Play a track on your Echo to confirm end-to-end playback."
+            ),
+        }
+    return {
+        "kind": "warning",
+        "title": "Some checks resolve internally",
+        "description": (
+            "The skill endpoint and audio route are reachable, but at "
+            "least one check resolved to a LAN address, so its "
+            "public/Echo path was not tested. Play a track on your "
+            "Echo to confirm end-to-end playback."
+        ),
+    }
+
+
+def _ready_banner():
+    return {
+        "kind": "good",
+        "title": "Service is ready for an Echo test",
+        "description": (
+            "The add-on and public audio route are reachable. "
+            "Play a track on your Echo to verify end-to-end playback."
+        ),
+    }
+
+
+def _unconfigured_banner():
+    return {
+        "kind": "warning",
+        "title": "Public URLs need attention",
+        "description": (
+            "Set your public skill URL in Setup so reachability checks "
+            "and the Echo test can run."
+        ),
+    }
+
+
+def _error_banner(attention, checks):
+    return {
+        "kind": "error",
+        "title": "Not ready for an Echo test",
+        "description": (
+            f"{len(attention)} of {len(checks)} reachability checks "
+            "need attention. Review Connectivity below."
+        ),
+    }
 
 
 def summary(result):
     """Readiness banner state derived from the reachability checks."""
     by_label = {check["label"]: check for check in result["checks"]}
-    skill = by_label.get("Skill endpoint")
+    skill = by_label.get(_SKILL_ENDPOINT_LABEL)
     audio = by_label.get(_AUDIO_CHECK)
-
-    # Check if external verification passed
-    external_check = result.get("external_check", {})
-    external_passed = external_check.get("passed", False)
+    checks = result["checks"]
 
     if result["checking"] and not result["checked_at"]:
-        return {
-            "kind": "neutral",
-            "title": "Checking public reachability…",
-            "description": "Running the add-on reachability checks.",
-        }
+        return _checking_banner()
+
     if _counts_ready(skill) and _counts_ready(audio):
-        failed = [check for check in result["checks"] if check["status"] == "failed"]
+        failed = _failed_checks(checks)
         if failed:
-            return {
-                "kind": "warning",
-                "title": "Some checks need attention",
-                "description": (
-                    f"{len(failed)} of {len(result['checks'])} reachability "
-                    "checks failed even though the skill endpoint and audio "
-                    "route are reachable. Review Connectivity below."
-                ),
-            }
-        attention_warnings = [
-            check
-            for check in result["checks"]
-            if check["status"] == "warning" and not check.get("downgraded")
-        ]
-        if attention_warnings:
-            return {
-                "kind": "warning",
-                "title": "Some checks need attention",
-                "description": (
-                    f"{len(attention_warnings)} of {len(result['checks'])} "
-                    "reachability checks reported a warning even though the "
-                    "skill endpoint and audio route are reachable. Review "
-                    "Connectivity below."
-                ),
-            }
-        if any(check.get("note") for check in result["checks"]):
-            # If external check passed, show green banner instead
-            if external_passed:
-                return {
-                    "kind": "good",
-                    "title": "External path check passed",
-                    "description": (
-                        "All 3 endpoints reachable from all check-host.net vantage points. "
-                        "The public path is verified. Play a track on your Echo to confirm end-to-end playback."
-                    ),
-                }
-            return {
-                "kind": "warning",
-                "title": "Some checks resolve internally",
-                "description": (
-                    "The skill endpoint and audio route are reachable, but at "
-                    "least one check resolved to a LAN address, so its "
-                    "public/Echo path was not tested. Play a track on your "
-                    "Echo to confirm end-to-end playback."
-                ),
-            }
-        return {
-            "kind": "good",
-            "title": "Service is ready for an Echo test",
-            "description": (
-                "The add-on and public audio route are reachable. "
-                "Play a track on your Echo to verify end-to-end playback."
-            ),
-        }
+            return _failed_banner(failed, checks)
+
+        warnings = _attention_warnings(checks)
+        if warnings:
+            return _warning_banner(warnings, checks)
+
+        if _has_notes(checks):
+            return _notes_banner(_external_passed(result))
+
+        return _ready_banner()
+
     skill_status = skill["status"] if skill else None
     audio_status = audio["status"] if audio else None
     if skill_status in (None, "unconfigured") or audio_status in (None, "unconfigured"):
-        return {
-            "kind": "warning",
-            "title": "Public URLs need attention",
-            "description": (
-                "Set your public skill URL in Setup so reachability checks "
-                "and the Echo test can run."
-            ),
-        }
-    attention = [check for check in result["checks"] if check["status"] != "reachable"]
-    return {
-        "kind": "error",
-        "title": "Not ready for an Echo test",
-        "description": (
-            f"{len(attention)} of {len(result['checks'])} reachability checks "
-            "need attention. Review Connectivity below."
-        ),
-    }
+        return _unconfigured_banner()
+
+    attention = [c for c in checks if c["status"] != "reachable"]
+    return _error_banner(attention, checks)

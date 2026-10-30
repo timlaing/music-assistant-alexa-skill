@@ -227,17 +227,17 @@ function setFragment(id, html){
             var endpointNames = ["Skill endpoint", "Stream host", "Public audio delivery"];
             var allPassed = true;
             var html = '<table class="ma-table"><thead><tr><th>Endpoint</th><th>Passed</th><th>Failed</th><th>HTTP</th><th>Latency (ms)</th></tr></thead><tbody>';
-            
+
             allResults.forEach(function(data, idx) {
                 var parsed = data.parsed || [];
                 var name = endpointNames[idx];
-                
+
                 if (parsed.length === 0) {
                     html += '<tr><td colspan="5" class="ma-muted">' + name + ': no results yet</td></tr>';
                     allPassed = false;
                     return;
                 }
-                
+
                 // Aggregate results
                 var total = parsed.length;
                 var passed = parsed.filter(function(p) { return p.status === 1; }).length;
@@ -247,12 +247,9 @@ function setFragment(id, html){
                 var minTime = Math.min.apply(null, times);
                 var maxTime = Math.max.apply(null, times);
                 var avgTime = Math.round(times.reduce(function(a, b) { return a + b; }, 0) / times.length);
-                
+
                 if (failed > 0) allPassed = false;
-                
-                var statusClass = failed === 0 ? 'ma-ok' : 'ma-warning';
-                var statusText = failed === 0 ? '✓ All passed' : failed + ' of ' + total + ' failed';
-                
+
                 html += '<tr>' +
                     '<td><strong>' + name + '</strong></td>' +
                     '<td style="color: var(--success-color)">' + passed + '</td>' +
@@ -261,10 +258,10 @@ function setFragment(id, html){
                     '<td>avg ' + avgTime + 'ms (min ' + minTime + 'ms, max ' + maxTime + 'ms)</td>' +
                 '</tr>';
             });
-            
+
             html += '</tbody></table>';
             html += '<p class="ma-small ma-muted">Source: <a href="https://check-host.net" target="_blank" rel="noopener">check-host.net</a> (external service).</p>';
-            
+
             // If all endpoints passed all nodes, show a success banner and suggest green status
             if (allPassed) {
                 html = '<div class="ma-banner ma-success" style="margin-bottom:12px">' +
@@ -272,7 +269,7 @@ function setFragment(id, html){
                     '<div><strong>External path check passed</strong><p>All 3 endpoints reachable from all check-host.net vantage points.</p></div>' +
                 '</div>' + html;
             }
-            
+
             results.innerHTML = html;
             button.disabled = false;
         }

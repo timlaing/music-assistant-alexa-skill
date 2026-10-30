@@ -992,7 +992,7 @@ def _get_public_base():
     return public_base(get_setting("MA_HOSTNAME", ""))
 
 
-def _check_host_start(hostname, max_nodes=10):
+def _check_host_start(max_nodes=10):
     """Start a check-host.net HTTP check for the three core endpoints.
     Returns a list of dicts with request_id or error info."""
     base = _get_public_base()
@@ -1050,8 +1050,11 @@ def _check_host_start(hostname, max_nodes=10):
 
 def _check_host_result(request_id, endpoint=None):
     """Poll check-host.net for a single request_id."""
-    if not request_id:
+    if not request_id or not isinstance(request_id, str):
         return {"error": "no request_id"}
+    # Validate request_id format (alphanumeric with hyphens/underscores)
+    if not re.match(r"^[a-zA-Z0-9_-]+$", request_id):
+        return {"error": "invalid_request_id"}
     try:
         resp = requests.get(
             f"https://check-host.net/check-result/{request_id}", timeout=10
@@ -1081,38 +1084,42 @@ def _parse_check_host_result(raw):
     """Parse raw check-host result into a list of {node, status, code, time, ip, label}."""
     if not raw or isinstance(raw, dict) and raw.get("error"):
         return []
-    results = []
-    endpoint = raw.get("_endpoint", "")
-    # Extract label from endpoint URL
-    label = "Unknown"
-    if "/ma-alexa-skill/health" in endpoint:
-        label = "Skill endpoint"
-    elif endpoint.endswith("/") or endpoint.endswith("/ma-alexa-skill/"):
-        label = "Stream host"
-    elif "/ma-alexa-skill/test-audio.mp3" in endpoint:
-        label = "Public audio delivery"
 
+    endpoint = raw.get("_endpoint", "")
+    label = _label_from_endpoint(endpoint)
+
+    results = []
     for node_key, node_data in raw.items():
-        if node_key == "_endpoint":
-            continue
-        # node_data may be None if check is still pending, or a list of checks
-        # each check is [status, time, status_text, code, ip]
-        if not node_data:
+        if node_key == "_endpoint" or not node_data:
             continue
         for check in node_data:
             if isinstance(check, list) and len(check) >= 5:
-                results.append(
-                    {
-                        "node": node_key,
-                        "status": check[0],
-                        "time": check[1],
-                        "status_text": check[2],
-                        "code": check[3],
-                        "ip": check[4],
-                        "label": label,
-                    }
-                )
+                results.append(_result_from_check(node_key, check, label))
     return results
+
+
+def _label_from_endpoint(endpoint: str) -> str:
+    """Map endpoint URL to a display label."""
+    if "/ma-alexa-skill/health" in endpoint:
+        return "Skill endpoint"
+    if endpoint.endswith(("/", "/ma-alexa-skill/")):
+        return "Stream host"
+    if "/ma-alexa-skill/test-audio.mp3" in endpoint:
+        return "Public audio delivery"
+    return "Unknown"
+
+
+def _result_from_check(node_key: str, check: list, label: str) -> dict:
+    """Build a result dict from a single check-host check entry."""
+    return {
+        "node": node_key,
+        "status": check[0],
+        "time": check[1],
+        "status_text": check[2],
+        "code": check[3],
+        "ip": check[4],
+        "label": label,
+    }
 
 
 @status_bp.route("/status/public-targets", methods=["GET"])
@@ -1146,9 +1153,7 @@ def status_public_targets():
 def status_check_host_start():
     """Start a check-host.net check for the three core endpoints."""
     global _CHECK_HOST_START_RESULTS
-    base = _get_public_base()
-    hostname = urllib.parse.urlparse(base).hostname
-    results = _check_host_start(hostname)
+    results = _check_host_start()
     # Store for later lookup
     _CHECK_HOST_START_RESULTS = results
     # Clear any previous external results so each run starts fresh
