@@ -205,8 +205,6 @@ function setFragment(id, html){
                         allResults.push(data);
                         if (completed === pending.length) {
                             renderExternalResults(allResults);
-                        } else if (attempt < 30) { // max ~60 seconds
-                            setTimeout(function() { pollExternalResults(requestIds, attempt + 1); }, 2000);
                         }
                     })
                     .catch(function() {
@@ -216,6 +214,13 @@ function setFragment(id, html){
                         }
                     });
             });
+            // Schedule next poll if not all complete yet
+            if (completed < pending.length && attempt < 30) {
+                setTimeout(function() { pollExternalResults(requestIds, attempt + 1); }, 2000);
+            } else if (completed < pending.length) {
+                // Timeout - render what we have
+                renderExternalResults(allResults);
+            }
         }
 
         function renderExternalResults(allResults) {

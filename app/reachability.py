@@ -1140,11 +1140,35 @@ class Reachability:
             }
 
     def set_external_result(self, passed, results):
-        """Store external check-host.net result."""
+        """Store external check-host.net result, merging with existing results."""
         with self.lock:
-            self.external_passed = passed
+            # Merge new results with existing, keyed by label
+            if self.external_results is None:
+                self.external_results = []
+            # Upsert by label
+            existing_by_label = {ext.get("label"): ext for ext in self.external_results}
+            for ext in results:
+                label = ext.get("label")
+                if label:
+                    existing_by_label[label] = ext
+            self.external_results = list(existing_by_label.values())
             self.external_checked = time.time()
-            self.external_results = results
+            # external_passed is True only when all three core endpoints passed
+            core_labels = ["Skill endpoint", "Stream host", "Public audio delivery"]
+            self.external_passed = all(
+                any(
+                    ext.get("label") == label and ext.get("passed")
+                    for ext in self.external_results
+                )
+                for label in core_labels
+            )
+
+    def clear_external_result(self):
+        """Clear stored external check results."""
+        with self.lock:
+            self.external_passed = False
+            self.external_checked = 0
+            self.external_results = None
 
     def _apply_external_results(self, local_results):
         """Override local results with external check-host.net results when they pass."""

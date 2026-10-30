@@ -1151,6 +1151,10 @@ def status_check_host_start():
     results = _check_host_start(hostname)
     # Store for later lookup
     _CHECK_HOST_START_RESULTS = results
+    # Clear any previous external results so each run starts fresh
+    checker = current_app.extensions.get("reachability")
+    if checker:
+        checker.clear_external_result()
     # Count successes
     success_count = sum(1 for r in results if "request_id" in r)
     return jsonify(
@@ -1177,13 +1181,13 @@ def status_check_host_result(request_id):
     raw = _check_host_result(request_id, endpoint)
     parsed = _parse_check_host_result(raw)
 
-    # Determine if all endpoints passed all nodes
-    all_passed = False
+    # Determine if this endpoint passed all nodes
+    endpoint_passed = False
     if parsed:
-        all_passed = all(p.get("status") == 1 for p in parsed)
+        endpoint_passed = all(p.get("status") == 1 for p in parsed)
 
-    # If all passed, store in Reachability for banner/badge updates
-    if all_passed:
+    # Store in Reachability for banner/badge updates (merging with other endpoints)
+    if endpoint_passed:
         checker = current_app.extensions.get("reachability")
         if checker:
             # Group parsed results by label for storage
@@ -1194,7 +1198,7 @@ def status_check_host_result(request_id):
                     by_label[label] = []
                 by_label[label].append(p)
 
-            # Store grouped results as a list
+            # Store grouped results as a list - set_external_result will merge
             external_results = []
             for label, items in by_label.items():
                 passed_count = sum(1 for p in items if p.get("status") == 1)
@@ -1215,6 +1219,6 @@ def status_check_host_result(request_id):
             "request_id": request_id,
             "raw": raw,
             "parsed": parsed,
-            "all_passed": all_passed,
+            "all_passed": endpoint_passed,
         }
     )
