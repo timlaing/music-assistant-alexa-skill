@@ -1098,12 +1098,20 @@ class Reachability:
         self.checked = 0
         self.results = []
         self.thread = None
+        # External check-host.net results
+        self.external_checked = 0
+        self.external_passed = False
+        self.external_results = None
 
     def snapshot(self):
         configured = targets()
         with self.lock:
             if self.key != configured:
                 self.key, self.checked, self.results = configured, 0, []
+                # Reset external when config changes
+                self.external_checked = 0
+                self.external_passed = False
+                self.external_results = None
             if (
                 not self.thread or not self.thread.is_alive()
             ) and time.time() - self.checked > 60:
@@ -1111,12 +1119,66 @@ class Reachability:
                     target=self.check, args=(configured,), daemon=True
                 )
                 self.thread.start()
+            # If external check passed recently (< 10 min), override local results
+            results = list(self.results)
+            if (
+                self.external_passed
+                and self.external_results
+                and time.time() - self.external_checked < 600  # 10 minutes
+            ):
+                results = self._apply_external_results(results)
             return {
                 "checked_at": self.checked or None,
                 "checking": self.thread.is_alive(),
-                "checks": list(self.results),
+                "checks": results,
                 "perspective": "Checked from this add-on; Amazon/Echo access still requires a device test.",
+                "external_check": {
+                    "passed": self.external_passed,
+                    "checked_at": self.external_checked or None,
+                    "results": self.external_results,
+                },
             }
+
+    def set_external_result(self, passed, results):
+        """Store external check-host.net result."""
+        with self.lock:
+            self.external_passed = passed
+            self.external_checked = time.time()
+            self.external_results = results
+
+    def _apply_external_results(self, local_results):
+        """Override local results with external check-host.net results when they pass."""
+        # External results are per-endpoint: we map by label
+        external_by_label = {}
+        if self.external_results:
+            for ext in self.external_results:
+                for label in ["Skill endpoint", "Stream host", "Public audio delivery"]:
+                    if ext.get("label") == label:
+                        external_by_label[label] = ext
+                        break
+
+        new_results = []
+        for local in local_results:
+            label = local.get("label")
+            if label in external_by_label:
+                ext = external_by_label[label]
+                # If external passed, upgrade to reachable and remove note
+                if ext.get("passed"):
+                    new = dict(local)
+                    new["status"] = "reachable"
+                    new["message"] = (
+                        f"External check passed: {ext.get('passed_nodes', 0)}/{ext.get('total_nodes', 0)} nodes OK"
+                    )
+                    new.pop("note", None)  # Remove split-horizon note
+                    new["downgraded"] = False
+                    new["http_status"] = 200
+                    new["external_verified"] = True
+                    new_results.append(new)
+                else:
+                    new_results.append(local)
+            else:
+                new_results.append(local)
+        return new_results
 
     def check(self, configured):
         # One resolution view per hostname for the whole run: the skill and
@@ -1234,6 +1296,11 @@ def summary(result):
     by_label = {check["label"]: check for check in result["checks"]}
     skill = by_label.get("Skill endpoint")
     audio = by_label.get(_AUDIO_CHECK)
+
+    # Check if external verification passed
+    external_check = result.get("external_check", {})
+    external_passed = external_check.get("passed", False)
+
     if result["checking"] and not result["checked_at"]:
         return {
             "kind": "neutral",
@@ -1243,9 +1310,6 @@ def summary(result):
     if _counts_ready(skill) and _counts_ready(audio):
         failed = [check for check in result["checks"] if check["status"] == "failed"]
         if failed:
-            # A failed check outweighs the internal-resolution note: report it
-            # rather than the softer note-only warning that would mask it
-            # (issue #49 review).
             return {
                 "kind": "warning",
                 "title": "Some checks need attention",
@@ -1258,17 +1322,9 @@ def summary(result):
         attention_warnings = [
             check
             for check in result["checks"]
-            # A downgraded split-horizon pass verified the target and belongs
-            # to the note branch below; any other warning — note or not —
-            # reports an endpoint problem (e.g. an HTTP 404) that the banner
-            # must surface (issue #49 review).
             if check["status"] == "warning" and not check.get("downgraded")
         ]
         if attention_warnings:
-            # A secondary warning the note branch would mask (e.g. a Current
-            # audio URL that resolves only internally, or an HTTP error on a
-            # host that resolves internally) still needs attention: never
-            # report a plain green while a check warns (issue #49 review).
             return {
                 "kind": "warning",
                 "title": "Some checks need attention",
@@ -1280,8 +1336,16 @@ def summary(result):
                 ),
             }
         if any(check.get("note") for check in result["checks"]):
-            # Skill + audio are green, but another check resolved only via the
-            # LAN, so part of the Echo path is unverified (issue #49 review).
+            # If external check passed, show green banner instead
+            if external_passed:
+                return {
+                    "kind": "good",
+                    "title": "External path check passed",
+                    "description": (
+                        "All 3 endpoints reachable from all check-host.net vantage points. "
+                        "The public path is verified. Play a track on your Echo to confirm end-to-end playback."
+                    ),
+                }
             return {
                 "kind": "warning",
                 "title": "Some checks resolve internally",

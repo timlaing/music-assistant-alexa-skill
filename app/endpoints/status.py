@@ -1140,10 +1140,23 @@ def status_check_host_result(request_id):
     """Get the result of a check-host.net check."""
     raw = _check_host_result(request_id)
     parsed = _parse_check_host_result(raw)
+
+    # Determine if all endpoints passed all nodes
+    all_passed = False
+    if parsed:
+        all_passed = all(p.get("status") == 1 for p in parsed)
+
+    # If all passed, store in Reachability for banner/badge updates
+    if all_passed:
+        checker = current_app.extensions.get("reachability")
+        if checker:
+            checker.set_external_result(True, parsed)
+
     return jsonify(
         {
             "request_id": request_id,
             "raw": raw,
             "parsed": parsed,
+            "all_passed": all_passed,
         }
     )
