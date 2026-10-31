@@ -647,7 +647,9 @@ class DeploymentManager:
 
         try:
             body = json.loads(body_bytes.decode()) if body_bytes else {}
-        except (ValueError, UnicodeDecodeError):
+        except ValueError:
+            body = {}
+        except UnicodeDecodeError:
             body = {}
         return response, body, None
 
