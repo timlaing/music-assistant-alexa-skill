@@ -2021,3 +2021,40 @@ def test_body_read_failure_leaves_no_http_status_behind(kind):
     assert result["status"] == "failed"
     assert "timed out" in result["message"]
     assert "http_status" not in result  # diagnostics fall back to the status
+
+
+# --- Public-view guard for the OAuth callback probe (add-on issue #92) -----
+
+
+@pytest.mark.parametrize(
+    "view,expected",
+    [
+        (
+            {
+                ipaddress.ip_address("93.184.216.34"),
+                ipaddress.ip_address("2606:2800:220:1:248:1893:25c8:1946"),
+            },
+            True,
+        ),
+        (
+            {ipaddress.ip_address("93.184.216.34"), ipaddress.ip_address("10.0.0.5")},
+            False,
+        ),
+        ({ipaddress.ip_address("192.168.1.10")}, False),
+        (set(), False),
+        (None, False),
+        (reachability._DNS_TIMED_OUT, False),
+        (reachability._DNS_UNAVAILABLE, False),
+    ],
+)
+def test_resolves_publicly_requires_a_fully_public_local_view(
+    monkeypatch, view, expected
+):
+    """Only an all-public local view lets a probe verdict carry to Amazon.
+
+    A private, mixed, unresolved or stalled view (hairpin, split-horizon
+    DNS) is not the path the browser and Amazon take, so callers must not
+    treat a failed probe against such a host as conclusive (issue #92).
+    """
+    monkeypatch.setattr(reachability, "_resolved_addresses", lambda _host: view)
+    assert reachability.resolves_publicly("callback.example.com") is expected
