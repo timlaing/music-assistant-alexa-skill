@@ -649,8 +649,6 @@ class DeploymentManager:
             body = json.loads(body_bytes.decode()) if body_bytes else {}
         except ValueError:
             body = {}
-        except UnicodeDecodeError:
-            body = {}
         return response, body, None
 
     def ensure_callback_reachable(self, callback):
