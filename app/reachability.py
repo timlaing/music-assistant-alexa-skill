@@ -582,23 +582,6 @@ def _resolved_addresses(hostname):
     return found.get("addrs")
 
 
-def resolves_publicly(hostname):
-    """True only when the add-on's local view of hostname is entirely public.
-
-    A private or unresolved local view (split-horizon DNS, hairpin setups)
-    says nothing about the path Amazon or the user's browser takes, so
-    callers must not treat a failed probe against such a host as conclusive
-    (add-on issue #92 review). Unresolved, stalled and worker-starved
-    lookups are all inconclusive, hence False.
-    """
-    addresses = _resolved_addresses(hostname)
-    if addresses is _DNS_TIMED_OUT or addresses is _DNS_UNAVAILABLE:
-        return False
-    if not addresses:
-        return False
-    return all(address.is_global for address in addresses)
-
-
 def _public_addresses(hostname):
     """Public-internet addresses via DNS-over-HTTPS; None when every resolver failed.
 

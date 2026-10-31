@@ -114,7 +114,11 @@ def test_oauth_public_callback_finishes_only_in_original_ingress_browser(
         def iter_content(self, chunk_size):
             yield b'{"error": "Sign-in expired or was already returned. Connect Amazon again.", "probe": "ma-callback-probe"}'
 
-    def probe_get(*args, **kwargs):
+    probe_calls = []
+
+    def probe_get(session, url, **kwargs):
+        probe_calls.append(url)
+        assert kwargs["allow_redirects"] is False
         return ProbeResponse()
 
     monkeypatch.setattr(requests.Session, "get", probe_get)
@@ -122,6 +126,7 @@ def test_oauth_public_callback_finishes_only_in_original_ingress_browser(
     headers = {"X-CSRF-Token": csrf}
     response = gateway(client, "/setup/oauth/start", "post", headers=headers, json={})
     assert response.status_code == 200
+    assert probe_calls == [__import__("skill_deployment").oauth_config()[2]]
     assert PREFIX + "/setup" in response.headers["Set-Cookie"]
     state = parse_qs(urlparse(response.json["url"]).query)["state"][0]
     public = app.test_client()

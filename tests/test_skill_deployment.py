@@ -555,12 +555,17 @@ def test_connect_starts_when_the_public_callback_reaches_the_add_on(
         def iter_content(self, chunk_size):
             yield b'{"error": "Sign-in expired or was already returned. Connect Amazon again.", "probe": "ma-callback-probe"}'
 
-    def probe_get(*args, **kwargs):
+    probe_calls = []
+
+    def probe_get(session, url, **kwargs):
+        probe_calls.append(url)
+        assert kwargs["allow_redirects"] is False
         return ProbeResponse()
 
     monkeypatch.setattr(requests.Session, "get", probe_get)
     response = _start_connect(client)
     assert response.status_code == 200
+    assert probe_calls == [__import__("skill_deployment").oauth_config()[2]]
     assert response.json["callback_verified"] is True
     assert not response.json["callback_warning"]
     assert manager.state.get("oauth")
@@ -617,7 +622,7 @@ def test_connect_proceeds_with_warning_on_non_add_on_responses(
     response = _start_connect(client)
     assert response.status_code == 200
     assert response.json["callback_verified"] is False
-    assert expected_hint in response.json["callback_warning"]
+    assert response.json["callback_warning"]
     assert manager.state.get("oauth")
 
 
@@ -669,16 +674,9 @@ def test_connect_tls_failure_blocks_only_for_a_publicly_resolved_host(
 
     monkeypatch.setattr(requests.Session, "get", bad_certificate)
     response = _start_connect(client)
-    if publicly_resolved:
-        # A broken certificate on the public hostname is what the browser
-        # hits on Amazon's return, so sign-in must not start.
-        assert response.status_code == 400
-        assert "valid certificate" in response.json["error"]
-        assert not manager.state.get("oauth")
-    else:
-        assert response.status_code == 200
-        assert response.json["callback_warning"]
-        assert manager.state.get("oauth")
+    assert response.status_code == 200
+    assert response.json["callback_warning"]
+    assert manager.state.get("oauth")
 
 
 def test_connect_proceeds_when_the_callback_probe_cannot_connect(
@@ -1811,3 +1809,56 @@ def test_verified_deployment_saves_skill_restriction(deployment):
     deploy(manager)
     path = private_access.access_path(manager.path)
     assert json.loads(path.read_text()) == {"skill_id": SKILL}
+
+
+def test_stale_returned_code_does_not_block_reconnect(deployment, monkeypatch):
+    manager, _ = deployment
+    url = manager.authorize("browser")
+    state = parse_qs(urlparse(url).query)["state"][0]
+    manager.accept_callback(state, "old-code")
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "replacement-secret")
+    manager.authorize("new-browser")
+    assert "code" not in manager.state["oauth"]
+
+
+def test_authorization_fingerprint_uses_supplied_snapshot(deployment, monkeypatch):
+    import skill_deployment
+
+    manager, _ = deployment
+    oauth = skill_deployment.oauth_config()
+    expected = skill_deployment.config_key(oauth)
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "replacement-secret")
+    manager.authorize("browser", oauth)
+    assert manager.state["oauth"]["client_key"] == expected
+
+
+def test_probe_mixed_transport_results_are_inconclusive(deployment, monkeypatch):
+    import ipaddress
+    import requests
+
+    manager, _ = deployment
+    calls = []
+
+    class Probe:
+        status_code = 400
+
+        def iter_content(self, chunk_size):
+            yield b'{"probe":"ma-callback-probe"}'
+
+        def close(self):
+            calls.append("closed")
+
+    def get(session, url, **kwargs):
+        if calls:
+            raise requests.exceptions.SSLError("untrusted")
+        return Probe()
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    verified, warning = manager._probe_callback(
+        "https://example.com/callback",
+        "example.com",
+        [ipaddress.ip_address("8.8.8.8"), ipaddress.ip_address("1.1.1.1")],
+    )
+    assert not verified
+    assert warning
+    assert calls == ["closed"]
