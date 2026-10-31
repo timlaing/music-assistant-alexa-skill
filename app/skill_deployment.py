@@ -76,12 +76,8 @@ class DeploymentError(Exception):
     """An intentionally sanitized error suitable for displaying to the owner."""
 
 
-class AmazonError(DeploymentError):
-    def __init__(self, status):
-        self.status = status
-        super().__init__(
-            f"Amazon returned HTTP {status}. Check permissions/settings and retry; reconnect for 401/403."
-        )
+# AmazonError removed (redundant subclass of DeploymentError); use
+# DeploymentError with .status attribute instead.
 
 
 def digest(value):
@@ -628,6 +624,33 @@ class DeploymentManager:
             }
         )
 
+    def _probe_callback(self, callback, host, public_addrs):
+        """Execute the bounded callback probe; return (response, body, error).
+
+        error is None on successful request, or a string hint for transport failure.
+        """
+        deadline = time.monotonic() + 8.0  # shared budget for DNS + connect + read
+        session = requests.Session()
+        session.mount("https://", _PinnedAdapter(host, public_addrs[0]))
+        try:
+            response = session.get(
+                callback,
+                timeout=(3, 5),
+                allow_redirects=False,
+                stream=True,
+            )
+            body_bytes = _read_health_content(response, deadline=deadline)
+        except requests.exceptions.SSLError:
+            return None, None, "ssl"
+        except requests.RequestException:
+            return None, None, "transport"
+
+        try:
+            body = json.loads(body_bytes.decode()) if body_bytes else {}
+        except (ValueError, UnicodeDecodeError):
+            body = {}
+        return response, body, None
+
     def ensure_callback_reachable(self, callback):
         """Refuse Amazon sign-in while the public callback cannot arrive.
 
@@ -677,36 +700,19 @@ class DeploymentManager:
             )  # private or unresolved view: not Amazon's path
 
         # Probe pinned to the public addresses, size-limited body with deadline.
-        deadline = time.monotonic() + 8.0  # shared budget for DNS + connect + read
-        session = requests.Session()
-        session.mount("https://", _PinnedAdapter(host, public_addrs[0]))
-        try:
-            response = session.get(
-                callback,
-                timeout=(3, 5),
-                allow_redirects=False,
-                stream=True,
-            )
-            # Read at most 4 KiB with the shared deadline.
-            body_bytes = _read_health_content(response, deadline=deadline)
-        except requests.exceptions.SSLError:
+        response, body, error = self._probe_callback(callback, host, public_addrs)
+        if error == "ssl":
             raise DeploymentError(
                 "The public callback URL did not present a valid certificate, so "
                 "the browser would refuse to return Amazon's sign-in code there. "
                 "Fix or renew the certificate on the public hostname — a "
                 "self-signed certificate is not accepted — and connect again."
             ) from None
-        except requests.RequestException:
+        if error == "transport":
             return (
                 False,
                 _CALLBACK_UNVERIFIED,
             )  # transport failure: inconclusive from here
-
-        # Parse the capped body.
-        try:
-            body = json.loads(body_bytes.decode()) if body_bytes else {}
-        except (ValueError, UnicodeDecodeError):
-            body = {}
 
         if (
             response.status_code == 400
@@ -898,7 +904,11 @@ class DeploymentManager:
             self.pause(2**attempt)
             return True
         if not 200 <= response.status_code < 300:
-            raise AmazonError(response.status_code)
+            exc = DeploymentError(
+                f"Amazon returned HTTP {response.status_code}. Check permissions/settings and retry; reconnect for 401/403."
+            )
+            exc.status = response.status_code
+            raise exc
         return False
 
     def pause(self, seconds):
@@ -1174,8 +1184,8 @@ class DeploymentManager:
                 "/v1/skills",
                 json={"vendorId": review["vendor"], "manifest": review["manifest"]},
             )
-        except AmazonError as exc:
-            if 400 <= exc.status < 500:
+        except DeploymentError as exc:
+            if hasattr(exc, "status") and 400 <= exc.status < 500:
                 self.update(creation_unknown=False)
             raise
         skill = response.json().get("skillId")
@@ -1205,8 +1215,8 @@ class DeploymentManager:
                 f"/v1/skills/{quote(skill, safe='')}/imports",
                 json={"location": uploaded},
             )
-        except AmazonError as exc:
-            if 400 <= exc.status < 500:
+        except DeploymentError as exc:
+            if hasattr(exc, "status") and 400 <= exc.status < 500:
                 self.update(import_unknown=False)
             raise
         self.update(
