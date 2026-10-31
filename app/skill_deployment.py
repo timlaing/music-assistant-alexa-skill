@@ -584,7 +584,9 @@ class DeploymentManager:
                 "state": digest(state),
                 "browser": digest(browser_nonce),
                 "expires": time.time() + 600,
-                "client_key": digest("\0".join(oauth)),
+                # Compared against the live config at callback time, so it
+                # must reflect the current one, not the request snapshot.
+                "client_key": config_key(),
             }
             self.save()
         return "https://www.amazon.com/ap/oa?" + urlencode(
