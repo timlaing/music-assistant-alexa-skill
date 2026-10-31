@@ -46,6 +46,11 @@ TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 MAX_PACKAGE = 10 * 1024 * 1024
 BUSY = {"preparing", "running"}
 _MANAGER_LOCK = threading.Lock()
+# Nabu Casa's remote UI proxies by SNI straight to Home Assistant itself: it
+# serves the frontend and ingress URLs only, never a custom path such as
+# /ma-alexa-skill/ (add-on issue #92), so its hostnames can carry neither the
+# Amazon callback nor the deployed skill endpoint.
+_NABU_CASA_SUFFIX = ".ui.nabu.casa"
 
 
 class DeploymentError(Exception):
@@ -134,6 +139,25 @@ def oauth_config():
 
 def config_key():
     return digest("\0".join(oauth_config()))
+
+
+def _callback_reached_add_on(response):
+    """True when the public callback URL answered with this add-on's own route.
+
+    A code-less callback GET is rejected with a fixed 400 JSON error before
+    any state is touched, so only that response proves the public host routed
+    the request back here. A 404, a login redirect or a frontend page from
+    whatever serves the hostname in front of the add-on means Amazon's
+    authorization code would be stranded there and the connection could never
+    complete (add-on issue #92).
+    """
+    if response.status_code != 400:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and "Sign-in expired" in str(body.get("error", ""))
 
 
 def atomic_write(path, content):
@@ -554,6 +578,53 @@ class DeploymentManager:
                 "scope": "alexa::ask:skills:readwrite alexa::ask:models:readwrite",
                 "state": state,
             }
+        )
+
+    def ensure_callback_reachable(self):
+        """Refuse Amazon sign-in while the public callback cannot arrive.
+
+        Amazon redirects the browser to the registered callback after consent;
+        when the public host does not route /ma-alexa-skill/ back to this
+        add-on the authorization code is stranded there, the account never
+        connects, and setup only ever reports null vendor/skill identifiers
+        (add-on issue #92). Nabu Casa can never route it, so that shape is
+        refused outright. Otherwise the exact callback URL is probed: an HTTP
+        response that is not this add-on proves the route is missing. A
+        transport failure never blocks — from inside the container it says
+        nothing about the path the browser and Amazon take (hairpin and
+        split-horizon setups would otherwise false-positive).
+        """
+        callback = oauth_config()[2]
+        host = (urlparse(callback).hostname or "").lower()
+        if host.endswith(_NABU_CASA_SUFFIX):
+            raise DeploymentError(
+                "Home Assistant Cloud (Nabu Casa) cannot host the Amazon callback: "
+                "its URL serves Home Assistant and ingress pages only, never "
+                "/ma-alexa-skill/. Put a reverse proxy (Nginx Proxy Manager, or a "
+                "Cloudflare Tunnel in front of one) on a public HTTPS hostname as "
+                "described in the add-on docs, use that hostname as the skill "
+                "endpoint, and register its callback URL with Login with Amazon "
+                "before connecting again."
+            )
+        try:
+            response = self.http.get(callback, timeout=(3, 5), allow_redirects=False)
+        except requests.RequestException:
+            return  # not reachable from here; says nothing about Amazon's path
+        if _callback_reached_add_on(response):
+            return
+        if 300 <= response.status_code < 400 or response.status_code in (401, 403):
+            hint = (
+                "remove any login or access-list requirement from that route so "
+                "Amazon can return the sign-in code unauthenticated."
+            )
+        else:
+            hint = (
+                "check the reverse proxy route: /ma-alexa-skill/ must forward to "
+                "this add-on exactly as described in the add-on docs."
+            )
+        raise DeploymentError(
+            f"The public callback URL answered HTTP {response.status_code} instead of "
+            f"this add-on, so the Amazon sign-in code would never arrive. {hint}"
         )
 
     def accept_callback(self, state, code):
@@ -1508,6 +1579,7 @@ def register_setup(app):
     @blueprint.route("/setup/oauth/start", methods=["POST"])
     def connect():
         oauth_config()  # validate the separate public callback registration
+        manager().ensure_callback_reachable()  # fail fast when Amazon's return cannot arrive
         nonce = secrets.token_urlsafe(32)
         response = jsonify(url=manager().authorize(nonce))
         response.set_cookie(

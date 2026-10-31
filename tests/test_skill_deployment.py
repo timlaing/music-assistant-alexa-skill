@@ -50,6 +50,7 @@ class Response:
 class Amazon:
     def __init__(self):
         self.calls = []
+        self.probes = []  # public callback reachability probes, never API calls
         self.created = 0
         self.imported = False
         self.model_status = "SUCCEEDED"
@@ -84,6 +85,16 @@ class Amazon:
                 "refresh_token": "private-refresh",
                 "expires_in": 3600,
             }
+        )
+
+    def get(self, url, **kwargs):
+        # The setup route probes the public callback before opening Amazon's
+        # consent screen; the fake models the add-on answering its own route
+        # (the fixed code-less 400 that identifies it).
+        self.probes.append((url, kwargs))
+        return Response(
+            {"error": "Sign-in expired or was already returned. Connect Amazon again."},
+            status=400,
         )
 
     def request(self, method, url, **kwargs):
@@ -497,6 +508,88 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
         ).status_code
         == 400
     )
+
+
+def _start_connect(client):
+    status = client.get("/setup/status", headers=AUTH).json
+    return client.post(
+        "/setup/oauth/start",
+        headers={**AUTH, "X-CSRF-Token": status["csrf"]},
+        json={},
+    )
+
+
+def test_connect_starts_when_the_public_callback_reaches_the_add_on(deployment, client):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    response = _start_connect(client)
+    assert response.status_code == 200
+    # The exact registered callback URL is probed, without following
+    # redirects, before Amazon's consent screen is opened.
+    assert [url for url, _ in amazon.probes] == [
+        BASE_URL + "/ma-alexa-skill/setup/oauth/callback"
+    ]
+    assert amazon.probes[0][1]["allow_redirects"] is False
+    assert manager.state.get("oauth")
+
+
+def test_connect_refuses_nabu_casa_callback_host(deployment, client, monkeypatch):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setenv("SKILL_HOSTNAME", "https://example.ui.nabu.casa/ma-alexa-skill/")
+    response = _start_connect(client)
+    assert response.status_code == 400
+    assert "Nabu Casa" in response.json["error"]
+    assert "/ma-alexa-skill/" in response.json["error"]
+    # Refused outright: no probe, no pending sign-in (issue #92).
+    assert not amazon.probes
+    assert not manager.state.get("oauth")
+
+
+@pytest.mark.parametrize(
+    "status,expected_hint",
+    [
+        (404, "reverse proxy route"),
+        (302, "login or access-list"),
+        (401, "login or access-list"),
+    ],
+)
+def test_connect_blocks_callback_answers_that_are_not_the_add_on(
+    deployment, client, status, expected_hint
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    amazon.get = lambda url, **kwargs: Response(status=status)
+    response = _start_connect(client)
+    assert response.status_code == 400
+    assert f"HTTP {status}" in response.json["error"]
+    assert expected_hint in response.json["error"]
+    # The sign-in never started, so no orphaned pending state remains.
+    assert not manager.state.get("oauth")
+
+
+def test_connect_proceeds_when_the_callback_probe_cannot_connect(deployment, client):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+
+    def unreachable(url, **kwargs):
+        raise requests.exceptions.ConnectionError("no route to host")
+
+    amazon.get = unreachable
+    # From inside the container a transport failure says nothing about the
+    # browser's or Amazon's path (hairpin/split-horizon setups), so it must
+    # not block the sign-in.
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert manager.state.get("oauth")
 
 
 def test_setup_wizard_step_pages_render(client, deployment):
