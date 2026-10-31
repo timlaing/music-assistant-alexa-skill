@@ -39,6 +39,13 @@ from flask import (
     url_for,
 )
 from page_nav import nav_html
+from reachability import (
+    _resolved_addresses,
+    _DNS_TIMED_OUT,
+    _DNS_UNAVAILABLE,
+    _read_health_content,
+    _PinnedAdapter,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 API = "https://api.amazonalexa.com"
@@ -46,6 +53,23 @@ TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 MAX_PACKAGE = 10 * 1024 * 1024
 BUSY = {"preparing", "running"}
 _MANAGER_LOCK = threading.Lock()
+# Nabu Casa's remote UI proxies by SNI straight to Home Assistant itself: it
+# serves the frontend and ingress URLs only, never a custom path such as
+# /ma-alexa-skill/ (add-on issue #92), so its hostnames can carry neither the
+# Amazon callback nor the deployed skill endpoint.
+_NABU_CASA_SUFFIX = ".ui.nabu.casa"
+# Shown on step 2 when the probe could not decide: transport failures, or a
+# hostname whose local view is private/unresolved, say nothing about the path
+# the browser and Amazon take, so sign-in still starts (issue #92 review).
+_CALLBACK_UNVERIFIED = (
+    "The add-on could not verify that the public callback URL routes back here, "
+    "so Amazon sign-in was started anyway. If the account does not connect, "
+    "check that the public hostname forwards /ma-alexa-skill/ to this add-on "
+    "as described in the add-on docs."
+)
+# Exact marker only this add-on returns on a code-less callback probe.
+# Prevents unrelated 400 JSON with "Sign-in expired" from passing as verified.
+_CALLBACK_PROBE_MARKER = "ma-callback-probe"
 
 
 class DeploymentError(Exception):
@@ -132,8 +156,18 @@ def oauth_config():
     return client, secret, callback
 
 
-def config_key():
-    return digest("\0".join(oauth_config()))
+def config_key(oauth=None):
+    """SHA256 fingerprint of the current OAuth config for change detection.
+
+    The fingerprint is stored in deployment state and backups; it must not
+    contain the LWA client secret in plaintext. Use a fast hash because the
+    secret is not a password — it is a config value compared for equality
+    only. The format matches the pre-change fingerprint so existing
+    deployments upgrade without re-connection.
+    """
+    return hashlib.sha256(
+        "\0".join(oauth if oauth is not None else oauth_config()).encode()
+    ).hexdigest()
 
 
 def atomic_write(path, content):
@@ -531,19 +565,48 @@ class DeploymentManager:
             )
             return result
 
-    def authorize(self, browser_nonce):
+    def authorize(self, browser_nonce, oauth=None):
+        """Build Amazon's consent URL from one oauth_config() snapshot.
+
+        The setup route reads the config once and passes the same tuple here
+        and to ensure_callback_reachable, so the probed callback and the one
+        registered with Amazon cannot diverge mid-request (issue #92 review).
+
+        Rejects a new start while an OAuth flow is pending to prevent the
+        earlier callback from being invalidated by a later retry (Sourcery
+        review). Allows retry when the pending flow has no code (lost start
+        response) or is expired. Rejects stale pending only when its saved
+        fingerprint matches the current configuration.
+        """
         with self.lock:
             if self.state.get("phase") in BUSY:
                 raise DeploymentError(
                     "Wait for the current operation before reconnecting."
                 )
-            client, _, callback = oauth_config()
+            pending = self.state.get("oauth", {})
+            oauth = oauth if oauth is not None else oauth_config()
+            current_fp = config_key(oauth)
+            saved_fp = pending.get("client_key")
+            has_code = pending.get("code") is not None
+            is_expired = pending.get("expires", 0) <= time.time()
+
+            # If a valid code is already stored, do not replace the flow —
+            # the original browser is completing the authorization.
+            if has_code and not is_expired and saved_fp == current_fp:
+                raise DeploymentError(
+                    "A sign-in is already in progress with a returned code; "
+                    "wait for it to complete or expire before retrying."
+                )
+
+            client, _, callback = oauth
             state = secrets.token_urlsafe(32)
             self.state["oauth"] = {
                 "state": digest(state),
                 "browser": digest(browser_nonce),
                 "expires": time.time() + 600,
-                "client_key": config_key(),
+                # Hashed fingerprint matching config_key() for upgrade compatibility
+                # and secret safety in backups.
+                "client_key": current_fp,
             }
             self.save()
         return "https://www.amazon.com/ap/oa?" + urlencode(
@@ -555,6 +618,102 @@ class DeploymentManager:
                 "state": state,
             }
         )
+
+    def _probe_callback(self, callback, host, public_addrs):
+        """Verify every address within one HTTP budget; failures are inconclusive."""
+        deadline = time.monotonic() + 8.0
+        verified = bool(public_addrs)
+        for addr in public_addrs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, _CALLBACK_UNVERIFIED
+            session = requests.Session()
+            response = None
+            session.mount("https://", _PinnedAdapter(host, addr))
+            session.trust_env = False
+            try:
+                response = session.get(
+                    callback,
+                    timeout=(min(3, remaining / 2), min(5, remaining / 2)),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                content = _read_health_content(response, deadline=deadline)
+                body = json.loads(content) if content else {}
+                reached = (
+                    response.status_code == 400
+                    and isinstance(body, dict)
+                    and body.get("probe") == _CALLBACK_PROBE_MARKER
+                )
+                verified = verified and reached
+            except (requests.RequestException, ValueError):
+                verified = False
+            finally:
+                if response is not None:
+                    close = getattr(response, "close", None)
+                    if close is not None:
+                        close()
+                session.close()
+        return (True, "") if verified else (False, _CALLBACK_UNVERIFIED)
+
+    def ensure_callback_reachable(self, callback):
+        """Refuse Amazon sign-in while the public callback cannot arrive.
+
+        Amazon redirects the browser to the registered callback after consent;
+        when the public host does not route /ma-alexa-skill/ back to this
+        add-on the authorization code is stranded there, the account never
+        connects, and setup only ever reports null vendor/skill identifiers
+        (add-on issue #92). Nabu Casa can never route it, so that shape is
+        refused outright.
+
+        The probe is bounded: DNS resolution uses the shared worker with a
+        5 s deadline (issue #49), and the HTTP response is read at most 4 KiB
+        with a total deadline so a slow or trickling server cannot hold the
+        setup request (issue #53). The request is pinned to the public
+        addresses validated by the lookup to prevent SSRF and DNS rebinding
+        (Sourcery review).
+
+        Returns (verified, warning): verified is True only when the add-on
+        answered its own callback with the dedicated probe marker, and the
+        hostname resolves fully publicly from here. Otherwise the sign-in
+        still starts and the caller surfaces the inconclusive result.
+        """
+        host = (urlparse(callback).hostname or "").lower().rstrip(".")
+        if host.endswith(_NABU_CASA_SUFFIX):
+            raise DeploymentError(
+                "Home Assistant Cloud (Nabu Casa) cannot host the Amazon callback: "
+                "its URL serves Home Assistant and ingress pages only, never "
+                "/ma-alexa-skill/. Put a reverse proxy (Nginx Proxy Manager, or a "
+                "Cloudflare Tunnel in front of one) on a public HTTPS hostname as "
+                "described in the add-on docs, use that hostname as the skill "
+                "endpoint, and register its callback URL with Login with Amazon "
+                "before connecting again."
+            )
+
+        # Bounded local-view lookup before any outbound request (SSRF prevention).
+        addrs = _resolved_addresses(host)
+        if addrs is _DNS_TIMED_OUT or addrs is _DNS_UNAVAILABLE:
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # stalled or unavailable lookup is inconclusive
+        public_addrs = [a for a in addrs or [] if a.is_global]
+        private_addrs = [a for a in addrs or [] if not a.is_global]
+        if not public_addrs:
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # private or unresolved view: not Amazon's path
+        # Mixed public + private DNS: inconclusive since browser/Amazon may
+        # resolve differently (split-horizon DNS). Do not block; warn.
+        if private_addrs:
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # mixed view is not Amazon's path
+
+        # Probe all public addresses; pin to each to prevent SSRF/rebinding.
+        return self._probe_callback(callback, host, public_addrs)
 
     def accept_callback(self, state, code):
         """Public return endpoint: retain code, never connect an account here."""
@@ -575,6 +734,8 @@ class DeploymentManager:
 
     def complete_authorization(self, browser_nonce):
         with self.lock:
+            oauth = oauth_config()
+            fingerprint = config_key(oauth)
             pending = self.state.get("oauth", {})
             if (
                 pending.get("expires", 0) < time.time()
@@ -582,7 +743,7 @@ class DeploymentManager:
                 or not secrets.compare_digest(
                     pending.get("browser", ""), digest(browser_nonce)
                 )
-                or pending.get("client_key") != config_key()
+                or pending.get("client_key") != fingerprint
                 or self.state.get("phase") in BUSY
             ):
                 raise DeploymentError(
@@ -595,11 +756,12 @@ class DeploymentManager:
                 {
                     "grant_type": "authorization_code",
                     "code": pending["code"],
-                    "redirect_uri": oauth_config()[2],
-                }
+                    "redirect_uri": oauth[2],
+                },
+                oauth=oauth,
             )
             self.state.update(
-                client_key=config_key(),
+                client_key=fingerprint,
                 message="Amazon connected. Select the developer account and personal skill.",
             )
             self.save()
@@ -624,8 +786,8 @@ class DeploymentManager:
         }
         self.save()
 
-    def _token(self, payload):
-        client, secret, _ = oauth_config()
+    def _token(self, payload, oauth=None):
+        client, secret, _ = oauth if oauth is not None else oauth_config()
         try:
             response = self.http.post(
                 TOKEN_URL,
@@ -1361,7 +1523,11 @@ def _setup_private(response):
 
 
 def _setup_deployment_error(exc):
-    return jsonify(error=str(exc)), 400
+    msg = str(exc)
+    body = {"error": msg}
+    if "Sign-in expired or was already returned" in msg:
+        body["probe"] = _CALLBACK_PROBE_MARKER
+    return jsonify(body), 400
 
 
 def _setup_settings_error(exc):
@@ -1507,9 +1673,16 @@ def register_setup(app):
 
     @blueprint.route("/setup/oauth/start", methods=["POST"])
     def connect():
-        oauth_config()  # validate the separate public callback registration
+        oauth = (
+            oauth_config()
+        )  # one snapshot: validate, probe and authorize the same callback
+        verified, warning = manager().ensure_callback_reachable(oauth[2])
         nonce = secrets.token_urlsafe(32)
-        response = jsonify(url=manager().authorize(nonce))
+        response = jsonify(
+            url=manager().authorize(nonce, oauth),
+            callback_verified=verified,
+            callback_warning=warning,
+        )
         response.set_cookie(
             "setup_oauth",
             nonce,

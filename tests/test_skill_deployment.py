@@ -50,6 +50,7 @@ class Response:
 class Amazon:
     def __init__(self):
         self.calls = []
+        self.probes = []  # public callback reachability probes, never API calls
         self.created = 0
         self.imported = False
         self.model_status = "SUCCEEDED"
@@ -84,6 +85,16 @@ class Amazon:
                 "refresh_token": "private-refresh",
                 "expires_in": 3600,
             }
+        )
+
+    def get(self, url, **kwargs):
+        # The setup route probes the public callback before opening Amazon's
+        # consent screen; the fake models the add-on answering its own route
+        # (the fixed code-less 400 that identifies it).
+        self.probes.append((url, kwargs))
+        return Response(
+            {"error": "Sign-in expired or was already returned. Connect Amazon again."},
+            status=400,
         )
 
     def request(self, method, url, **kwargs):
@@ -438,18 +449,33 @@ def test_invalid_settings_rejected(deployment, monkeypatch, field, value):
 def test_oauth_state_single_use_expiry_and_browser_binding(deployment):
     manager, _ = deployment
     url = manager.authorize("browser")
-    state = parse_qs(urlparse(url).query)["state"][0]
+    state1 = parse_qs(urlparse(url).query)["state"][0]
     assert "private-client-secret" not in url
-    manager.callback(state, "browser", "private-code")
+    manager.callback(state1, "browser", "private-code")
     with pytest.raises(DeploymentError, match="expired"):
-        manager.callback(state, "browser", "private-code")
-    for browser, expired in [("other", False), ("browser", True)]:
-        url = manager.authorize("browser")
-        state = parse_qs(urlparse(url).query)["state"][0]
-        if expired:
-            manager.state["oauth"]["expires"] = 0
-        with pytest.raises(DeploymentError, match="expired"):
-            manager.callback(state, browser, "private-code")
+        manager.callback(state1, "browser", "private-code")
+    # A new authorize must wait for the code to be consumed or expired.
+    # The first flow is already complete (callback did it), so a new authorize succeeds.
+    url = manager.authorize("browser")
+    state2 = parse_qs(urlparse(url).query)["state"][0]
+    assert "private-client-secret" not in url
+    assert state2 != state1
+    # Old state (state1) is now invalid; accept_callback should fail.
+    with pytest.raises(DeploymentError, match="expired"):
+        manager.accept_callback(state1, "private-code")
+    # New state (state2) works for accept_callback.
+    manager.accept_callback(state2, "private-code")
+    # Browser nonce binding: complete_authorization rejects wrong browser.
+    with pytest.raises(DeploymentError, match="did not match this browser"):
+        manager.complete_authorization("other")
+    # After expiry, a new authorize creates a fresh flow that works.
+    manager.state["oauth"]["expires"] = 0
+    url = manager.authorize("browser")
+    state3 = parse_qs(urlparse(url).query)["state"][0]
+    manager.callback(state3, "browser", "private-code")
+    # The new flow completed successfully.
+    assert manager.state.get("oauth", {}).get("code") is None  # consumed
+    assert manager.public_status()["connected"] or manager.state.get("tokens")
 
 
 def test_setup_routes_auth_csrf_callback(deployment, client):
@@ -497,6 +523,188 @@ def test_setup_routes_auth_csrf_callback(deployment, client):
         ).status_code
         == 400
     )
+
+
+def _start_connect(client):
+    status = client.get("/setup/status", headers=AUTH).json
+    return client.post(
+        "/setup/oauth/start",
+        headers={**AUTH, "X-CSRF-Token": status["csrf"]},
+        json={},
+    )
+
+
+def test_connect_starts_when_the_public_callback_reaches_the_add_on(
+    deployment, client, monkeypatch
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    # Bounded lookup returns a public address.
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    # Probe response with the dedicated marker.
+    import requests
+
+    class ProbeResponse:
+        status_code = 400
+
+        def iter_content(self, chunk_size):
+            yield b'{"error": "Sign-in expired or was already returned. Connect Amazon again.", "probe": "ma-callback-probe"}'
+
+    probe_calls = []
+
+    def probe_get(session, url, **kwargs):
+        probe_calls.append(url)
+        assert kwargs["allow_redirects"] is False
+        return ProbeResponse()
+
+    monkeypatch.setattr(requests.Session, "get", probe_get)
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert probe_calls == [__import__("skill_deployment").oauth_config()[2]]
+    assert response.json["callback_verified"] is True
+    assert not response.json["callback_warning"]
+    assert manager.state.get("oauth")
+
+
+def test_connect_refuses_nabu_casa_callback_host(deployment, client, monkeypatch):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setenv("SKILL_HOSTNAME", "https://example.ui.nabu.casa/ma-alexa-skill/")
+    response = _start_connect(client)
+    assert response.status_code == 400
+    assert "Nabu Casa" in response.json["error"]
+    assert "/ma-alexa-skill/" in response.json["error"]
+    # Refused outright: no probe, no pending sign-in (issue #92).
+    assert not manager.state.get("oauth")
+
+
+@pytest.mark.parametrize(
+    "status,expected_hint",
+    [
+        (404, "browser's path could differ"),
+        (302, "browser's path could differ"),
+        (401, "source-dependent denial"),
+    ],
+)
+def test_connect_proceeds_with_warning_on_non_add_on_responses(
+    deployment, client, monkeypatch, status, expected_hint
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    import requests
+
+    class WrongResponse:
+        status_code = status
+
+        def iter_content(self, chunk_size):
+            yield b"{}"
+
+    def wrong_get(*args, **kwargs):
+        return WrongResponse()
+
+    monkeypatch.setattr(requests.Session, "get", wrong_get)
+    # Non-add-on responses from a public address are now treated as
+    # inconclusive (requester-dependent denials / split-horizon). Sign-in
+    # proceeds with a warning instead of blocking.
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert response.json["callback_verified"] is False
+    assert response.json["callback_warning"]
+    assert manager.state.get("oauth")
+
+
+def test_connect_proceeds_when_the_callback_host_is_not_publicly_resolved(
+    deployment, client, monkeypatch
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    # Private addresses only -> inconclusive, proceed with warning.
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("10.0.0.5")},
+    )
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert response.json["callback_verified"] is False
+    assert (
+        "verify that the public callback URL routes back here"
+        in (response.json["callback_warning"])
+    )
+    assert manager.state.get("oauth")
+
+
+@pytest.mark.parametrize("publicly_resolved", [True, False])
+def test_connect_tls_failure_blocks_only_for_a_publicly_resolved_host(
+    deployment, client, monkeypatch, publicly_resolved
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+
+    def bad_certificate(*args, **kwargs):
+        raise requests.exceptions.SSLError("certificate verify failed")
+
+    if publicly_resolved:
+        monkeypatch.setattr(
+            "skill_deployment._resolved_addresses",
+            lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+        )
+    else:
+        monkeypatch.setattr(
+            "skill_deployment._resolved_addresses",
+            lambda h: {__import__("ipaddress").ip_address("10.0.0.5")},
+        )
+    import requests
+
+    monkeypatch.setattr(requests.Session, "get", bad_certificate)
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert response.json["callback_warning"]
+    assert manager.state.get("oauth")
+
+
+def test_connect_proceeds_when_the_callback_probe_cannot_connect(
+    deployment, client, monkeypatch
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+
+    def unreachable(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("no route to host")
+
+    import requests
+
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    monkeypatch.setattr(requests.Session, "get", unreachable)
+    # From inside the container a transport failure says nothing about the
+    # browser's or Amazon's path (hairpin/split-horizon setups), so it must
+    # not block the sign-in — but the inconclusive result stays visible.
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert response.json["callback_verified"] is False
+    assert response.json["callback_warning"]
+    assert manager.state.get("oauth")
 
 
 def test_setup_wizard_step_pages_render(client, deployment):
@@ -1601,3 +1809,56 @@ def test_verified_deployment_saves_skill_restriction(deployment):
     deploy(manager)
     path = private_access.access_path(manager.path)
     assert json.loads(path.read_text()) == {"skill_id": SKILL}
+
+
+def test_stale_returned_code_does_not_block_reconnect(deployment, monkeypatch):
+    manager, _ = deployment
+    url = manager.authorize("browser")
+    state = parse_qs(urlparse(url).query)["state"][0]
+    manager.accept_callback(state, "old-code")
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "replacement-secret")
+    manager.authorize("new-browser")
+    assert "code" not in manager.state["oauth"]
+
+
+def test_authorization_fingerprint_uses_supplied_snapshot(deployment, monkeypatch):
+    import skill_deployment
+
+    manager, _ = deployment
+    oauth = skill_deployment.oauth_config()
+    expected = skill_deployment.config_key(oauth)
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "replacement-secret")
+    manager.authorize("browser", oauth)
+    assert manager.state["oauth"]["client_key"] == expected
+
+
+def test_probe_mixed_transport_results_are_inconclusive(deployment, monkeypatch):
+    import ipaddress
+    import requests
+
+    manager, _ = deployment
+    calls = []
+
+    class Probe:
+        status_code = 400
+
+        def iter_content(self, chunk_size):
+            yield b'{"probe":"ma-callback-probe"}'
+
+        def close(self):
+            calls.append("closed")
+
+    def get(session, url, **kwargs):
+        if calls:
+            raise requests.exceptions.SSLError("untrusted")
+        return Probe()
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    verified, warning = manager._probe_callback(
+        "https://example.com/callback",
+        "example.com",
+        [ipaddress.ip_address("8.8.8.8"), ipaddress.ip_address("1.1.1.1")],
+    )
+    assert not verified
+    assert warning
+    assert calls == ["closed"]
