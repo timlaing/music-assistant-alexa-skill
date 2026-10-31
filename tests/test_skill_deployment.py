@@ -532,6 +532,8 @@ def test_connect_starts_when_the_public_callback_reaches_the_add_on(deployment, 
         BASE_URL + "/ma-alexa-skill/setup/oauth/callback"
     ]
     assert amazon.probes[0][1]["allow_redirects"] is False
+    assert response.json["callback_verified"] is True
+    assert not response.json["callback_warning"]
     assert manager.state.get("oauth")
 
 
@@ -559,19 +561,73 @@ def test_connect_refuses_nabu_casa_callback_host(deployment, client, monkeypatch
     ],
 )
 def test_connect_blocks_callback_answers_that_are_not_the_add_on(
-    deployment, client, status, expected_hint
+    deployment, client, monkeypatch, status, expected_hint
 ):
     from app import app
 
     manager, amazon = deployment
     app.extensions["skill_deployment"] = manager
     amazon.get = lambda url, **kwargs: Response(status=status)
+    # Only a fully public local view makes the container's answer the same
+    # one the browser and Amazon get; without it the probe cannot block.
+    monkeypatch.setattr("skill_deployment.resolves_publicly", lambda host: True)
     response = _start_connect(client)
     assert response.status_code == 400
     assert f"HTTP {status}" in response.json["error"]
     assert expected_hint in response.json["error"]
     # The sign-in never started, so no orphaned pending state remains.
     assert not manager.state.get("oauth")
+
+
+def test_connect_proceeds_when_the_callback_host_is_not_publicly_resolved(
+    deployment, client, monkeypatch
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+    amazon.get = lambda url, **kwargs: Response(status=404)
+    monkeypatch.setattr("skill_deployment.resolves_publicly", lambda host: False)
+    # Split-horizon/hairpin: the add-on's private view of the callback host
+    # says nothing about the browser's or Amazon's path, so a wrong answer
+    # here must warn instead of blocking (issue #92 review).
+    response = _start_connect(client)
+    assert response.status_code == 200
+    assert response.json["callback_verified"] is False
+    assert (
+        "verify that the public callback URL routes back here"
+        in (response.json["callback_warning"])
+    )
+    assert manager.state.get("oauth")
+
+
+@pytest.mark.parametrize("publicly_resolved", [True, False])
+def test_connect_tls_failure_blocks_only_for_a_publicly_resolved_host(
+    deployment, client, monkeypatch, publicly_resolved
+):
+    from app import app
+
+    manager, amazon = deployment
+    app.extensions["skill_deployment"] = manager
+
+    def bad_certificate(url, **kwargs):
+        raise requests.exceptions.SSLError("certificate verify failed")
+
+    amazon.get = bad_certificate
+    monkeypatch.setattr(
+        "skill_deployment.resolves_publicly", lambda host: publicly_resolved
+    )
+    response = _start_connect(client)
+    if publicly_resolved:
+        # A broken certificate on the public hostname is what the browser
+        # hits on Amazon's return, so sign-in must not start.
+        assert response.status_code == 400
+        assert "valid certificate" in response.json["error"]
+        assert not manager.state.get("oauth")
+    else:
+        assert response.status_code == 200
+        assert response.json["callback_warning"]
+        assert manager.state.get("oauth")
 
 
 def test_connect_proceeds_when_the_callback_probe_cannot_connect(deployment, client):
@@ -586,9 +642,11 @@ def test_connect_proceeds_when_the_callback_probe_cannot_connect(deployment, cli
     amazon.get = unreachable
     # From inside the container a transport failure says nothing about the
     # browser's or Amazon's path (hairpin/split-horizon setups), so it must
-    # not block the sign-in.
+    # not block the sign-in — but the inconclusive result stays visible.
     response = _start_connect(client)
     assert response.status_code == 200
+    assert response.json["callback_verified"] is False
+    assert response.json["callback_warning"]
     assert manager.state.get("oauth")
 
 

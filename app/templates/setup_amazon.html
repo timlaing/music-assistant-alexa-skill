@@ -9,6 +9,7 @@
 {% if done[2] %}{{ readiness('Amazon account connected', 'Your account is ready. You only need to reconnect if your account or public hostname changes.') }}{% endif %}
 <section id="amazonConnection" class="ma-panel">
   <div class="ma-panelhead"><h2>Amazon connection</h2></div>
+  <output id="callbackWarning" class="ma-banner" data-kind="warning" aria-live="polite" hidden><span class="ma-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><div><strong>Public callback not verified</strong><p id="callbackWarningText"></p></div></output>
   <form id="amazonForm">
     <label class="ma-field">Callback URL<input id="callback" readonly /><small>Add this address to Allowed Return URLs in Amazon.</small></label>
     <div class="ma-actions">
@@ -125,6 +126,10 @@
     action(async () => {
       try {
         const body = await api("/setup/oauth/start", {});
+        // An inconclusive callback probe still starts the sign-in, but the
+        // owner must see why (issue #92 review); a verified probe clears it.
+        el("callbackWarning").hidden = !body.callback_warning;
+        el("callbackWarningText").textContent = body.callback_warning || "";
         el("amazonSignin").href = body.url;
         el("amazonSignin").hidden = false;
         window.toast(

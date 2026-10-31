@@ -39,6 +39,7 @@ from flask import (
     url_for,
 )
 from page_nav import nav_html
+from reachability import resolves_publicly
 
 APP_DIR = Path(__file__).resolve().parent
 API = "https://api.amazonalexa.com"
@@ -51,6 +52,15 @@ _MANAGER_LOCK = threading.Lock()
 # /ma-alexa-skill/ (add-on issue #92), so its hostnames can carry neither the
 # Amazon callback nor the deployed skill endpoint.
 _NABU_CASA_SUFFIX = ".ui.nabu.casa"
+# Shown on step 2 when the probe could not decide: transport failures, or a
+# hostname whose local view is private/unresolved, say nothing about the path
+# the browser and Amazon take, so sign-in still starts (issue #92 review).
+_CALLBACK_UNVERIFIED = (
+    "The add-on could not verify that the public callback URL routes back here, "
+    "so Amazon sign-in was started anyway. If the account does not connect, "
+    "check that the public hostname forwards /ma-alexa-skill/ to this add-on "
+    "as described in the add-on docs."
+)
 
 
 class DeploymentError(Exception):
@@ -555,19 +565,26 @@ class DeploymentManager:
             )
             return result
 
-    def authorize(self, browser_nonce):
+    def authorize(self, browser_nonce, oauth=None):
+        """Build Amazon's consent URL from one oauth_config() snapshot.
+
+        The setup route reads the config once and passes the same tuple here
+        and to ensure_callback_reachable, so the probed callback and the one
+        registered with Amazon cannot diverge mid-request (issue #92 review).
+        """
         with self.lock:
             if self.state.get("phase") in BUSY:
                 raise DeploymentError(
                     "Wait for the current operation before reconnecting."
                 )
-            client, _, callback = oauth_config()
+            oauth = oauth or oauth_config()
+            client, _, callback = oauth
             state = secrets.token_urlsafe(32)
             self.state["oauth"] = {
                 "state": digest(state),
                 "browser": digest(browser_nonce),
                 "expires": time.time() + 600,
-                "client_key": config_key(),
+                "client_key": digest("\0".join(oauth)),
             }
             self.save()
         return "https://www.amazon.com/ap/oa?" + urlencode(
@@ -580,7 +597,7 @@ class DeploymentManager:
             }
         )
 
-    def ensure_callback_reachable(self):
+    def ensure_callback_reachable(self, callback):
         """Refuse Amazon sign-in while the public callback cannot arrive.
 
         Amazon redirects the browser to the registered callback after consent;
@@ -588,13 +605,22 @@ class DeploymentManager:
         add-on the authorization code is stranded there, the account never
         connects, and setup only ever reports null vendor/skill identifiers
         (add-on issue #92). Nabu Casa can never route it, so that shape is
-        refused outright. Otherwise the exact callback URL is probed: an HTTP
-        response that is not this add-on proves the route is missing. A
+        refused outright.
+
+        Otherwise the exact callback URL is probed, and the probe only blocks
+        when its verdict carries over to the browser's path: a response that
+        is not this add-on proves the route is missing, but only if the
+        hostname also resolves publicly from here — a private or unresolved
+        local view (hairpin, split-horizon DNS) is not Amazon's view. A TLS
+        failure is a broken certificate on the public hostname, which the
+        browser hits identically, so it blocks with a certificate hint. A
         transport failure never blocks — from inside the container it says
-        nothing about the path the browser and Amazon take (hairpin and
-        split-horizon setups would otherwise false-positive).
+        nothing about the path the browser and Amazon take.
+
+        Returns (verified, warning): verified is True only when the add-on
+        answered its own callback; otherwise the sign-in still starts and the
+        caller surfaces the inconclusive result.
         """
-        callback = oauth_config()[2]
         host = (urlparse(callback).hostname or "").lower()
         if host.endswith(_NABU_CASA_SUFFIX):
             raise DeploymentError(
@@ -608,10 +634,30 @@ class DeploymentManager:
             )
         try:
             response = self.http.get(callback, timeout=(3, 5), allow_redirects=False)
+        except requests.exceptions.SSLError:
+            if not resolves_publicly(host):
+                return (
+                    False,
+                    _CALLBACK_UNVERIFIED,
+                )  # private view may serve its own cert
+            raise DeploymentError(
+                "The public callback URL did not present a valid certificate, so "
+                "the browser would refuse to return Amazon's sign-in code there. "
+                "Fix or renew the certificate on the public hostname — a "
+                "self-signed certificate is not accepted — and connect again."
+            ) from None
         except requests.RequestException:
-            return  # not reachable from here; says nothing about Amazon's path
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # not reachable from here; says nothing about Amazon's path
         if _callback_reached_add_on(response):
-            return
+            return True, ""
+        if not resolves_publicly(host):
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # inconclusive: not the view Amazon takes
         if 300 <= response.status_code < 400 or response.status_code in (401, 403):
             hint = (
                 "remove any login or access-list requirement from that route so "
@@ -1578,10 +1624,16 @@ def register_setup(app):
 
     @blueprint.route("/setup/oauth/start", methods=["POST"])
     def connect():
-        oauth_config()  # validate the separate public callback registration
-        manager().ensure_callback_reachable()  # fail fast when Amazon's return cannot arrive
+        oauth = (
+            oauth_config()
+        )  # one snapshot: validate, probe and authorize the same callback
+        verified, warning = manager().ensure_callback_reachable(oauth[2])
         nonce = secrets.token_urlsafe(32)
-        response = jsonify(url=manager().authorize(nonce))
+        response = jsonify(
+            url=manager().authorize(nonce, oauth),
+            callback_verified=verified,
+            callback_warning=warning,
+        )
         response.set_cookie(
             "setup_oauth",
             nonce,
