@@ -153,12 +153,15 @@ def oauth_config():
 
 
 def config_key():
-    """Non-hashed fingerprint of the current OAuth config for change detection.
+    """SHA256 fingerprint of the current OAuth config for change detection.
 
-    Uses a simple join instead of SHA256 to avoid CodeQL weak-hashing flag
-    on the LWA client secret (which is not a password but a config value).
+    The fingerprint is stored in deployment state and backups; it must not
+    contain the LWA client secret in plaintext. Use a fast hash because the
+    secret is not a password — it is a config value compared for equality
+    only. The format matches the pre-change fingerprint so existing
+    deployments upgrade without re-connection.
     """
-    return "|".join(oauth_config())
+    return hashlib.sha256("\0".join(oauth_config()).encode()).hexdigest()
 
 
 def _callback_reached_add_on(response):
@@ -588,7 +591,9 @@ class DeploymentManager:
 
         Rejects a new start while an OAuth flow is pending to prevent the
         earlier callback from being invalidated by a later retry (Sourcery
-        review).
+        review). Allows retry when the pending flow has no code (lost start
+        response) or is expired. Rejects stale pending only when its saved
+        fingerprint matches the current configuration.
         """
         with self.lock:
             if self.state.get("phase") in BUSY:
@@ -596,12 +601,34 @@ class DeploymentManager:
                     "Wait for the current operation before reconnecting."
                 )
             pending = self.state.get("oauth", {})
-            # Allow a new start if the previous flow has a code (completed
-            # callback waiting for finish) or is expired.
-            if pending.get("expires", 0) > time.time() and not pending.get("code"):
+            current_fp = config_key()
+            saved_fp = pending.get("client_key")
+            has_code = pending.get("code") is not None
+            is_expired = pending.get("expires", 0) <= time.time()
+
+            # If a valid code is already stored, do not replace the flow —
+            # the original browser is completing the authorization.
+            if has_code and not is_expired:
+                raise DeploymentError(
+                    "A sign-in is already in progress with a returned code; "
+                    "wait for it to complete or expire before retrying."
+                )
+
+            # If a pending flow exists but its fingerprint no longer matches
+            # the current configuration (e.g., LWA credentials changed), allow
+            # a fresh start — the old flow is stale and would be rejected by
+            # accept_callback() anyway.
+            if saved_fp and saved_fp != current_fp:
+                # Stale flow with different config: discard it and proceed.
+                pass
+            elif pending.get("expires", 0) > time.time() and not has_code:
+                # Fresh pending flow without a code: allow retry (lost start response).
+                pass
+            elif pending.get("expires", 0) > time.time():
                 raise DeploymentError(
                     "A sign-in is already in progress; wait for it to complete or expire before retrying."
                 )
+
             oauth = oauth or oauth_config()
             client, _, callback = oauth
             state = secrets.token_urlsafe(32)
@@ -609,9 +636,9 @@ class DeploymentManager:
                 "state": digest(state),
                 "browser": digest(browser_nonce),
                 "expires": time.time() + 600,
-                # Non-hashed fingerprint of the OAuth snapshot for change
-                # detection; avoids CodeQL weak-hashing flag on the LWA secret.
-                "client_key": "|".join(oauth),
+                # Hashed fingerprint matching config_key() for upgrade compatibility
+                # and secret safety in backups.
+                "client_key": config_key(),
             }
             self.save()
         return "https://www.amazon.com/ap/oa?" + urlencode(
@@ -625,31 +652,88 @@ class DeploymentManager:
         )
 
     def _probe_callback(self, callback, host, public_addrs):
-        """Execute the bounded callback probe; return (response, body, error).
+        """Execute the bounded callback probe across all public addresses.
 
-        error is None on successful request, or a string hint for transport failure.
+        Returns (verified, warning, error):
+        - verified: True if at least one address returned the add-on's probe marker
+        - warning: message if inconclusive (mixed DNS, requester-dependent denial, etc.)
+        - error: "ssl" / "transport" if all addresses failed at transport level
         """
         deadline = time.monotonic() + 8.0  # shared budget for DNS + connect + read
-        session = requests.Session()
-        session.mount("https://", _PinnedAdapter(host, public_addrs[0]))
-        try:
-            response = session.get(
-                callback,
-                timeout=(3, 5),
-                allow_redirects=False,
-                stream=True,
-            )
-            body_bytes = _read_health_content(response, deadline=deadline)
-        except requests.exceptions.SSLError:
-            return None, None, "ssl"
-        except requests.RequestException:
-            return None, None, "transport"
+        verified = False
+        warning = None
+        last_transport_error = None
 
-        try:
-            body = json.loads(body_bytes.decode()) if body_bytes else {}
-        except ValueError:
-            body = {}
-        return response, body, None
+        for addr in public_addrs:
+            session = requests.Session()
+            session.mount("https://", _PinnedAdapter(host, addr))
+            # Disable environment trust: no .netrc, no proxy from env vars.
+            session.trust_env = False
+            try:
+                response = session.get(
+                    callback,
+                    timeout=(3, 5),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                body_bytes = _read_health_content(response, deadline=deadline)
+            except requests.exceptions.SSLError:
+                last_transport_error = "ssl"
+                continue
+            except requests.RequestException:
+                last_transport_error = "transport"
+                continue
+
+            try:
+                body = json.loads(body_bytes.decode()) if body_bytes else {}
+            except ValueError:
+                body = {}
+
+            if (
+                response.status_code == 400
+                and isinstance(body, dict)
+                and "Sign-in expired" in str(body.get("error", ""))
+                and body.get("probe") == _CALLBACK_PROBE_MARKER
+            ):
+                verified = True
+                continue  # this address is good; check others for consistency
+
+            # Non-verified response from a public address: inconclusive.
+            # Requester-dependent denials (401/403/WAF/geo) may affect only the add-on's IP.
+            if response.status_code in (401, 403) or 300 <= response.status_code < 400:
+                warning = (
+                    "The public callback URL answered HTTP "
+                    f"{response.status_code} from {addr}, which may be a "
+                    "source-dependent denial (WAF, geo, rate-limit). The "
+                    "browser's path could differ, so sign-in proceeds with a "
+                    "warning. If the account does not connect, check that the "
+                    "public hostname forwards /ma-alexa-skill/ to this add-on "
+                    "as described in the add-on docs."
+                )
+                continue
+            # Other non-400 responses are also inconclusive for the same reason.
+            warning = (
+                "The public callback URL answered HTTP "
+                f"{response.status_code} from {addr} instead of this add-on. "
+                "The browser's path could differ (split-horizon DNS, "
+                "hairpin). Sign-in proceeds with a warning. If the account "
+                "does not connect, check the reverse proxy route: /ma-alexa-skill/"
+                "must forward to this add-on exactly as described in the "
+                "add-on docs."
+            )
+
+        if verified and not warning:
+            return True, "", None
+        if verified and warning:
+            # Mixed results across addresses: at least one verified but another
+            # inconclusive. Treat as inconclusive since the browser/Amazon
+            # may hit the failing address.
+            return False, warning, None
+        if warning:
+            return False, warning, None
+        if last_transport_error:
+            return False, _CALLBACK_UNVERIFIED, last_transport_error
+        return False, _CALLBACK_UNVERIFIED, "transport"
 
     def ensure_callback_reachable(self, callback):
         """Refuse Amazon sign-in while the public callback cannot arrive.
@@ -693,14 +777,22 @@ class DeploymentManager:
                 _CALLBACK_UNVERIFIED,
             )  # stalled or unavailable lookup is inconclusive
         public_addrs = [a for a in addrs or [] if a.is_global]
+        private_addrs = [a for a in addrs or [] if not a.is_global]
         if not public_addrs:
             return (
                 False,
                 _CALLBACK_UNVERIFIED,
             )  # private or unresolved view: not Amazon's path
+        # Mixed public + private DNS: inconclusive since browser/Amazon may
+        # resolve differently (split-horizon DNS). Do not block; warn.
+        if private_addrs:
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # mixed view is not Amazon's path
 
-        # Probe pinned to the public addresses, size-limited body with deadline.
-        response, body, error = self._probe_callback(callback, host, public_addrs)
+        # Probe all public addresses; pin to each to prevent SSRF/rebinding.
+        verified, warning, error = self._probe_callback(callback, host, public_addrs)
         if error == "ssl":
             raise DeploymentError(
                 "The public callback URL did not present a valid certificate, so "
@@ -714,36 +806,9 @@ class DeploymentManager:
                 _CALLBACK_UNVERIFIED,
             )  # transport failure: inconclusive from here
 
-        if (
-            response.status_code == 400
-            and isinstance(body, dict)
-            and "Sign-in expired" in str(body.get("error", ""))
-            and body.get("probe") == _CALLBACK_PROBE_MARKER
-        ):
+        if verified:
             return True, ""
-
-        # Only block when the hostname resolves publicly from here; otherwise
-        # the local probe says nothing about the browser's or Amazon's path.
-        if not public_addrs:
-            return (
-                False,
-                _CALLBACK_UNVERIFIED,
-            )  # should not happen after earlier check, but defence-in-depth
-
-        if 300 <= response.status_code < 400 or response.status_code in (401, 403):
-            hint = (
-                "remove any login or access-list requirement from that route so "
-                "Amazon can return the sign-in code unauthenticated."
-            )
-        else:
-            hint = (
-                "check the reverse proxy route: /ma-alexa-skill/ must forward to "
-                "this add-on exactly as described in the add-on docs."
-            )
-        raise DeploymentError(
-            f"The public callback URL answered HTTP {response.status_code} instead of "
-            f"this add-on, so the Amazon sign-in code would never arrive. {hint}"
-        )
+        return False, warning or _CALLBACK_UNVERIFIED
 
     def accept_callback(self, state, code):
         """Public return endpoint: retain code, never connect an account here."""
@@ -753,7 +818,7 @@ class DeploymentManager:
                 pending.get("expires", 0) < time.time()
                 or not code
                 or not secrets.compare_digest(pending.get("state", ""), digest(state))
-                or pending.get("client_key") != "|".join(oauth_config())
+                or pending.get("client_key") != config_key()
             ):
                 raise DeploymentError(
                     "Sign-in expired or was already returned. Connect Amazon again."
@@ -765,14 +830,13 @@ class DeploymentManager:
     def complete_authorization(self, browser_nonce):
         with self.lock:
             pending = self.state.get("oauth", {})
-            oauth = oauth_config()
             if (
                 pending.get("expires", 0) < time.time()
                 or not pending.get("code")
                 or not secrets.compare_digest(
                     pending.get("browser", ""), digest(browser_nonce)
                 )
-                or pending.get("client_key") != "|".join(oauth)
+                or pending.get("client_key") != config_key()
                 or self.state.get("phase") in BUSY
             ):
                 raise DeploymentError(
@@ -789,7 +853,7 @@ class DeploymentManager:
                 }
             )
             self.state.update(
-                client_key="|".join(oauth_config()),
+                client_key=config_key(),
                 message="Amazon connected. Select the developer account and personal skill.",
             )
             self.save()

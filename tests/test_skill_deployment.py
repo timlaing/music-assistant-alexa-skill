@@ -449,18 +449,33 @@ def test_invalid_settings_rejected(deployment, monkeypatch, field, value):
 def test_oauth_state_single_use_expiry_and_browser_binding(deployment):
     manager, _ = deployment
     url = manager.authorize("browser")
-    state = parse_qs(urlparse(url).query)["state"][0]
+    state1 = parse_qs(urlparse(url).query)["state"][0]
     assert "private-client-secret" not in url
-    manager.callback(state, "browser", "private-code")
+    manager.callback(state1, "browser", "private-code")
     with pytest.raises(DeploymentError, match="expired"):
-        manager.callback(state, "browser", "private-code")
-    for browser, expired in [("other", False), ("browser", True)]:
-        url = manager.authorize("browser")
-        state = parse_qs(urlparse(url).query)["state"][0]
-        if expired:
-            manager.state["oauth"]["expires"] = 0
-        with pytest.raises(DeploymentError, match="expired"):
-            manager.callback(state, browser, "private-code")
+        manager.callback(state1, "browser", "private-code")
+    # A new authorize must wait for the code to be consumed or expired.
+    # The first flow is already complete (callback did it), so a new authorize succeeds.
+    url = manager.authorize("browser")
+    state2 = parse_qs(urlparse(url).query)["state"][0]
+    assert "private-client-secret" not in url
+    assert state2 != state1
+    # Old state (state1) is now invalid; accept_callback should fail.
+    with pytest.raises(DeploymentError, match="expired"):
+        manager.accept_callback(state1, "private-code")
+    # New state (state2) works for accept_callback.
+    manager.accept_callback(state2, "private-code")
+    # Browser nonce binding: complete_authorization rejects wrong browser.
+    with pytest.raises(DeploymentError, match="did not match this browser"):
+        manager.complete_authorization("other")
+    # After expiry, a new authorize creates a fresh flow that works.
+    manager.state["oauth"]["expires"] = 0
+    url = manager.authorize("browser")
+    state3 = parse_qs(urlparse(url).query)["state"][0]
+    manager.callback(state3, "browser", "private-code")
+    # The new flow completed successfully.
+    assert manager.state.get("oauth", {}).get("code") is None  # consumed
+    assert manager.public_status()["connected"] or manager.state.get("tokens")
 
 
 def test_setup_routes_auth_csrf_callback(deployment, client):
@@ -568,12 +583,12 @@ def test_connect_refuses_nabu_casa_callback_host(deployment, client, monkeypatch
 @pytest.mark.parametrize(
     "status,expected_hint",
     [
-        (404, "reverse proxy route"),
-        (302, "login or access-list"),
-        (401, "login or access-list"),
+        (404, "browser's path could differ"),
+        (302, "browser's path could differ"),
+        (401, "source-dependent denial"),
     ],
 )
-def test_connect_blocks_callback_answers_that_are_not_the_add_on(
+def test_connect_proceeds_with_warning_on_non_add_on_responses(
     deployment, client, monkeypatch, status, expected_hint
 ):
     from app import app
@@ -596,14 +611,14 @@ def test_connect_blocks_callback_answers_that_are_not_the_add_on(
         return WrongResponse()
 
     monkeypatch.setattr(requests.Session, "get", wrong_get)
-    # Only a fully public local view makes the container's answer the same
-    # one the browser and Amazon get; without it the probe cannot block.
+    # Non-add-on responses from a public address are now treated as
+    # inconclusive (requester-dependent denials / split-horizon). Sign-in
+    # proceeds with a warning instead of blocking.
     response = _start_connect(client)
-    assert response.status_code == 400
-    assert f"HTTP {status}" in response.json["error"]
-    assert expected_hint in response.json["error"]
-    # The sign-in never started, so no orphaned pending state remains.
-    assert not manager.state.get("oauth")
+    assert response.status_code == 200
+    assert response.json["callback_verified"] is False
+    assert expected_hint in response.json["callback_warning"]
+    assert manager.state.get("oauth")
 
 
 def test_connect_proceeds_when_the_callback_host_is_not_publicly_resolved(
