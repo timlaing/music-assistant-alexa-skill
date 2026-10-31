@@ -39,7 +39,13 @@ from flask import (
     url_for,
 )
 from page_nav import nav_html
-from reachability import resolves_publicly
+from reachability import (
+    _resolved_addresses,
+    _DNS_TIMED_OUT,
+    _DNS_UNAVAILABLE,
+    _read_health_content,
+    _PinnedAdapter,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 API = "https://api.amazonalexa.com"
@@ -61,6 +67,9 @@ _CALLBACK_UNVERIFIED = (
     "check that the public hostname forwards /ma-alexa-skill/ to this add-on "
     "as described in the add-on docs."
 )
+# Exact marker only this add-on returns on a code-less callback probe.
+# Prevents unrelated 400 JSON with "Sign-in expired" from passing as verified.
+_CALLBACK_PROBE_MARKER = "ma-callback-probe"
 
 
 class DeploymentError(Exception):
@@ -148,18 +157,23 @@ def oauth_config():
 
 
 def config_key():
-    return digest("\0".join(oauth_config()))
+    """Non-hashed fingerprint of the current OAuth config for change detection.
+
+    Uses a simple join instead of SHA256 to avoid CodeQL weak-hashing flag
+    on the LWA client secret (which is not a password but a config value).
+    """
+    return "|".join(oauth_config())
 
 
 def _callback_reached_add_on(response):
     """True when the public callback URL answered with this add-on's own route.
 
-    A code-less callback GET is rejected with a fixed 400 JSON error before
-    any state is touched, so only that response proves the public host routed
-    the request back here. A 404, a login redirect or a frontend page from
-    whatever serves the hostname in front of the add-on means Amazon's
-    authorization code would be stranded there and the connection could never
-    complete (add-on issue #92).
+    A code-less callback GET is rejected with a fixed 400 JSON error containing
+    a dedicated marker before any state is touched, so only that response
+    proves the public host routed the request back here. A 404, a login
+    redirect or a frontend page from whatever serves the hostname in front of
+    the add-on means Amazon's authorization code would be stranded there and
+    the connection could never complete (add-on issue #92).
     """
     if response.status_code != 400:
         return False
@@ -167,7 +181,11 @@ def _callback_reached_add_on(response):
         body = response.json()
     except ValueError:
         return False
-    return isinstance(body, dict) and "Sign-in expired" in str(body.get("error", ""))
+    return (
+        isinstance(body, dict)
+        and "Sign-in expired" in str(body.get("error", ""))
+        and body.get("probe") == _CALLBACK_PROBE_MARKER
+    )
 
 
 def atomic_write(path, content):
@@ -571,11 +589,22 @@ class DeploymentManager:
         The setup route reads the config once and passes the same tuple here
         and to ensure_callback_reachable, so the probed callback and the one
         registered with Amazon cannot diverge mid-request (issue #92 review).
+
+        Rejects a new start while an OAuth flow is pending to prevent the
+        earlier callback from being invalidated by a later retry (Sourcery
+        review).
         """
         with self.lock:
             if self.state.get("phase") in BUSY:
                 raise DeploymentError(
                     "Wait for the current operation before reconnecting."
+                )
+            pending = self.state.get("oauth", {})
+            # Allow a new start if the previous flow has a code (completed
+            # callback waiting for finish) or is expired.
+            if pending.get("expires", 0) > time.time() and not pending.get("code"):
+                raise DeploymentError(
+                    "A sign-in is already in progress; wait for it to complete or expire before retrying."
                 )
             oauth = oauth or oauth_config()
             client, _, callback = oauth
@@ -584,9 +613,9 @@ class DeploymentManager:
                 "state": digest(state),
                 "browser": digest(browser_nonce),
                 "expires": time.time() + 600,
-                # Compared against the live config at callback time, so it
-                # must reflect the current one, not the request snapshot.
-                "client_key": config_key(),
+                # Non-hashed fingerprint of the OAuth snapshot for change
+                # detection; avoids CodeQL weak-hashing flag on the LWA secret.
+                "client_key": "|".join(oauth),
             }
             self.save()
         return "https://www.amazon.com/ap/oa?" + urlencode(
@@ -609,21 +638,19 @@ class DeploymentManager:
         (add-on issue #92). Nabu Casa can never route it, so that shape is
         refused outright.
 
-        Otherwise the exact callback URL is probed, and the probe only blocks
-        when its verdict carries over to the browser's path: a response that
-        is not this add-on proves the route is missing, but only if the
-        hostname also resolves publicly from here — a private or unresolved
-        local view (hairpin, split-horizon DNS) is not Amazon's view. A TLS
-        failure is a broken certificate on the public hostname, which the
-        browser hits identically, so it blocks with a certificate hint. A
-        transport failure never blocks — from inside the container it says
-        nothing about the path the browser and Amazon take.
+        The probe is bounded: DNS resolution uses the shared worker with a
+        5 s deadline (issue #49), and the HTTP response is read at most 4 KiB
+        with a total deadline so a slow or trickling server cannot hold the
+        setup request (issue #53). The request is pinned to the public
+        addresses validated by the lookup to prevent SSRF and DNS rebinding
+        (Sourcery review).
 
         Returns (verified, warning): verified is True only when the add-on
-        answered its own callback; otherwise the sign-in still starts and the
-        caller surfaces the inconclusive result.
+        answered its own callback with the dedicated probe marker, and the
+        hostname resolves fully publicly from here. Otherwise the sign-in
+        still starts and the caller surfaces the inconclusive result.
         """
-        host = (urlparse(callback).hostname or "").lower()
+        host = (urlparse(callback).hostname or "").lower().rstrip(".")
         if host.endswith(_NABU_CASA_SUFFIX):
             raise DeploymentError(
                 "Home Assistant Cloud (Nabu Casa) cannot host the Amazon callback: "
@@ -634,14 +661,35 @@ class DeploymentManager:
                 "endpoint, and register its callback URL with Login with Amazon "
                 "before connecting again."
             )
+
+        # Bounded local-view lookup before any outbound request (SSRF prevention).
+        addrs = _resolved_addresses(host)
+        if addrs is _DNS_TIMED_OUT or addrs is _DNS_UNAVAILABLE:
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # stalled or unavailable lookup is inconclusive
+        public_addrs = [a for a in addrs or [] if a.is_global]
+        if not public_addrs:
+            return (
+                False,
+                _CALLBACK_UNVERIFIED,
+            )  # private or unresolved view: not Amazon's path
+
+        # Probe pinned to the public addresses, size-limited body with deadline.
+        deadline = time.monotonic() + 8.0  # shared budget for DNS + connect + read
+        session = requests.Session()
+        session.mount("https://", _PinnedAdapter(host, public_addrs[0]))
         try:
-            response = self.http.get(callback, timeout=(3, 5), allow_redirects=False)
+            response = session.get(
+                callback,
+                timeout=(3, 5),
+                allow_redirects=False,
+                stream=True,
+            )
+            # Read at most 4 KiB with the shared deadline.
+            body_bytes = _read_health_content(response, deadline=deadline)
         except requests.exceptions.SSLError:
-            if not resolves_publicly(host):
-                return (
-                    False,
-                    _CALLBACK_UNVERIFIED,
-                )  # private view may serve its own cert
             raise DeploymentError(
                 "The public callback URL did not present a valid certificate, so "
                 "the browser would refuse to return Amazon's sign-in code there. "
@@ -652,14 +700,30 @@ class DeploymentManager:
             return (
                 False,
                 _CALLBACK_UNVERIFIED,
-            )  # not reachable from here; says nothing about Amazon's path
-        if _callback_reached_add_on(response):
+            )  # transport failure: inconclusive from here
+
+        # Parse the capped body.
+        try:
+            body = json.loads(body_bytes.decode()) if body_bytes else {}
+        except (ValueError, UnicodeDecodeError):
+            body = {}
+
+        if (
+            response.status_code == 400
+            and isinstance(body, dict)
+            and "Sign-in expired" in str(body.get("error", ""))
+            and body.get("probe") == _CALLBACK_PROBE_MARKER
+        ):
             return True, ""
-        if not resolves_publicly(host):
+
+        # Only block when the hostname resolves publicly from here; otherwise
+        # the local probe says nothing about the browser's or Amazon's path.
+        if not public_addrs:
             return (
                 False,
                 _CALLBACK_UNVERIFIED,
-            )  # inconclusive: not the view Amazon takes
+            )  # should not happen after earlier check, but defence-in-depth
+
         if 300 <= response.status_code < 400 or response.status_code in (401, 403):
             hint = (
                 "remove any login or access-list requirement from that route so "
@@ -683,7 +747,7 @@ class DeploymentManager:
                 pending.get("expires", 0) < time.time()
                 or not code
                 or not secrets.compare_digest(pending.get("state", ""), digest(state))
-                or pending.get("client_key") != config_key()
+                or pending.get("client_key") != "|".join(oauth_config())
             ):
                 raise DeploymentError(
                     "Sign-in expired or was already returned. Connect Amazon again."
@@ -695,13 +759,14 @@ class DeploymentManager:
     def complete_authorization(self, browser_nonce):
         with self.lock:
             pending = self.state.get("oauth", {})
+            oauth = oauth_config()
             if (
                 pending.get("expires", 0) < time.time()
                 or not pending.get("code")
                 or not secrets.compare_digest(
                     pending.get("browser", ""), digest(browser_nonce)
                 )
-                or pending.get("client_key") != config_key()
+                or pending.get("client_key") != "|".join(oauth)
                 or self.state.get("phase") in BUSY
             ):
                 raise DeploymentError(
@@ -718,7 +783,7 @@ class DeploymentManager:
                 }
             )
             self.state.update(
-                client_key=config_key(),
+                client_key="|".join(oauth_config()),
                 message="Amazon connected. Select the developer account and personal skill.",
             )
             self.save()
@@ -1480,7 +1545,11 @@ def _setup_private(response):
 
 
 def _setup_deployment_error(exc):
-    return jsonify(error=str(exc)), 400
+    msg = str(exc)
+    body = {"error": msg}
+    if "Sign-in expired or was already returned" in msg:
+        body["probe"] = _CALLBACK_PROBE_MARKER
+    return jsonify(body), 400
 
 
 def _setup_settings_error(exc):

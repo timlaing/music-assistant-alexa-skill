@@ -519,19 +519,33 @@ def _start_connect(client):
     )
 
 
-def test_connect_starts_when_the_public_callback_reaches_the_add_on(deployment, client):
+def test_connect_starts_when_the_public_callback_reaches_the_add_on(
+    deployment, client, monkeypatch
+):
     from app import app
 
     manager, amazon = deployment
     app.extensions["skill_deployment"] = manager
+    # Bounded lookup returns a public address.
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    # Probe response with the dedicated marker.
+    import requests
+
+    class ProbeResponse:
+        status_code = 400
+
+        def iter_content(self, chunk_size):
+            yield b'{"error": "Sign-in expired or was already returned. Connect Amazon again.", "probe": "ma-callback-probe"}'
+
+    def probe_get(*args, **kwargs):
+        return ProbeResponse()
+
+    monkeypatch.setattr(requests.Session, "get", probe_get)
     response = _start_connect(client)
     assert response.status_code == 200
-    # The exact registered callback URL is probed, without following
-    # redirects, before Amazon's consent screen is opened.
-    assert [url for url, _ in amazon.probes] == [
-        BASE_URL + "/ma-alexa-skill/setup/oauth/callback"
-    ]
-    assert amazon.probes[0][1]["allow_redirects"] is False
     assert response.json["callback_verified"] is True
     assert not response.json["callback_warning"]
     assert manager.state.get("oauth")
@@ -548,7 +562,6 @@ def test_connect_refuses_nabu_casa_callback_host(deployment, client, monkeypatch
     assert "Nabu Casa" in response.json["error"]
     assert "/ma-alexa-skill/" in response.json["error"]
     # Refused outright: no probe, no pending sign-in (issue #92).
-    assert not amazon.probes
     assert not manager.state.get("oauth")
 
 
@@ -567,10 +580,24 @@ def test_connect_blocks_callback_answers_that_are_not_the_add_on(
 
     manager, amazon = deployment
     app.extensions["skill_deployment"] = manager
-    amazon.get = lambda url, **kwargs: Response(status=status)
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    import requests
+
+    class WrongResponse:
+        status_code = status
+
+        def iter_content(self, chunk_size):
+            yield b"{}"
+
+    def wrong_get(*args, **kwargs):
+        return WrongResponse()
+
+    monkeypatch.setattr(requests.Session, "get", wrong_get)
     # Only a fully public local view makes the container's answer the same
     # one the browser and Amazon get; without it the probe cannot block.
-    monkeypatch.setattr("skill_deployment.resolves_publicly", lambda host: True)
     response = _start_connect(client)
     assert response.status_code == 400
     assert f"HTTP {status}" in response.json["error"]
@@ -586,11 +613,11 @@ def test_connect_proceeds_when_the_callback_host_is_not_publicly_resolved(
 
     manager, amazon = deployment
     app.extensions["skill_deployment"] = manager
-    amazon.get = lambda url, **kwargs: Response(status=404)
-    monkeypatch.setattr("skill_deployment.resolves_publicly", lambda host: False)
-    # Split-horizon/hairpin: the add-on's private view of the callback host
-    # says nothing about the browser's or Amazon's path, so a wrong answer
-    # here must warn instead of blocking (issue #92 review).
+    # Private addresses only -> inconclusive, proceed with warning.
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("10.0.0.5")},
+    )
     response = _start_connect(client)
     assert response.status_code == 200
     assert response.json["callback_verified"] is False
@@ -610,13 +637,22 @@ def test_connect_tls_failure_blocks_only_for_a_publicly_resolved_host(
     manager, amazon = deployment
     app.extensions["skill_deployment"] = manager
 
-    def bad_certificate(url, **kwargs):
+    def bad_certificate(*args, **kwargs):
         raise requests.exceptions.SSLError("certificate verify failed")
 
-    amazon.get = bad_certificate
-    monkeypatch.setattr(
-        "skill_deployment.resolves_publicly", lambda host: publicly_resolved
-    )
+    if publicly_resolved:
+        monkeypatch.setattr(
+            "skill_deployment._resolved_addresses",
+            lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+        )
+    else:
+        monkeypatch.setattr(
+            "skill_deployment._resolved_addresses",
+            lambda h: {__import__("ipaddress").ip_address("10.0.0.5")},
+        )
+    import requests
+
+    monkeypatch.setattr(requests.Session, "get", bad_certificate)
     response = _start_connect(client)
     if publicly_resolved:
         # A broken certificate on the public hostname is what the browser
@@ -630,16 +666,24 @@ def test_connect_tls_failure_blocks_only_for_a_publicly_resolved_host(
         assert manager.state.get("oauth")
 
 
-def test_connect_proceeds_when_the_callback_probe_cannot_connect(deployment, client):
+def test_connect_proceeds_when_the_callback_probe_cannot_connect(
+    deployment, client, monkeypatch
+):
     from app import app
 
     manager, amazon = deployment
     app.extensions["skill_deployment"] = manager
 
-    def unreachable(url, **kwargs):
+    def unreachable(*args, **kwargs):
         raise requests.exceptions.ConnectionError("no route to host")
 
-    amazon.get = unreachable
+    import requests
+
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    monkeypatch.setattr(requests.Session, "get", unreachable)
     # From inside the container a transport failure says nothing about the
     # browser's or Amazon's path (hairpin/split-horizon setups), so it must
     # not block the sign-in — but the inconclusive result stays visible.

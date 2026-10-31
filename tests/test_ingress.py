@@ -100,6 +100,24 @@ def test_oauth_public_callback_finishes_only_in_original_ingress_browser(
     fake = Amazon()
     manager = DeploymentManager(tmp_path / "deployment.json", fake)
     app.extensions["skill_deployment"] = manager
+    # Mock the bounded DNS lookup to return a public address for the probe.
+    monkeypatch.setattr(
+        "skill_deployment._resolved_addresses",
+        lambda h: {__import__("ipaddress").ip_address("93.184.216.34")},
+    )
+    # Mock the probe response with the dedicated marker.
+    import requests
+
+    class ProbeResponse:
+        status_code = 400
+
+        def iter_content(self, chunk_size):
+            yield b'{"error": "Sign-in expired or was already returned. Connect Amazon again.", "probe": "ma-callback-probe"}'
+
+    def probe_get(*args, **kwargs):
+        return ProbeResponse()
+
+    monkeypatch.setattr(requests.Session, "get", probe_get)
     csrf = gateway(client, "/setup/status").json["csrf"]
     headers = {"X-CSRF-Token": csrf}
     response = gateway(client, "/setup/oauth/start", "post", headers=headers, json={})
