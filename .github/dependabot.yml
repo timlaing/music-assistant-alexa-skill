@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "04:00"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"
+        dependency-type: "development"
+      dependencies:
+        patterns:
+          - "*"
+        dependency-type: "production"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "04:00"
+    labels:
+      - "dependencies"
+      - "github-actions"
