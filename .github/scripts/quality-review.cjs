@@ -149,6 +149,30 @@ async function requestReview(github, context, pull, request) {
   });
   request.sent = true;
 }
+async function requestLabel(github, context, pull, request) {
+  if (request.sent) return;
+  const { data: current } = await github.rest.pulls.get({
+    ...context.repo,
+    pull_number: pull.number,
+  });
+  if (current.state !== "open" || current.head.sha !== pull.head.sha)
+    throw new Error("PR revision changed before requesting review");
+  try {
+    await github.rest.issues.removeLabel({
+      ...context.repo,
+      issue_number: pull.number,
+      name: "review-ready",
+    });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  await github.rest.issues.addLabels({
+    ...context.repo,
+    issue_number: pull.number,
+    labels: ["review-ready"],
+  });
+  request.sent = true;
+}
 async function checkApproval(github, context, core, pull, required, request) {
   const missing = await validation(github, context, pull, required);
   if (missing.length) {
@@ -162,10 +186,7 @@ async function checkApproval(github, context, core, pull, required, request) {
   });
   if (approved(reviews, pull.head.sha)) return true;
   if (request.client) await requestReview(github, context, pull, request);
-  else
-    core.info(
-      "Configure REVIEW_REQUEST_TOKEN or request a maintainer review manually",
-    );
+  else await requestLabel(github, context, pull, request);
   core.info(
     `PR ${pull.number}: waiting for CodeRabbit approval of ${pull.head.sha}`,
   );

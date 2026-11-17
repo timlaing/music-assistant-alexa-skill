@@ -256,6 +256,7 @@ function fixture() {
     comments: [],
     states: [],
     requests: 0,
+    labels: [],
   };
   const routes = Object.fromEntries(
     ["pulls", "checks", "statuses", "reviews", "comments"].map((name) => [
@@ -282,6 +283,8 @@ function fixture() {
         listReviews: routes.reviews,
       },
       issues: {
+        removeLabel: async () => {},
+        addLabels: async (value) => data.labels.push(value.labels),
         listComments: routes.comments,
         createComment: async (value) => {
           data.requests++;
@@ -424,7 +427,7 @@ test("dedicated requester posts as the maintainer and ignores earlier bot reques
   assert.equal(data.requests, 0);
   assert.deepEqual(data.states, ["pending", "success"]);
 });
-test("without a requester, manual approval can pass but no bot request is posted", async () => {
+test("without a token, a label requests review only after validation", async () => {
   const { data, options } = fixture();
   options.reviewClient = null;
   options.attempts = 2;
@@ -547,4 +550,27 @@ test("review-event notifications invalidate withdrawn approval and restore a val
   });
   await run(options);
   assert.equal(data.states.at(-1), "success");
+});
+
+test("built-in token label opt-in waits for all checks and is sent once", async () => {
+  const { data, options } = fixture();
+  options.reviewClient = null;
+  options.attempts = 3;
+  data.checks[0].conclusion = "failure";
+  let round = 0;
+  options.sleep = async () => {
+    round++;
+    if (round === 1) {
+      assert.deepEqual(data.labels, []);
+      data.checks[0].conclusion = "success";
+    } else
+      data.reviews.push({
+        user: { login: "coderabbitai[bot]" },
+        commit_id: sha,
+        state: "APPROVED",
+      });
+  };
+  await run(options);
+  assert.deepEqual(data.labels, [["review-ready"]]);
+  assert.equal(data.requests, 0);
 });
