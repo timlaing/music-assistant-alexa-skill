@@ -18,10 +18,10 @@ After the Analysis inputs workflow passes on this PR, dispatch the Sonar workflo
 
 After merging, run `python3 .github/scripts/apply-workflow-policy.py` to inspect the exact ruleset change, then run it with `--apply`. The script refuses to apply an unmerged policy, preserves unrelated rules and bypass actors, binds checks to GitHub Actions, enables SHA enforcement and the replacement automation, and verifies the result. Repository settings shared with the existing workflows can be corrected before merge; new check names and action enforcement must wait for their producing workflows.
 
-## Explicit review requester
+## Validation-gated label requester
 
-For unattended explicit CodeRabbit requests, configure `REVIEW_REQUEST_TOKEN` as a dedicated maintainer-owned fine-grained token with Issues write, Pull requests read and Metadata read, limited to this repository. The trusted metadata-only coordinator uses that client only to identify the requester and post the fixed review command. Its normal GitHub Actions client retains check/status duties and has no PR/issue write permission. The workflow does not check out repository code. Request markers are deduplicated per authenticated requester and revision.
+The coordinator uses the built-in GitHub Actions token to apply the `review-ready` label only after validation succeeds. CodeRabbit is configured for that positive label with automatic and incremental push reviews disabled. The normal token therefore has Issues write permission for label changes; the coordinator remains checkout-free and never approves PRs.
 
-Without the secret, automatic reviews are disabled to preserve validation ordering; a maintainer must request review after checks pass. The gate never treats a missing request credential as approval. Rotate the token before expiry.
+This token-free route is undergoing hosted verification in this PR. The optional `REVIEW_REQUEST_TOKEN` comment requester remains available for compatibility. Current-head CodeRabbit approval is required whichever route starts the review.
 
-The migration accepts only an explicit main-only ruleset; shared or wildcard branch targets require a separate main policy. Review event notifications contain no checkout or credentials and trigger trusted re-evaluation of readiness and revoked approvals. Polling is bounded to 45 one-minute attempts.
+The migration accepts only an explicit main-only ruleset; shared branch targets require a separate main policy. Metadata-only review notifications re-evaluate readiness and revoked approvals. Polling is bounded to 45 one-minute attempts.

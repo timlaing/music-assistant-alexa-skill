@@ -4,7 +4,7 @@ CodeRabbit automatic and incremental push reviews are disabled. The metadata-onl
 
 `Review passed` requires CodeRabbit approval of the exact current head. A request, a successful CodeRabbit check, an old approval, or an approval from another account cannot satisfy this gate. Review event notifications re-evaluate readiness and withdrawn approval through the trusted coordinator. Merge-commit results take precedence over matching head-only reruns.
 
-The coordinator never checks out PR code or submits a GitHub Actions approval. Its normal token reads metadata and writes the gate status. An optional dedicated requester credential can post review commands; without it a maintainer requests review after validation succeeds. See [the workflow policy](WORKFLOW_POLICY.md) for setup and recovery.
+The coordinator never checks out PR code or submits a GitHub Actions approval. Its normal token reads metadata, writes the gate status, and applies the configured `review-ready` label after validation succeeds. Automatic and incremental push reviews remain disabled. The label route is undergoing hosted verification; an optional dedicated requester credential retains the comment-request fallback. See [the workflow policy](WORKFLOW_POLICY.md) for setup and recovery.
 
 ## Dependabot
 
