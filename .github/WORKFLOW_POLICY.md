@@ -25,3 +25,7 @@ The coordinator uses the built-in GitHub Actions token to apply the `review-read
 This token-free route is undergoing hosted verification in this PR. The optional `REVIEW_REQUEST_TOKEN` comment requester remains available for compatibility. Current-head CodeRabbit approval is required whichever route starts the review.
 
 The migration accepts only an explicit main-only ruleset; shared branch targets require a separate main policy. Metadata-only review notifications re-evaluate readiness and revoked approvals. Polling is bounded to 45 one-minute attempts.
+
+Review command markers are deduplicated per requester, revision and run attempt. A requester may post at most three requests for one revision. Once exhausted, a maintainer requests review manually; after current-head CodeRabbit approval arrives, rerunning the coordinator can pass. A new revision resets the count.
+
+The required `Review notifier policy` commit status is written by a checkout-free `pull_request_target` worker from the default branch. It checks the complete notification structure, regular Git file modes, and the trusted enforcement/receiver files as data. Pinned action updates must belong to the official action repository. Changes to security-policy logic need a maintainer-reviewed trusted baseline update; the PR cannot rewrite its own automatic validator. The coordinator requires the actual status, so a same-named PR check cannot replace it.
