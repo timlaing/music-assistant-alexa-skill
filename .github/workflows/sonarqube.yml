@@ -88,7 +88,7 @@ jobs:
           SCANNER_SETTINGS: |
             sonar.projectKey=timlaing_music-assistant-alexa-skill
             sonar.organization=timlaing
-            sonar.sources=app,scripts,addons,Dockerfile,.github/workflows
+            sonar.sources=app,scripts,addons,Dockerfile,.github/workflows,.github/scripts
             sonar.tests=tests,.github/scripts
             sonar.python.coverage.reportPaths=.coverage/coverage.xml,.coverage/coverage-workflow/python.xml
             sonar.projectName=music-assistant-alexa-skill
