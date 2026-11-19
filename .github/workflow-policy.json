@@ -1,0 +1,24 @@
+{
+  "default_workflow_permissions": "read",
+  "required_checks": [
+    "Validate codeql",
+    "Validate docker-ghcr",
+    "Validate lint",
+    "Validate test",
+    "Analysis passed",
+    "Workflow policy",
+    "Review passed",
+    "Review notifier policy"
+  ],
+  "review_gate_requires_main": true,
+  "sha_pinning_required": true,
+  "validation_checks": [
+    "Validate codeql",
+    "Validate docker-ghcr",
+    "Validate lint",
+    "Validate test",
+    "Analysis passed",
+    "Workflow policy",
+    "Review notifier policy"
+  ]
+}
